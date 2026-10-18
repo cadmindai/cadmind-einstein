@@ -5,8 +5,10 @@ the metagraph):
 
 - ``POST /v1/miners/agent_key {x25519_public}`` -- the hotkey-bound agent key, sealed to that key;
 - ``POST /v1/jobs/work`` -- the miner's assignment, if any (poll every few seconds: it is also how
-  the validator knows the miner is alive);
-- ``POST /v1/jobs/accept {job}``, ``POST /v1/jobs/submit {job, workspace, digest}``;
+  the validator knows the miner is alive), and ``cancelled``: the id of its last job when the
+  client cancelled it (stop working on it; said until the miner accepts another job);
+- ``POST /v1/jobs/accept {job}``, ``POST /v1/jobs/submit {job, workspace, digest}`` (410 for a
+  job its client cancelled);
 - ``POST /v1/miners/admission`` -- its entry test, a job assigned to it alone;
 - ``POST /v1/miners/receipt`` -- its jobs, their scores, its weight and quality, and its recent
   attempts that did not pass with why (``failures``: a gate failure says what the gate found).
@@ -64,6 +66,7 @@ from typing import Any
 
 from .desk import Desk, DeskError
 from .scoring import report_order
+from .sealing import valid_public
 
 MAX_BODY = 4 * 1024 * 1024
 REPORT = re.compile(r"^hour-(\d{1,12})(?:-\d{1,6})?\.(json|sha256)$")
@@ -533,10 +536,20 @@ def serve(
                         return
                     hk = str(caller.hotkey_ss58)
                     if self.path == "/v1/miners/agent_key":
+                        # the key is checked first: a malformed request costs no mint and no
+                        # place in the hotkey's rate
+                        try:
+                            pub = base64.b64decode(
+                                str(body.get("x25519_public") or ""), validate=True
+                            )
+                        except ValueError:
+                            pub = b""
+                        if not valid_public(pub):
+                            self._send(400, {"error": "x25519_public is a 32-byte X25519 key"})
+                            return
                         if not key_by_hotkey.allow(hk):
                             self._send(429, {"error": "too many agent key requests: retry later"})
                             return
-                        pub = base64.b64decode(str(body.get("x25519_public") or ""))
                         self._send(200, desk.agent_key(hk, pub))
                     elif self.path == "/v1/jobs/work":
                         self._send(200, desk.work(hk))

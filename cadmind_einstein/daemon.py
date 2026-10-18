@@ -88,7 +88,17 @@ from .cli import (
     setup_logging,
     wallet_kwargs,
 )
-from .desk import AbusePolicy, Desk, SecondOpinion
+from .desk import (
+    CANCEL_COOLOFF_S,
+    GATE_RUN_S,
+    JUDGE_GIVE_UP_S,
+    JUDGE_MAX_RETRIES,
+    MINT_PER_COLDKEY_HOUR,
+    MINT_PER_HOUR,
+    AbusePolicy,
+    Desk,
+    SecondOpinion,
+)
 from .platform import OperatorClient, PlatformError
 from .scoring import GENESIS, Ledger
 from .service import serve
@@ -231,6 +241,42 @@ def parser() -> argparse.ArgumentParser:
     )
     ap.add_argument("--max-connections", type=int, default=64)
     ap.add_argument("--max-connections-per-ip", type=int, default=16)
+    ap.add_argument(
+        "--gate-run-s",
+        type=float,
+        default=GATE_RUN_S,
+        help="budget of one validator guard run; past it the run is stopped (a gate timeout)",
+    )
+    ap.add_argument(
+        "--cancel-cooloff-s",
+        type=float,
+        default=CANCEL_COOLOFF_S,
+        help="how long a miner whose job was cancelled gets no new job",
+    )
+    ap.add_argument(
+        "--judge-max-retries",
+        type=int,
+        default=JUDGE_MAX_RETRIES,
+        help="judgements retried on our side before the job ends didn't finish (not charged)",
+    )
+    ap.add_argument(
+        "--judge-give-up-s",
+        type=float,
+        default=JUDGE_GIVE_UP_S,
+        help="how long a judgement is retried on our side before the job ends didn't finish",
+    )
+    ap.add_argument(
+        "--mint-per-hour",
+        type=int,
+        default=MINT_PER_HOUR,
+        help="agent keys minted per hour in all (keep it below the platform's ceiling); 0: off",
+    )
+    ap.add_argument(
+        "--mint-per-coldkey-hour",
+        type=int,
+        default=MINT_PER_COLDKEY_HOUR,
+        help="agent keys minted per hour for one owner's hotkeys; 0: off",
+    )
     return ap
 
 
@@ -342,6 +388,12 @@ def main(argv: list[str] | None = None) -> int:
         copy_policy=copy_policy,
         copy_corpus=corpus,
         second_opinion=second,
+        gate_run_s=a.gate_run_s,
+        cancel_cooloff_s=a.cancel_cooloff_s,
+        judge_max_retries=a.judge_max_retries,
+        judge_give_up_s=a.judge_give_up_s,
+        mint_per_hour=a.mint_per_hour,
+        mint_per_coldkey_hour=a.mint_per_coldkey_hour,
         **extra,
     )
 

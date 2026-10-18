@@ -66,6 +66,11 @@ ALERT_EVERY_S = 300.0
 """the same ALERT is logged at most this often"""
 
 
+def _wait(end: float) -> int:
+    """A long-poll's wait: what is left of the budget, between 1 and 100 seconds."""
+    return int(max(1.0, min(100.0, end - time.monotonic())))
+
+
 def _retry_after(headers: Any) -> float:
     try:
         return max(0.5, min(120.0, float(headers.get("Retry-After") or BACKOFF_S)))
@@ -311,20 +316,23 @@ class OperatorClient:
         out = self._call("GET", "/api/engine/einstein/claimed", base=self.queue, role=QUEUE)
         return [dict(j) for j in out.get("jobs") or []]
 
-    def complete(self, job: str, result: Mapping[str, Any]) -> None:
+    def complete(self, job: str, result: Mapping[str, Any]) -> dict[str, Any]:
         """A job's end: delivered (charged once) or declined / out of reach / didn't finish
         (not). A delivered result names the validator's fork (``workspace``) and the digest its
         gate read (``digest``); the platform refuses it, 409 ``delivery_not_of_job`` or
         ``delivery_digest_mismatch``, when the fork does not descend from the job's own grant or
         is not at that digest (never retried), and answers 503 ``delivery_unverified`` when it
-        cannot tell now (retried)."""
-        self._call(
+        cannot tell now (retried). Answers the platform's ``{accepted, charged, label}``:
+        ``charged`` is whether the client was charged (false for a delivery the client cancelled
+        meanwhile, or one that could not be kept)."""
+        out = self._call(
             "POST",
             f"/api/engine/einstein/jobs/{quote(job, safe='')}/result",
             {"result": dict(result)},
             base=self.queue,
             role=QUEUE,
         )
+        return dict(out) if isinstance(out, Mapping) else {}
 
     # -- the validator's own workspaces ------------------------------------------------------------
 
@@ -335,21 +343,41 @@ class OperatorClient:
         args: Mapping[str, Any] | None = None,
         *,
         budget_s: float = 1800.0,
+        on_run: Callable[[str], None] | None = None,
+        stop: threading.Event | None = None,
     ) -> dict[str, Any]:
-        """A `watt` command in one of the validator's workspaces, waited to its end."""
+        """A `watt` command in one of the validator's workspaces, waited to its end -- or, still
+        ``running``, at ``budget_s`` or as soon as ``stop`` is set (the caller decides whether to
+        cancel it). ``on_run`` is told the run's id as soon as it is known."""
+        end = time.monotonic() + budget_s
         out = dict(
             self._call(
                 "POST",
                 f"/api/agent/workspaces/{self._ws(ws)}/run",
-                {"command": command, "args": dict(args or {}), "wait_s": 100},
+                {"command": command, "args": dict(args or {}), "wait_s": _wait(end)},
             )
         )
-        end = time.monotonic() + budget_s
+        if out.get("state") == "running" and on_run is not None and out.get("run"):
+            on_run(str(out["run"]))
         while out.get("state") == "running" and time.monotonic() < end:
+            if stop is not None and stop.is_set():
+                break
             out = dict(
-                self._call("GET", f"/api/agent/runs/{quote(str(out['run']), safe='')}?wait_s=100")
+                self._call(
+                    "GET",
+                    f"/api/agent/runs/{quote(str(out['run']), safe='')}?wait_s={_wait(end)}",
+                )
             )
         return out
+
+    def cancel_run(self, run: str) -> None:
+        """Stop one of the validator's own runs (a guard run past its budget, or of a cancelled
+        job); a run the platform no longer knows is already over."""
+        try:
+            self._call("POST", f"/api/agent/runs/{quote(run, safe='')}/cancel", {"wait_s": 10})
+        except PlatformError as e:
+            if e.status != 404:
+                raise
 
     def export(self, ws: str) -> bytes:
         return bytes(

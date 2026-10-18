@@ -41,6 +41,17 @@ def new_keypair() -> tuple[bytes, bytes]:
     return bytes(k.seed), bytes(k.public_key().export_key(format="raw"))  # type: ignore[attr-defined]
 
 
+def valid_public(raw: bytes) -> bool:
+    """Whether ``raw`` is a miner's X25519 public key: 32 bytes that import as one."""
+    if not isinstance(raw, bytes | bytearray) or len(raw) != 32:
+        return False
+    try:
+        DH.import_x25519_public_key(bytes(raw))
+    except (ValueError, TypeError):
+        return False
+    return True
+
+
 def seal(secret: str, miner_public: bytes, hotkey: str) -> dict[str, str]:
     if len(miner_public) != 32:
         raise ValueError("the miner's X25519 public key is 32 bytes")

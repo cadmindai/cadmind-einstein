@@ -76,6 +76,8 @@ class FakePlatform:
         self.suspended: set[str] = set()  # miners Watt's telemetry suspended (platform side)
         self.runs: list[tuple[str, str]] = []  # (workspace, command) of every watt run
         self.forks = 0
+        self.deleted: list[str] = []
+        self.cancelled_runs: list[str] = []
 
     def claim(self) -> dict[str, Any] | None:
         if not self.queue:
@@ -176,6 +178,10 @@ class FakePlatform:
 
     def delete(self, ws: str) -> None:
         self.ws.pop(ws, None)
+        self.deleted.append(ws)
+
+    def cancel_run(self, run: str) -> None:
+        self.cancelled_runs.append(run)
 
     # the miner's side, for the tests
     def work(
@@ -780,9 +786,18 @@ class TestGateDraw(unittest.TestCase):
 
         self.p.run = wall  # type: ignore[method-assign]
         self.submit("r6", weak=False)
+        self.assertTrue(self.desk.wait_idle())
+        # once may be load on our side: judged again, nobody blamed
+        self.assertEqual(self.desk.status("r6")["state"], "judging")
+        self.assertEqual(self.desk.jobs["r6"].attempts[0].gate_timeouts, 1)
+        self.desk._retry_at.clear()
+        self.tick()
         st = wait_state(self.desk, "r6", ("queued", "done"))
-        self.assertEqual(st["state"], "queued")
-        self.assertIn("(stopped: wall)", self.desk.jobs["r6"].attempts[0].outcome)
+        self.assertEqual(st["state"], "queued")  # twice: the attempt fails the gate
+        a = self.desk.jobs["r6"].attempts[0]
+        self.assertEqual(a.kind, "gate")
+        self.assertIn("did not finish within the validator's budget", a.outcome)
+        self.assertIn(a.fork, self.p.deleted)  # its fork is not kept
 
 
 class TestService(unittest.TestCase):

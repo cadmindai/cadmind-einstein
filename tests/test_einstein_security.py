@@ -285,6 +285,7 @@ class TestAgentKeyRate(unittest.TestCase):
     def test_per_hotkey(self) -> None:
         t = [0.0]
         svc = _Svc(agent_key_per_hotkey=(2, 60.0), clock=lambda: t[0])
+        svc.desk.mint_fresh_s = 0  # this test is the service's rate, not the desk's freshness rule
         try:
             pub = base64.b64encode(new_keypair()[1]).decode()
             codes = [

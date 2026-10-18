@@ -85,7 +85,7 @@ from typing import Any, Protocol
 from .answers import check as answers_check
 from .platform import PlatformError
 from .scoring import JobOutcome, Ledger, size_class
-from .sealing import seal
+from .sealing import seal, valid_public
 from .similarity import CopyCheck, CopyPolicy, Entry, fingerprint
 from .store import Store
 
@@ -99,25 +99,65 @@ DONE_KEEP_MS = 7 * 24 * 3_600_000
 """how long a finished job stays queryable (and in the store)"""
 SUBSTANTIVE = ("reject", "gate")
 """attempt kinds that are an opinion on the job (it cannot or should not be done)"""
-UNCOUNTED = ("dereg", "disabled")
-"""attempt kinds that do not count toward a job's attempt cap (the miner left the subnet, or was
-disabled for abuse while it held the job)"""
+UNCOUNTED = ("dereg", "disabled", "stale", "ours")
+"""attempt kinds that do not count toward a job's attempt cap and score nobody: the miner left the
+subnet, or was disabled for abuse while it held the job (``dereg``, ``disabled``); the first
+assignment after a cancel was not accepted in time because the miner was still stopping the
+cancelled job (``stale``); the validator could not judge it, on its own side (``ours``)"""
 REFUSED_DELIVERY = ("delivery_not_of_job", "delivery_digest_mismatch")
 """the platform's refusals of a delivered result whose provenance it cannot accept (the workspace
 does not descend from the job's own grant, or is not at the digest the validator gated): a
 security ALERT, never sent again, and the job's scores withdrawn -- the validator's side, not the
 miner's (see :meth:`Desk._refused_delivery`)"""
-OURS_BUSY = ("run_in_progress", "account_agent_quota", "compute_limit_day")
-"""platform refusals of the VALIDATOR's own judging run (its key already running one, or its quota):
-our side, so the judgement is retried, never counted against the miner"""
-GATE_RUN_S = 3600.0
-"""how long the validator waits on its own guard run (``watt test --mutate``) before judging again;
-above the bench's wall-clock limit for a guard run, so Watt ends the run first"""
+OURS_BUSY = (
+    "run_in_progress",
+    "busy",
+    "backoff",
+    "account_agent_quota",
+    "compute_limit_day",
+    "rate_limited",
+    "rate_limit_per_min",
+    "account_rate_limited",
+    "too_many_in_flight",
+    "workspace_limit",
+    "storage_limit",
+    "operator_frozen",
+    "operator_ceiling",
+)
+"""platform (or Watt) refusals of the VALIDATOR's own judging calls -- its key already running a
+command, Watt busy, its rate, its quotas on the validator's own workspaces: our side, so the
+judgement is retried, never counted against the miner"""
+GATE_RUN_S = 1800.0
+"""the default budget of one validator guard run (``watt report --mutate``): past it the validator
+stops the run (freeing its lane for other judgements) and counts a gate timeout"""
+GATE_TIMEOUTS = 2
+"""gate timeouts (the budget, or Watt's own wall-clock stop) that fail an attempt; fewer are judged
+again later, since one slow run may be load on our side"""
+JUDGE_MAX_RETRIES = 20
+JUDGE_GIVE_UP_S = 4 * 3600.0
+"""a judgement retried on our side this many times, or for this long since its first retry, ends the
+job "didn't finish": not charged, nobody scored"""
+RETRY_FIRST_S = 15.0
+RETRY_BUSY_FIRST_S = 5.0
+RETRY_MAX_S = 600.0
+CANCEL_COOLOFF_S = 45.0
+"""how long a miner whose job was cancelled gets no new job (time to stop its agent)"""
+MINT_PER_HOUR = 40
+"""agent keys the validator mints per hour in all: below the platform's own ceiling, past which the
+platform freezes the validator's key role"""
+MINT_PER_COLDKEY_HOUR = 12
+MINT_FRESH_S = 600.0
+"""a hotkey whose live key was minted less than this ago gets no new one"""
 
 
 class _GateRetryError(Exception):
     """The validator's own guard run did not end on its own (still going, an error of the bench,
     stopped by something other than its limits): our side, so the judgement is retried."""
+
+
+class _GateTimeoutError(Exception):
+    """The validator's own guard run hit its budget (stopped by the validator) or Watt's wall-clock
+    limit: counted on the attempt; judged again, or failed at ``GATE_TIMEOUTS``."""
 
 
 @dataclass(frozen=True)
@@ -183,13 +223,22 @@ class Platform(Protocol):
     def freeze(self, ws: str) -> dict[str, Any]: ...
     def fork(self, ws: str) -> str: ...
     def run(
-        self, ws: str, command: str, args: Any = None, *, budget_s: float = 1800.0
+        self,
+        ws: str,
+        command: str,
+        args: Any = None,
+        *,
+        budget_s: float = 1800.0,
+        on_run: Callable[[str], None] | None = None,
+        stop: threading.Event | None = None,
     ) -> dict[str, Any]: ...
+    def cancel_run(self, run: str) -> None: ...
     def export(self, ws: str) -> bytes: ...
+    def delete(self, ws: str) -> None: ...
     def claim(self) -> dict[str, Any] | None: ...
     def lease(self, jobs: list[str]) -> dict[str, Any]: ...
     def claimed(self) -> list[dict[str, Any]]: ...
-    def complete(self, job: str, result: dict[str, Any]) -> None: ...
+    def complete(self, job: str, result: dict[str, Any]) -> Any: ...
 
 
 class DeskError(Exception):
@@ -218,6 +267,12 @@ class Attempt:
     fork: str = ""
     """the validator's fork being gated, kept across a judgement retried on our side (its guard
     outcomes and build are reused, and no second fork is made)"""
+    gate_run: str = ""
+    """the validator's own guard run on the fork, while it runs (stopped on a cancel)"""
+    gate_timeouts: int = 0
+    retries: int = 0
+    """judgements retried on our side"""
+    first_retry_ms: int = 0
 
 
 @dataclass
@@ -269,6 +324,12 @@ class Miner:
     blocked_until_ms: int = 0
     admitted: bool = False
     admission_ms: int = 0
+    cancelled_job: str = ""
+    """its last job, cancelled by the client: said on ``work`` until it accepts another job"""
+    cancelled_ms: int = 0
+    after_cancel: bool = False
+    """its next assignment is the first since a cancel: not accepting it in time scores nothing"""
+    minted_ms: int = 0
 
 
 ADMISSION_BRIEF = """Admission to the einstein subnet (no client): make this project deliverable.
@@ -306,8 +367,23 @@ class Desk:
         copy_policy: CopyPolicy | None = None,
         copy_corpus: frozenset[bytes] = frozenset(),
         second_opinion: SecondOpinion | None = None,
+        cancel_cooloff_s: float = CANCEL_COOLOFF_S,
+        gate_run_s: float = GATE_RUN_S,
+        judge_max_retries: int = JUDGE_MAX_RETRIES,
+        judge_give_up_s: float = JUDGE_GIVE_UP_S,
+        mint_per_hour: int = MINT_PER_HOUR,
+        mint_per_coldkey_hour: int = MINT_PER_COLDKEY_HOUR,
+        mint_fresh_s: float = MINT_FRESH_S,
     ) -> None:
         self.platform, self.ledger, self.registered = platform, ledger, registered
+        self.cancel_cooloff_s, self.gate_run_s = cancel_cooloff_s, gate_run_s
+        self.judge_max_retries, self.judge_give_up_s = judge_max_retries, judge_give_up_s
+        self.mint_per_hour, self.mint_per_coldkey_hour = mint_per_hour, mint_per_coldkey_hour
+        self.mint_fresh_s = mint_fresh_s
+        self._mints: list[tuple[int, str]] = []
+        """(at_ms, coldkey) of the mints of the last hour (the validator's own budget)"""
+        self._gate_stop: dict[str, threading.Event] = {}
+        """per job being judged: set to stop its guard run (a cancel)"""
         self.abuse = abuse or AbusePolicy()
         self.coldkeys = coldkeys or dict
         """hotkey -> coldkey, from the last metagraph read (a hotkey with none is its own)"""
@@ -576,11 +652,31 @@ class Desk:
 
     def agent_key(self, hotkey: str, x25519_public: bytes) -> dict[str, Any]:
         """Mint (or rotate) the miner's hotkey-bound agent key and answer it sealed to the
-        miner's ephemeral key."""
+        miner's ephemeral key.
+
+        Checked before the platform is asked: the public key must be a valid X25519 key; a hotkey
+        whose live key was minted less than ``mint_fresh_s`` ago gets none (it uses that one); and
+        the validator's own budgets -- ``mint_per_hour`` in all and ``mint_per_coldkey_hour`` per
+        owner, below the platform's ceiling -- are never passed (429), so a crowd of hotkeys
+        cannot run the platform's mint role into its freeze. Revocations are never counted."""
+        if not valid_public(x25519_public):
+            raise DeskError("x25519_public is a 32-byte X25519 public key")
         with self._lock:
             m = self._miner(hotkey)
-            if m.blocked_until_ms > self.now_ms():
+            now = self.now_ms()
+            if m.blocked_until_ms > now:
                 raise DeskError("this hotkey's key is disabled for now", 403)
+            if m.key_id and m.minted_ms and now - m.minted_ms < self.mint_fresh_s * 1000:
+                raise DeskError("your key was just minted; use it", 429)
+            cold = self.coldkey(hotkey)
+            self._mints = [(t, c) for t, c in self._mints if now - t < 3_600_000]
+            if self.mint_per_hour and len(self._mints) >= self.mint_per_hour:
+                raise DeskError("the validator mints no more keys this hour; retry later", 429)
+            if self.mint_per_coldkey_hour and (
+                sum(1 for _, c in self._mints if c == cold) >= self.mint_per_coldkey_hour
+            ):
+                raise DeskError("this owner's hotkeys had their keys for this hour", 429)
+            self._mints.append((now, cold))
         try:
             made = self.platform.mint_key(hotkey)
         except PlatformError as e:
@@ -595,6 +691,7 @@ class Desk:
                 self._queue_revoke(hotkey)
                 raise DeskError("hotkey is not registered on the subnet", 403)
             m.key_id = str(made["key_id"])
+            m.minted_ms = self.now_ms()
             if hotkey in self._revoke:
                 self._revoke.remove(hotkey)
         return {"key_id": m.key_id, "sealed": seal(str(made["secret"]), x25519_public, hotkey)}
@@ -803,9 +900,12 @@ class Desk:
             m = self._miner(hotkey)
             job = self.jobs.get(m.job)
             a = job.current if job else None
+            # its last job, cancelled by the client: the miner stops working on it
+            told = {"cancelled": m.cancelled_job} if m.cancelled_job else {}
             if job is None or a is None or a.hotkey != hotkey:
-                return {"job": None}
+                return {"job": None, **told}
             return {
+                **told,
                 "job": job.job,
                 "workspace": a.workspace,
                 "brief": job.brief,
@@ -835,8 +935,11 @@ class Desk:
             job = self.jobs.get(job_id)
             a = job.current if job else None
             if job is None or a is None or a.hotkey != hotkey or job.state != "assigned":
+                self._gone(job, hotkey)
                 raise DeskError("no such assignment", 404)
             now = self.now_ms()
+            m = self.miners[hotkey]
+            m.cancelled_job, m.after_cancel = "", False
             a.accepted_ms = now
             a.deadline_ms = now + self.deadlines.get(job.effort, DEADLINE_S["medium"]) * 1000
             job.state = "working"
@@ -854,11 +957,23 @@ class Desk:
                 or job.state != "working"
                 or a.workspace != workspace
             ):
+                self._gone(job, hotkey)
                 raise DeskError("no such job in progress for this hotkey", 404)
             a.submitted_ms, a.digest = self.now_ms(), str(digest or "")[:100]
             job.state = "judging"
         self._start_judge(job, a)
         return {"job": job_id, "state": "judging"}
+
+    @staticmethod
+    def _gone(job: Job | None, hotkey: str) -> None:
+        """410 for a call on a job its client cancelled, by a miner that worked on it."""
+        if (
+            job is not None
+            and job.state == "done"
+            and job.result.get("label") == "cancelled"
+            and any(x.hotkey == hotkey for x in job.attempts)
+        ):
+            raise DeskError("the client cancelled this job: stop working on it", 410)
 
     def _start_judge(self, job: Job, a: Attempt) -> None:
         with self._lock:
@@ -881,6 +996,7 @@ class Desk:
             job = self.jobs.get(job_id)
             a = job.current if job else None
             if job is None or a is None or a.hotkey != hotkey:
+                self._gone(job, hotkey)
                 raise DeskError("no such assignment", 404)
             self._spawn(self._freeze_quietly, a.workspace)
             a.category, a.message = category, text
@@ -1113,21 +1229,30 @@ class Desk:
         return {"job": job_id, "score": s}
 
     def cancel(self, job_id: str) -> dict[str, Any]:
-        """The client cancels: not charged, any hold released by the platform. A job in progress is
-        frozen and its miner freed; nobody is scored on it."""
+        """The client cancels (what it is charged is the platform's). A job in progress is frozen
+        and its miner freed; nobody is scored on it. The miner is told on its next ``work``
+        (``cancelled``), gets no new job for ``cancel_cooloff_s`` (time to stop its agent), and its
+        first assignment after this one is not scored if it is not accepted in time. A job being
+        judged has the validator's guard run stopped and its fork deleted."""
         with self._mut():
             job = self.jobs.get(job_id)
             if job is None:
                 raise DeskError("no such job", 404)
             if job.state == "done":
                 return self.status(job_id)
+            judging = job.state == "judging"
             a = job.current
-            if a is None and job.state == "judging" and job.attempts:
+            if a is None and judging and job.attempts:
                 a = job.attempts[-1]
             if a is not None:
                 self._spawn(self._freeze_quietly, a.workspace)
                 a.outcome, a.kind = "cancelled by the client", "cancelled"
                 self._release(a.hotkey)
+                m = self.miners.get(a.hotkey)
+                if m is not None:
+                    m.cancelled_job, m.cancelled_ms, m.after_cancel = job_id, self.now_ms(), True
+                if judging:
+                    self._drop_gate(job.job, a)
             job.pending.clear()
             job.state = "done"
             job.result = {"label": "cancelled", "charge": False, "attempts": len(job.attempts)}
@@ -1200,6 +1325,7 @@ class Desk:
             and m.hotkey in reg
             and m.blocked_until_ms <= now
             and now - m.last_seen_ms <= ALIVE_S * 1000
+            and now - m.cancelled_ms >= self.cancel_cooloff_s * 1000
             and m.hotkey not in tried
             and self.coldkey(m.hotkey, cmap) not in opinions
         ]
@@ -1245,7 +1371,18 @@ class Desk:
                 a = job.current
                 if job.state == "assigned" and a and now > a.accept_by_ms:
                     self._spawn(self._freeze_quietly, a.workspace)
-                    self._fail(job, a, "not accepted in time", kind="timeout")
+                    m = self.miners.get(a.hotkey)
+                    if m is not None and m.after_cancel:
+                        # the first job after a cancel, missed while the miner stopped the
+                        # cancelled one: nobody is scored, nothing counted
+                        m.after_cancel = False
+                        if self.assigned.get(a.hotkey, 0) > 0:
+                            self.assigned[a.hotkey] -= 1
+                        self._fail(
+                            job, a, "not accepted in time, just after a cancel", kind="stale"
+                        )
+                    else:
+                        self._fail(job, a, "not accepted in time", kind="timeout")
                 elif job.state == "working" and a and now > a.deadline_ms:
                     job.state = "judging"
                     late.append((job, a))
@@ -1338,6 +1475,7 @@ class Desk:
             and m.hotkey in reg
             and m.blocked_until_ms <= now
             and now - m.last_seen_ms <= ALIVE_S * 1000
+            and now - m.cancelled_ms >= self.cancel_cooloff_s * 1000
         )
         return max(0, min(free - held, self.max_inflight - inflight - held))
 
@@ -1406,11 +1544,18 @@ class Desk:
                     result = dict(job.result) if job else None
                 if result is not None:
                     try:
-                        self.platform.complete(job_id, result)
+                        answer = self.platform.complete(job_id, result)
                     except PlatformError as e:
                         if e.code in REFUSED_DELIVERY:
                             self._refused_delivery(job_id, e)
                         continue  # anything else: sent again on a later tick
+                    if (
+                        result.get("label") == "delivered"
+                        and result.get("charge")
+                        and isinstance(answer, Mapping)
+                        and answer.get("charged") is False
+                    ):
+                        self._uncharged(job_id, answer)
                 with self._mut():
                     if job_id in self._outbox:
                         self._outbox.remove(job_id)
@@ -1469,6 +1614,32 @@ class Desk:
         self.log(
             f"ALERT: the platform refused job {job_id}'s delivery ({e.code}: {e}); not sent again, "
             f"its scores withdrawn, the job held for review"
+        )
+
+    def _uncharged(self, job_id: str, answer: Mapping[str, Any]) -> None:
+        """The platform took a delivered result and charged nothing (the client cancelled while it
+        was sent, or the delivery could not be kept): no delivery happened, so the job's scores are
+        withdrawn as for a refused delivery, and nobody is penalised. Not sent again."""
+        with self._mut():
+            job = self.jobs.get(job_id)
+            if job is None:
+                return
+            gone = self.ledger.withdraw(job_id)
+            for o in gone:
+                if o.kind == "pass" and self.delivered.get(o.hotkey, 0) > 0:
+                    self.delivered[o.hotkey] -= 1
+                if o.kind == "reject" and self.overturned.get(o.hotkey, 0) > 0:
+                    self.overturned[o.hotkey] -= 1
+            job.result = {
+                **job.result,
+                "label": str(answer.get("label") or "not charged")[:40],
+                "charge": False,
+                "uncharged": True,
+                "withdrawn": len(gone),
+            }
+        self.log(
+            f"job {job_id}: the platform charged nothing for its delivery "
+            f"({answer.get('label') or 'no label'}); its scores withdrawn"
         )
 
     def _assign(self, job: Job, m: Miner) -> None:
@@ -1598,16 +1769,91 @@ class Desk:
     def _judge(self, job: Job, a: Attempt) -> None:
         try:
             self._judge_once(job, a)
+        except Exception as e:  # noqa: BLE001 -- never a silent dead judgement, never a hot loop
+            self._retry(job, a, f"{type(e).__name__}: {e}", RETRY_FIRST_S)
         finally:
             with self._lock:
                 self._judging.discard(job.job)
         self._spawn_flush()
 
+    # -- the validator's fork and its guard run --------------------------------------------------
+
+    def _drop_gate(self, job_id: str, a: Attempt) -> None:
+        """Stop the validator's guard run on ``a``'s fork and delete the fork, in the worker pool
+        (a job that ended without a delivery: the fork serves nothing). Under the lock."""
+        stop = self._gate_stop.get(job_id)
+        if stop is not None:
+            stop.set()
+        run, fork = a.gate_run, a.fork
+        a.gate_run = ""
+        if run or fork:
+            self._spawn(self._drop_quietly, run, fork)
+
+    def _drop_quietly(self, run: str, fork: str) -> None:
+        if run:
+            with contextlib.suppress(PlatformError):
+                self.platform.cancel_run(run)
+        if fork:
+            with contextlib.suppress(PlatformError):
+                self.platform.delete(fork)
+
+    def _retry(self, job: Job, a: Attempt, why: str, first_s: float) -> None:
+        """A judgement that failed on OUR side: judged again after a back-off (doubling from
+        ``first_s``, at most ``RETRY_MAX_S``, with jitter) -- never scored, never sent to another
+        miner. Past ``judge_max_retries`` retries, or ``judge_give_up_s`` since the first, the
+        job ends "didn't finish": not charged, nobody scored."""
+        with self._mut():
+            if job.state != "judging" or not job.attempts or job.attempts[-1] is not a:
+                return  # ended meanwhile (a cancel)
+            now = self.now_ms()
+            a.retries += 1
+            a.first_retry_ms = a.first_retry_ms or now
+            a.outcome = f"judging retried: {why[:200]}"
+            if a.retries > self.judge_max_retries or (
+                now - a.first_retry_ms >= self.judge_give_up_s * 1000
+            ):
+                self._give_up(job, a, why)
+                return
+            delay = min(RETRY_MAX_S, first_s * 2 ** (a.retries - 1))
+            delay *= 0.8 + 0.4 * self.rng.random()
+            self._retry_at[job.job] = time.monotonic() + delay
+
+    def _give_up(self, job: Job, a: Attempt, why: str) -> None:
+        """Inside a mutation: the validator could not judge this attempt on its own side. The job
+        ends "didn't finish", charged nothing (the platform releases the hold); nobody is scored
+        and the held failures are dropped; the miner is freed and the fork deleted."""
+        a.outcome = f"the validator could not judge it: {why[:200]}"
+        a.kind = "ours"
+        self._release(a.hotkey)
+        self._drop_gate(job.job, a)
+        job.pending.clear()
+        job.state = "done"
+        if job.kind == "admission":
+            job.result = {"label": "not admitted", "charge": False, "why": a.outcome}
+        else:
+            job.result = {
+                "label": "didn't finish",
+                "charge": False,
+                "why": "the validator could not judge the delivery",
+                "attempts": len(job.attempts),
+            }
+            self._outbox.append(job.job)
+        self.log(
+            f"ALERT: job {job.job} ended without a judgement after {a.retries} retries on the "
+            f"validator's side ({why[:200]}): not charged, nobody scored"
+        )
+
+    @staticmethod
+    def _ours(e: PlatformError) -> bool:
+        """Whether a platform failure while judging is the validator's side (its credential, its
+        quotas, the platform's or Watt's load), never the miner's."""
+        return e.ours or e.status in (0, 408, 429) or e.status >= 500 or e.code in OURS_BUSY
+
     def _status(self, fork: str) -> dict[str, Any]:
         st = self.platform.run(fork, "status", {})
         return dict(((st.get("data") or {}).get("status")) or {})
 
-    def _gate(self, fork: str) -> dict[str, Any]:
+    def _gate(self, fork: str, job: Job | None = None, a: Attempt | None = None) -> dict[str, Any]:
         """The Watt gate on the validator's fork of a frozen workspace.
 
         1. ``watt status``: the miner's own record must say deliverable (its checks clean, a guard
@@ -1625,6 +1871,10 @@ class Desk:
            changes.) The validator's draw of a digest is the same on every run, so a design
            delivered before and submitted unchanged draws as it did then.
 
+        The guard run has a budget (``gate_run_s``): still going at it, the validator stops it --
+        freeing its lane for the other judgements -- and raises :class:`_GateTimeoutError`, as for
+        a run Watt stopped at its own wall-clock limit. A cancel of the job stops it too.
+
         Raises :class:`_GateRetryError` (and lets :class:`PlatformError` through) on our side.
         """
         before = self._status(fork)
@@ -1638,10 +1888,50 @@ class Desk:
             return verdict
         # the guard and the delivery's files in ONE run (`watt report --mutate`): one machine start,
         # and the files are made from the very design this run guards (2026-10-16)
-        run = self.platform.run(fork, "report", {"mutate": True}, budget_s=GATE_RUN_S)
+        stop = threading.Event()
+        key = job.job if job is not None else ""
+        if key:
+            with self._lock:
+                self._gate_stop[key] = stop
+
+        def started(run_id: str) -> None:
+            if a is not None:
+                with self._mut():
+                    a.gate_run = str(run_id)
+
+        try:
+            run = self.platform.run(
+                fork,
+                "report",
+                {"mutate": True},
+                budget_s=self.gate_run_s,
+                on_run=started,
+                stop=stop,
+            )
+        finally:
+            if key:
+                with self._lock:
+                    self._gate_stop.pop(key, None)
         state, stopped = run.get("state"), str(run.get("stopped") or "")
+        if stop.is_set():
+            raise _GateRetryError("the job ended while its guard ran")
         if state == "running":
-            raise _GateRetryError(f"the validator's guard run {run.get('run', '')} is still going")
+            # past its budget: stopped here, so it no longer holds the validator's lane
+            run_id = str(run.get("run") or "")
+            if run_id:
+                with contextlib.suppress(PlatformError):
+                    self.platform.cancel_run(run_id)
+            if a is not None:
+                with self._mut():
+                    a.gate_run = ""
+            raise _GateTimeoutError(
+                f"the validator's guard run {run_id} passed its {self.gate_run_s:g} s budget"
+            )
+        if a is not None:
+            with self._mut():
+                a.gate_run = ""
+        if stopped == "wall":
+            raise _GateTimeoutError("the validator's guard run hit Watt's wall-clock limit")
         if state != "done" or stopped in ("cancelled", "frozen"):
             why = stopped or str(run.get("error") or state)
             raise _GateRetryError(f"the validator's guard run did not end on its own: {why[:200]}")
@@ -1696,10 +1986,12 @@ class Desk:
         return {**verdict, "deliverable": False, "stage": "answers", "error": why}
 
     def _judge_once(self, job: Job, a: Attempt) -> None:
-        """Freeze, fork, gate the fork (:meth:`_gate`), copy-check, score. A platform that is
-        unreachable or answers 5xx, our own key busy, or our guard run not ending on its own leaves
-        the job judging, judged again on a later tick (on the same fork): an outage on our side
-        never fails a miner."""
+        """Freeze, fork, gate the fork (:meth:`_gate`), copy-check, score. An error on our side --
+        the platform unreachable, 5xx, a timeout, our own key busy or over its rate or quota, our
+        guard run not ending on its own -- leaves the job judging, judged again after a back-off
+        on the same fork (:meth:`_retry`): never scored against the miner, never sent to another
+        miner, and bounded. A guard run past its budget (or Watt's wall) twice fails the attempt.
+        A fork that delivers nothing is deleted."""
         on_time = bool(a.submitted_ms) and a.submitted_ms <= a.deadline_ms
         verdict: dict[str, Any] = {"deliverable": False, "stage": "none", "digest": ""}
         fork, compute_s, export = a.fork, 0.0, b""
@@ -1710,24 +2002,34 @@ class Desk:
                 fork = self.platform.fork(a.workspace)
                 with self._mut():
                     a.fork = fork
-            verdict = self._gate(fork)
+                    if job.state != "judging" or not job.attempts or job.attempts[-1] is not a:
+                        self._drop_gate(job.job, a)  # cancelled while the fork was made
+                        return
+            verdict = self._gate(fork, job, a)
             if verdict["deliverable"]:
                 export = self.platform.export(fork)
                 if job.kind == "client":
-                    verdict = self._answers_gate(job, a, verdict, export)
+                    verdict = self._read_export(
+                        verdict, lambda: self._answers_gate(job, a, verdict, export)
+                    )
+        except _GateTimeoutError as e:
+            with self._mut():
+                a.gate_timeouts += 1
+                timeouts = a.gate_timeouts
+            if timeouts < GATE_TIMEOUTS:
+                self._retry(job, a, str(e), RETRY_FIRST_S)
+                return
+            verdict["stage"] = "test"
+            verdict["error"] = (
+                f"the guard did not finish within the validator's budget {GATE_TIMEOUTS} times"
+            )
         except _GateRetryError as e:
-            with self._lock:
-                a.outcome = f"judging retried: {str(e)[:200]}"
-                self._retry_at[job.job] = time.monotonic() + 30.0
+            self._retry(job, a, str(e), RETRY_FIRST_S)
             return
         except PlatformError as e:
-            busy = e.code in OURS_BUSY or e.ours  # our credential or the platform's load
-            if e.status == 0 or e.status >= 500 or busy:
-                with self._lock:
-                    a.outcome = f"judging retried: {str(e)[:200]}"
-                    self._retry_at[job.job] = time.monotonic() + (
-                        3.0 if e.code == "run_in_progress" else 30.0
-                    )
+            if self._ours(e):
+                first = RETRY_BUSY_FIRST_S if e.code == "run_in_progress" else RETRY_FIRST_S
+                self._retry(job, a, str(e), first)
                 return
             verdict["error"] = str(e)
         end = a.submitted_ms or self.now_ms()
@@ -1749,12 +2051,22 @@ class Desk:
         if verdict["deliverable"] and job.kind == "client":
             try:
                 base = fingerprint(self.platform.export(job.seed)).features if job.seed else base
-            except PlatformError:
+            except Exception:  # noqa: BLE001 -- the seed is ours: unread, nothing is subtracted
                 base = frozenset()
-            mine = fingerprint(export).features
+            try:
+                mine = fingerprint(export).features
+            except Exception as e:  # noqa: BLE001 -- the miner's export: unreadable fails it
+                verdict = {
+                    **verdict,
+                    "deliverable": False,
+                    "stage": "export",
+                    "error": f"the delivered project could not be read ({type(e).__name__})",
+                }
+                outcome.deliverable, outcome.stage = False, "export"
         cold = self.coldkey(a.hotkey)
         with self._mut():
             if job.state != "judging" or not job.attempts or job.attempts[-1] is not a:
+                self._drop_gate(job.job, a)
                 return  # cancelled (or lost) while it was judged: nobody is scored
             copy = None
             if verdict["deliverable"] and job.kind == "client":
@@ -1777,11 +2089,13 @@ class Desk:
                     m.admitted = True
                 a.outcome, a.kind = "admitted", "pass"
                 self._release(a.hotkey)
+                self._drop_gate(job.job, a)  # an entry test delivers nothing
                 job.state = "done"
                 job.result = {"label": "admitted", "charge": False}
                 return
             if not verdict["deliverable"] or copy is not None:
                 kind = "copy" if copy else ("gate" if on_time else "timeout")
+                self._drop_gate(job.job, a)
                 self._fail(
                     job,
                     a,
@@ -1821,3 +2135,19 @@ class Desk:
                 "attempts": len(job.attempts),
             }
             self._outbox.append(job.job)
+
+    @staticmethod
+    def _read_export(
+        verdict: dict[str, Any], check: Callable[[], dict[str, Any]]
+    ) -> dict[str, Any]:
+        """A check that reads the miner's export: anything it raises (a malformed file, nesting too
+        deep) fails the attempt's gate, never the validator."""
+        try:
+            return check()
+        except Exception as e:  # noqa: BLE001 -- the miner's bytes: unreadable fails the gate
+            return {
+                **verdict,
+                "deliverable": False,
+                "stage": "answers",
+                "error": f"the delivered project could not be read ({type(e).__name__})",
+            }
