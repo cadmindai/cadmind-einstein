@@ -48,15 +48,18 @@ from __future__ import annotations
 
 import argparse
 import base64
+import contextlib
 import json
 import logging
 import os
 import re
 import shlex
+import signal
 import subprocess
 import sys
 import threading
 import time
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
@@ -79,6 +82,26 @@ from .sealing import new_keypair, open_sealed
 from .version import check_latest
 
 MCP_SERVER = "cadmind-watt"
+BUILTIN_TOOLS = (
+    "Bash",
+    "Read",
+    "Write",
+    "Edit",
+    "MultiEdit",
+    "Glob",
+    "Grep",
+    "LS",
+    "WebFetch",
+    "WebSearch",
+    "NotebookEdit",
+    "NotebookRead",
+    "Task",
+    "TodoWrite",
+)
+"""Claude Code's built-in tools, denied by name: ``--allowedTools`` only pre-approves the MCP tools,
+it does not take the built-ins away, and a hostile brief must not steer the agent into reading or
+sending anything from the miner's machine."""
+KILL_GRACE_S = 10.0
 
 PROMPT = """You are a CADmind einstein miner. Build this client's device in the Watt workspace \
 `{ws}` (made from the brief), using ONLY the {server} MCP tools (and the local \
@@ -179,6 +202,8 @@ def agent_argv(
         "--strict-mcp-config",
         "--allowedTools",
         allowed_tools(a),
+        "--disallowedTools",
+        ",".join(BUILTIN_TOOLS),
         "--output-format",
         "text",
     ]
@@ -194,6 +219,63 @@ def allowed_tools(a: argparse.Namespace) -> str:
         tools.append(f"mcp__{FETCH_SERVER}__{FETCH_TOOL}")
         tools.append(f"mcp__{FETCH_SERVER}__{TIME_TOOL}")
     return ",".join(tools)
+
+
+def dropped(work: Any, job: str) -> bool:
+    """Whether the validator's ``work`` answer says ``job`` is no longer this miner's: the client
+    cancelled it (``cancelled``), or the answer names another job or none. A failed poll (not a
+    mapping) says nothing."""
+    if not isinstance(work, Mapping) or "job" not in work:
+        return False
+    return work.get("cancelled") == job or work.get("job") != job
+
+
+class AgentRun:
+    """The agent CLI in its own process group, so a cancelled job stops it and everything it
+    started: SIGTERM to the group, SIGKILL after ``grace_s``."""
+
+    def __init__(
+        self, cmd: list[str], *, cwd: Path, stdin: str | None, grace_s: float = KILL_GRACE_S
+    ) -> None:
+        self.grace_s, self.stopped = grace_s, threading.Event()
+        self._stdin = stdin
+        self.proc = subprocess.Popen(  # noqa: S603 -- the operator's own configured agent CLI
+            cmd,
+            stdin=subprocess.PIPE if stdin is not None else subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            cwd=cwd,
+            start_new_session=True,
+        )
+
+    def _signal(self, sig: int) -> None:
+        with contextlib.suppress(ProcessLookupError, PermissionError):
+            os.killpg(self.proc.pid, sig)
+
+    def stop(self) -> None:
+        """Stop the agent (from another thread): its output so far is still read by ``wait``."""
+        self.stopped.set()
+        self._signal(signal.SIGTERM)
+
+        def hard() -> None:
+            try:
+                self.proc.wait(self.grace_s)
+            except subprocess.TimeoutExpired:
+                self._signal(signal.SIGKILL)
+
+        threading.Thread(target=hard, daemon=True).start()
+
+    def wait(self, timeout: float) -> tuple[str, str, bool]:
+        """(stdout, stderr, timed_out): the agent's output once it ends, or at ``timeout`` (it is
+        then stopped)."""
+        try:
+            out, err = self.proc.communicate(self._stdin, timeout=timeout)
+            return out or "", err or "", False
+        except subprocess.TimeoutExpired:
+            self.stop()
+            out, err = self.proc.communicate()
+            return out or "", err or "", True
 
 
 def deadline_file(a: argparse.Namespace) -> Path | None:
@@ -321,11 +403,17 @@ def main(argv: list[str] | None = None) -> int:
     log(f"admission requested: {code} {adm.get('job') if isinstance(adm, dict) else adm}")
 
     busy, stop = threading.Event(), threading.Event()
+    running: dict[str, Any] = {"job": "", "agent": None}
 
     def heartbeat() -> None:
         while not stop.is_set():
             if busy.is_set():
-                call("/v1/jobs/work", {})  # keep alive while the agent runs
+                # keep alive while the agent runs -- and stop it when its job is gone
+                code, w = call("/v1/jobs/work", {})
+                agent, job = running["agent"], running["job"]
+                if code == 200 and agent is not None and job and dropped(w, job):
+                    log(f"{job}: cancelled or no longer ours: stopping the agent")
+                    agent.stop()
             stop.wait(15)
 
     threading.Thread(target=heartbeat, daemon=True).start()
@@ -341,6 +429,9 @@ def main(argv: list[str] | None = None) -> int:
         if not work.get("accepted"):
             code, _ = call("/v1/jobs/accept", {"job": job})
             log(f"accepted {job} ({work.get('effort')}) in {ws}: {code}")
+            if code != 200:  # cancelled (410) or gone meanwhile: nothing to build
+                time.sleep(5)
+                continue
             code, work = call("/v1/jobs/work", {})  # the deadline starts at accept
         deadline_ms = int(work.get("deadline_ms") or 0) if isinstance(work, dict) else 0
         minutes = max(10, int((deadline_ms / 1000 - time.time()) / 60) - 3) if deadline_ms else 25
@@ -368,29 +459,26 @@ def main(argv: list[str] | None = None) -> int:
         cmd = agent_argv(
             a, prompt=prompt, prompt_file=prompt_file, mcp_file=mcp_file, ws=ws, job=job
         )
-        busy.set()
         t0 = time.time()
         out_file = logs / f"{job}.txt"
+        agent = AgentRun(cmd, cwd=work_dir, stdin=prompt if a.agent_command else None)
+        running.update(job=job, agent=agent)
+        busy.set()
         try:
-            proc = subprocess.run(  # noqa: S603 -- the operator's own configured agent CLI
-                cmd,
-                input=prompt if a.agent_command else None,
-                capture_output=True,
-                text=True,
-                timeout=minutes * 60,
-                cwd=work_dir,
-                check=False,
-            )
-            text = proc.stdout
-            out_file.write_text(text + "\n--- stderr ---\n" + proc.stderr)
-        except subprocess.TimeoutExpired as e:
-            raw = e.stdout or ""
-            text = raw.decode() if isinstance(raw, bytes) else raw
-            out_file.write_text(text + "\n--- TIMEOUT ---\n")
-            log(f"{job}: agent timed out after {minutes} min")
+            text, err, timed_out = agent.wait(minutes * 60)
         finally:
             busy.clear()
+            running.update(job="", agent=None)
+        if timed_out:
+            out_file.write_text(text + "\n--- TIMEOUT ---\n" + err)
+            log(f"{job}: agent timed out after {minutes} min")
+        else:
+            out_file.write_text(text + "\n--- stderr ---\n" + err)
         log(f"{job}: agent finished in {(time.time() - t0) / 60:.1f} min")
+        if agent.stopped.is_set() and not timed_out:
+            log(f"{job}: the job was cancelled; nothing submitted")
+            done += 1
+            continue
         rej = re.search(r"^REJECT (not-allowed|not-capable):\s*(.+)$", text, re.MULTILINE)
         fin = re.search(r"^DONE\s+(\S+)\s*$", text, re.MULTILINE)
         if rej and not job.startswith("admission-"):

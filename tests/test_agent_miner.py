@@ -4,10 +4,13 @@ default, or any agent CLI through an argv template."""
 from __future__ import annotations
 
 import argparse
+import os
+import tempfile
+import time
 import unittest
 from pathlib import Path
 
-from cadmind_einstein.agent_miner import PROMPT, agent_argv
+from cadmind_einstein.agent_miner import PROMPT, AgentRun, agent_argv, dropped
 
 
 def ns(**kw: object) -> argparse.Namespace:
@@ -92,3 +95,57 @@ class TestAgentArgv(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestCancelledJob(unittest.TestCase):
+    def test_the_work_answer_says_when_a_job_is_gone(self) -> None:
+        self.assertTrue(dropped({"job": None, "cancelled": "job-1"}, "job-1"))
+        self.assertTrue(dropped({"job": "job-2"}, "job-1"))
+        self.assertTrue(dropped({"job": None}, "job-1"))
+        self.assertFalse(dropped({"job": "job-1"}, "job-1"))
+        self.assertFalse(dropped({"error": "validator unreachable"}, "job-1"))
+        self.assertFalse(dropped(None, "job-1"))
+
+    def test_a_stopped_agent_ends_with_everything_it_started(self) -> None:
+        with tempfile.TemporaryDirectory() as d:
+            marker = Path(d) / "child.pid"
+            run = AgentRun(
+                ["sh", "-c", f"sleep 30 & echo $! > {marker}; echo started; wait"],
+                cwd=Path(d),
+                stdin=None,
+                grace_s=2.0,
+            )
+            for _ in range(100):
+                if marker.exists() and marker.read_text().strip():
+                    break
+                time.sleep(0.05)
+            t0 = time.monotonic()
+            run.stop()
+            out, _err, timed_out = run.wait(20)
+            self.assertLess(time.monotonic() - t0, 10)
+            self.assertFalse(timed_out)
+            self.assertIn("started", out)
+            child = int(marker.read_text())
+            time.sleep(0.2)
+            with self.assertRaises(ProcessLookupError):
+                os.kill(child, 0)  # the agent's own children went with it
+
+    def test_a_timeout_stops_it_too(self) -> None:
+        with tempfile.TemporaryDirectory() as d:
+            run = AgentRun(["sleep", "30"], cwd=Path(d), stdin=None, grace_s=1.0)
+            _out, _err, timed_out = run.wait(0.3)
+            self.assertTrue(timed_out)
+            self.assertTrue(run.stopped.is_set())
+
+    def test_the_builtin_tools_are_denied(self) -> None:
+        argv = agent_argv(
+            ns(),
+            prompt="P",
+            prompt_file=Path("/s/p"),
+            mcp_file=Path("/s/m"),
+            ws="w",
+            job="j",
+        )
+        denied = argv[argv.index("--disallowedTools") + 1].split(",")
+        for tool in ("Bash", "Read", "Write", "Edit", "WebFetch", "Grep", "Glob"):
+            self.assertIn(tool, denied)
