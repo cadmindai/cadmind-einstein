@@ -5,6 +5,47 @@ All notable changes to this project are listed here. The format follows
 [Semantic Versioning](https://semver.org/). Each release's spec version (`10000*MAJOR + 100*MINOR + PATCH`) is the
 `version_key` the validator sets weights with.
 
+## [0.3.5] - unreleased
+
+### Added
+- A miner is told when the client cancels its job: `work` answers `cancelled: <job>` until the miner accepts another
+  job, and `accept`, `submit` and `reject` of that job answer 410. The reference miner stops its agent (the whole
+  process group) when the job is cancelled or no longer its own, and submits nothing for it.
+- After a cancel the miner gets no new job for `--cancel-cooloff-s` (45 s); its first assignment after the cancel, if
+  not accepted in time, scores nothing and does not count toward the job's attempts (kind `stale`).
+- A cancel while the job is being judged stops the validator's guard run and deletes the validator's fork. Every fork
+  that delivers nothing (a failed gate, a copy, a late attempt, a job that could not be judged) is deleted; a
+  delivered fork is kept.
+- `--gate-run-s` (1800 s): the budget of one validator guard run. Past it the validator stops the run, so it no longer
+  holds the validator's run slot, and counts a gate timeout, as for a run Watt stopped at its wall-clock limit; the
+  second gate timeout fails the attempt.
+- `--judge-max-retries` (20) and `--judge-give-up-s` (4 h): a judgement that keeps failing on the validator's side
+  ends the job "didn't finish", not charged, nobody scored, with an ALERT in the log.
+- Agent keys: the validator mints at most `--mint-per-hour` (40) keys in all and `--mint-per-coldkey-hour` (12) per
+  owner, below the platform's own ceiling; past them it answers 429 without asking the platform. Revocations are
+  never counted.
+
+### Changed
+- Judging errors on the validator's side -- rate limits (429), Watt busy (409), the validator's own quotas, timeouts,
+  5xx, an unreachable platform -- are retried with an exponential back-off (15 s, or 5 s for the validator's busy
+  key, doubling to 10 min, with jitter), never counted against the miner and never sent to another miner. A run
+  Watt stopped at its wall-clock limit is a gate timeout, no longer an immediate gate failure.
+- An export the gate cannot read fails the attempt's gate; any other unexpected error while judging is retried with
+  the same back-off, never in a tight loop.
+- A delivered result the platform answers `charged: false` (the client cancelled while it was sent, or the delivery
+  could not be kept) has its scores withdrawn and is not sent again.
+- `agent_key` checks the X25519 public key before anything else (400, and no place taken in the rate limit), and a
+  hotkey whose live key was minted less than 10 minutes ago gets 429 instead of a new key.
+- The reference miner denies Claude Code's built-in tools (`--disallowedTools`): `--allowedTools` only pre-approves
+  the MCP tools, it does not remove the shell, file and web tools. It builds nothing for an assignment whose accept
+  was refused.
+
+### Compatibility
+- The validator reads the platform's `{accepted, charged, label}` answer to a result; a platform that answers without
+  `charged` keeps the earlier behaviour.
+- A miner should stop working on a job when `work` names it in `cancelled`; a miner that does not is not penalised for
+  the first assignment it misses.
+
 ## [0.3.0] - unreleased (proposed)
 
 ### Added

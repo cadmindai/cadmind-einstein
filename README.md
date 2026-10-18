@@ -201,6 +201,11 @@ cadmind-einstein --state-dir ~/.local/share/cadmind-einstein \
   `--copy-corpus PATH`, repeatable: public example projects whose features never count as evidence);
   `--second-opinion-coldkeys` (2) and `--second-opinion-wait-s` (1800) the second-opinion rule; `--genesis`
   (`delivered`, `coldkey` or `hotkey`) who is weighted before anyone has history.
+- `--gate-run-s` (1800) bounds one validator guard run (past it the run is stopped and counted as a gate timeout;
+  two fail the attempt); `--judge-max-retries` (20) and `--judge-give-up-s` (14400) bound the retries of a judgement
+  that fails on the validator's side, after which the job ends "didn't finish", not charged; `--cancel-cooloff-s`
+  (45) is how long a miner whose job was cancelled gets no new job; `--mint-per-hour` (40) and
+  `--mint-per-coldkey-hour` (12) are the validator's own key-mint budgets (keep them below the platform's ceiling).
 - The HTTP face listens on `127.0.0.1:8793` by default. In production put a TLS reverse proxy in front
   ([`deploy/nginx-einstein.conf`](deploy/nginx-einstein.conf)) and pass `--trusted-proxy 127.0.0.1`.
 - State lives in `STATE/einstein.sqlite3`; reports in `STATE/reports/hour-N.json` with `hour-N.sha256` beside them.
@@ -228,7 +233,8 @@ restricted to the Watt MCP server and one local tool, `fetch_to_workspace`, whic
 connection (many sites refuse the platform's address) and uploads it into the job's workspace
 (`cadmind_einstein/fetch_mcp.py`; fenced to public http(s) addresses, 20 s and 8 MB a download; `--no-local-fetch`
 turns it off; see [docs/MINER.md](docs/MINER.md)). You bring the agent CLI and its model credentials, and you are responsible for
-your model provider's terms. With `--netuid` it checks once at startup that its hotkey is registered (a warning
+your model provider's terms. Run the agent in a container or under a separate user with no wallet, key or credentials
+mounted beyond the agent CLI's own: the brief is untrusted input. With `--netuid` it checks once at startup that its hotkey is registered (a warning
 only); without it, it makes no chain call.
 
 ## Running and updating
@@ -327,8 +333,8 @@ Every answer on these routes is signed by the validator's hotkey (`X-Einstein-Va
 |---|---|---|
 | `POST /v1/miners/agent_key` | `{x25519_public}` | `{key_id, sealed}`: the hotkey-bound agent key, sealed to that X25519 key (rate-limited) |
 | `POST /v1/miners/admission` | `{}` | the entry test: a job assigned to this miner alone (once a day) |
-| `POST /v1/jobs/work` | `{}` | `{job, workspace, brief, effort, accepted, accept_by_ms, deadline_ms, no_questions}` or `{job: null}`; also the liveness poll |
-| `POST /v1/jobs/accept` | `{job}` | `{job, workspace, deadline_ms}` |
+| `POST /v1/jobs/work` | `{}` | `{job, workspace, brief, effort, accepted, accept_by_ms, deadline_ms, no_questions}` or `{job: null}`, plus `cancelled: <job>` when the client cancelled the miner's last job; also the liveness poll |
+| `POST /v1/jobs/accept` | `{job}` | `{job, workspace, deadline_ms}`; 410 for a job its client cancelled (also `submit` and `reject`) |
 | `POST /v1/jobs/submit` | `{job, workspace, digest}` | `{job, state: "judging"}` |
 | `POST /v1/jobs/reject` | `{job, category, message}` | `category`: `not-allowed` or `not-capable` |
 | `POST /v1/miners/receipt` | `{}` | the miner's recent jobs and scores, its weight and quality, and its recent attempts that did not pass with why (`failures`) |

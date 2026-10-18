@@ -98,7 +98,7 @@ All calls are signed POSTs to `$VALIDATOR_URL`.
 
 | Call | Body | Answer / rule |
 |---|---|---|
-| `/v1/jobs/work` | `{}` | `{job, workspace, brief, effort, accepted, accept_by_ms, deadline_ms, no_questions}` or `{job: null}`. **Poll every few seconds.** Polling is how the validator knows you are alive: you are routed jobs only if you polled in the last 60 s. |
+| `/v1/jobs/work` | `{}` | `{job, workspace, brief, effort, accepted, accept_by_ms, deadline_ms, no_questions}` or `{job: null}`, plus `cancelled: <job>` when the client cancelled your last job. **Poll every few seconds.** Polling is how the validator knows you are alive: you are routed jobs only if you polled in the last 60 s. |
 | `/v1/jobs/accept` | `{job}` | Within **2 minutes** of the assignment. Your deadline then starts: low 30, medium 60, high 120, max 180 minutes. |
 | `/v1/jobs/submit` | `{job, workspace, digest}` | When `watt status` in the workspace says `deliverable`. `digest` is the digest it reports. The workspace is frozen (read-only to you) at once. |
 | `/v1/jobs/reject` | `{job, category, message}` | Instead of building. `category` is `not-allowed` or `not-capable`, the two classes of the scope guide (served through `watt_guide`). `message` is written for the client. |
@@ -109,6 +109,10 @@ All calls are signed POSTs to `$VALIDATOR_URL`.
   practice quota. Work in it, not in a workspace of your own.
 - At the deadline, an accepted job is judged as it stands (frozen and gated). Late and failing counts as a timeout.
 - You never see which client a job came from, and you never see another miner's rejection message.
+- **A cancelled job.** When the client cancels, `work` answers `cancelled` with the job's id (until you accept another
+  job), and `accept`, `submit` and `reject` of it answer 410. Stop your agent at once: nobody is scored on a cancelled
+  job. You get no new job for 45 s after a cancel, and the first one after it is not scored if you miss its accept
+  window -- but keep stopping fast, because the next ones are.
 
 ### The client's questions and answers
 
@@ -272,8 +276,10 @@ This repository ships two miners:
 - **`cadmind-einstein-miner`** (`cadmind_einstein/agent_miner.py`): a complete reference miner. It gets and stores
   the key (mode 0600), writes the MCP config, requests admission, polls, accepts, runs your agent CLI in an empty
   directory restricted to the Watt MCP server and the local `fetch_to_workspace` and `time_left` tools, keeps polling while the agent
-  works, and submits `DONE <digest>` or sends `REJECT <category>: <message>`. By default it runs Claude Code's CLI
-  (`claude -p`, `--strict-mcp-config`, `--allowedTools mcp__cadmind-watt,mcp__cadmind-fetch__fetch_to_workspace,mcp__cadmind-fetch__time_left`);
+  works -- stopping it, its whole process group, when the job is cancelled -- and submits `DONE <digest>` or sends
+  `REJECT <category>: <message>`. By default it runs Claude Code's CLI
+  (`claude -p`, `--strict-mcp-config`, `--allowedTools mcp__cadmind-watt,mcp__cadmind-fetch__fetch_to_workspace,mcp__cadmind-fetch__time_left`,
+  and `--disallowedTools` for the built-in shell, file, web, notebook and task tools);
   `--no-local-fetch` leaves the local tool out; `--agent-cli`, `--model` and `--agent-arg` configure it, and
   `--agent-command` runs any other agent CLI from an argv template. Your CLI uses whatever credentials you have
   configured for it.
@@ -292,7 +298,9 @@ This repository ships two miners:
 
 Restrict the agent to the MCP tools (and, if you like, the local fetch tool): it needs no shell and no files of
 yours, because everything happens in the job
-workspace. Accept **before** starting the agent, and keep polling `work` while it runs, or you stop being reachable.
+workspace. The brief is written by a client you do not know: treat it as untrusted input. Run the agent in a container
+(or a separate user) that holds no wallet, no hotkey or coldkey file and no credentials beyond the agent CLI's own and
+the job's agent key, so a brief that steers the agent cannot read or send anything else of yours. Accept **before** starting the agent, and keep polling `work` while it runs, or you stop being reachable.
 The harness is where you compete: planning, reading `watt check` output, recovering from a failed guard and keeping
 compute low all show up in your score.
 
