@@ -169,11 +169,20 @@ each `watt` command: a change the client sends mid-job arrives there (brief/chan
 so does a photo (brief/photo-*: look at it with `view_image`)."""
 
 
+STYLE = """ This is a STYLE ROUND on a delivered device (its watt.toml has [style]): the client's \
+words are in brief/style-*.md and the image they picked is brief/photo-*-1 (the device as \
+delivered, rendered, is brief/photo-*-2); look at both with `view_image`. Read the primer's \
+"Reshaping (a style round)": change printed shapes only (features, sizes, rounds, lofts, where a \
+cover parts); the function is settled and Watt refuses any change to it (W0220), and so does the \
+validator. Record each shape choice as a decided agent decision found_by the style brief."""
+
+
 def questions_rule(work: dict[str, Any], ws: str) -> str:
     """What the prompt says of the client's questions and answers: ask and keep building (and check
     for answers after each step), or, when the client asked not to be asked (``no_questions``),
-    decide."""
-    return (NO_QUESTIONS if work.get("no_questions") else QUESTIONS).replace("{ws}", ws)
+    decide. A style round (``style``) adds what it may change."""
+    rule = (NO_QUESTIONS if work.get("no_questions") else QUESTIONS).replace("{ws}", ws)
+    return rule + (STYLE if work.get("style") else "")
 
 
 def _write_private(path: Path, data: str) -> None:

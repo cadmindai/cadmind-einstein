@@ -88,6 +88,7 @@ from .scoring import JobOutcome, Ledger, size_class
 from .sealing import seal, valid_public
 from .similarity import CopyCheck, CopyPolicy, Entry, fingerprint
 from .store import Store
+from .style import check as style_check
 
 SUSPENDED = "agent_suspended"
 """The platform's code for a miner Watt's telemetry suspended (its key deleted, none minted)."""
@@ -297,12 +298,26 @@ class Job:
     no_questions: bool = False
     """the client asked not to be asked questions (an API job always does): the builder decides
     every would-be question itself, and the gate refuses a delivery with a client decision open"""
+    style: dict[str, Any] = field(default_factory=dict)
+    """a style round (cadmind-watt ADR-020): ``baseline``, the settled contract the round began
+    from, as the platform's ``watt style begin`` answered it; the gate refuses a delivery that did
+    not keep it (:mod:`.style`). Empty on every other job."""
 
     @property
     def current(self) -> Attempt | None:
         return (
             self.attempts[-1] if self.attempts and self.state in ("assigned", "working") else None
         )
+
+
+def _style_of(value: Any) -> dict[str, Any]:
+    """A claim's ``style`` (a style round's baseline), kept when it names a contract."""
+    if not isinstance(value, Mapping):
+        return {}
+    baseline = value.get("baseline")
+    if not isinstance(baseline, Mapping) or not baseline.get("contract"):
+        return {}
+    return {"baseline": dict(baseline)}
 
 
 def _job_from(row: Mapping[str, Any]) -> Job:
@@ -915,6 +930,8 @@ class Desk:
                 "deadline_ms": a.deadline_ms,
                 # the client asked not to be asked questions: decide them, leave none open
                 "no_questions": job.no_questions,
+                # a style round: printed shapes only; Watt refuses a change of function (W0220)
+                **({"style": True} if job.style.get("baseline") else {}),
             }
 
     def failures(self, hotkey: str, limit: int = 20) -> list[dict[str, Any]]:
@@ -1168,6 +1185,7 @@ class Desk:
                 created_ms=self.now_ms(),
                 queued_ms=self.now_ms(),
                 no_questions=body.get("no_questions") is True,
+                style=_style_of(body.get("style")),
             )
         return self.status(job_id)
 
@@ -1985,6 +2003,15 @@ class Desk:
             return verdict
         return {**verdict, "deliverable": False, "stage": "answers", "error": why}
 
+    @staticmethod
+    def _style_gate(job: Job, verdict: dict[str, Any], export: bytes) -> dict[str, Any]:
+        """A style round's delivery keeps the settled contract it began from (:mod:`.style`), read
+        from the validator's own export of its fork, after its own ``watt report``."""
+        why = style_check(export, job.style.get("baseline"))
+        if not why:
+            return verdict
+        return {**verdict, "deliverable": False, "stage": "style", "error": why}
+
     def _judge_once(self, job: Job, a: Attempt) -> None:
         """Freeze, fork, gate the fork (:meth:`_gate`), copy-check, score. An error on our side --
         the platform unreachable, 5xx, a timeout, our own key busy or over its rate or quota, our
@@ -2011,6 +2038,10 @@ class Desk:
                 if job.kind == "client":
                     verdict = self._read_export(
                         verdict, lambda: self._answers_gate(job, a, verdict, export)
+                    )
+                if job.kind == "client" and verdict["deliverable"] and job.style.get("baseline"):
+                    verdict = self._read_export(
+                        verdict, lambda: self._style_gate(job, verdict, export)
                     )
         except _GateTimeoutError as e:
             with self._mut():

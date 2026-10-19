@@ -7,6 +7,13 @@ All notable changes to this project are listed here. The format follows
 
 ## [Unreleased]
 
+### Added
+- Style rounds (cadmind-watt ADR-020): a claim may carry `style.baseline`, the settled contract the platform's
+  `watt style begin` answered for the delivered version the round reshapes. The validator's gate refuses a delivery
+  whose own `watt report` shows another contract digest, another set of bought and world items, or any item more than
+  0.001 mm or 0.001 degree from where it was delivered (stage `style`; `cadmind_einstein/style.py`). `work` says
+  `style: true`, and the reference miner's prompt says what a style round may change.
+
 ### Changed
 - The reference miner's prompt tells its agent where the client's photos are (`brief/photo-*`, named in the brief,
   and a photo sent with a change, listed by `client_answers` as kind `photo`) and to look at each with `view_image`.

@@ -104,6 +104,12 @@ validator: freeze on submit, fork, read Watt's verdict (the gate), copy check, s
   (`no_questions`; every job opened through the developer API) must leave no client decision open: each would-be
   question is the builder's own decision (`by = "agent"`, `status = "decided"`), which the client sees as an
   assumption. Either failure is a gate failure, with the reason in the miner's receipt.
+- **A style round** (cadmind-watt ADR-020) reshapes a delivered device's printed parts and nothing else. Its claim
+  carries the settled contract the round began from (`style.baseline`: the contract digest and where every bought and
+  world item sits, as the platform's `watt style begin` answered it). On its own export of the fork, after its own
+  `watt report`, the validator checks (`cadmind_einstein/style.py`) that `build/report.json`'s `contract` is the same
+  digest with the same items, each within 0.001 mm and 0.001 degree; otherwise the attempt fails the gate (stage
+  `style`), the differences named in the miner's receipt.
 - **Any attempt that does not pass** -- a rejection, a gate failure, a timeout (not accepted within 2 minutes, or
   late and failing), a copy -- sends the job to **another miner, from scratch**: the brief (or the seed) only, never
   the failed project, and never an earlier miner's rejection message. Each miner decides on its own.
