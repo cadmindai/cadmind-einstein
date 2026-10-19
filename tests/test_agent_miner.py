@@ -92,6 +92,13 @@ class TestAgentArgv(unittest.TestCase):
         self.assertIn("time_left", text)
         self.assertIn("DONE <digest>", text)
 
+    def test_the_prompt_says_where_the_clients_photos_are_and_to_look_at_them(self) -> None:
+        from cadmind_einstein.agent_miner import NO_QUESTIONS, QUESTIONS
+
+        for text in (PROMPT, QUESTIONS, NO_QUESTIONS):
+            self.assertIn("brief/photo-*", text)
+            self.assertIn("view_image", text)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -107,7 +107,10 @@ PROMPT = """You are a CADmind einstein miner. Build this client's device in the 
 `{ws}` (made from the brief), using ONLY the {server} MCP tools (and the local \
 `fetch_to_workspace` tool when it is there).
 
-Start with `watt_guide` (brief, then primer, then scope). Work fast and carefully:
+Start with `watt_guide` (brief, then primer, then scope). The client's photos, when they sent \
+any (the brief names them), are in the workspace's brief/ (brief/photo-*): look at each with \
+`view_image` before you design; they are the client's evidence, as binding as their words. Work \
+fast and carefully:
 1. First write DESIGN-NOTES.md: how the device is made, installed, used and serviced, what can go \
 wrong at each step and the requirement/test proving it does not; every critical number sourced \
 (fetched into the project's assets/), never invented. Prefer the maker's own product page, \
@@ -151,7 +154,8 @@ gave): each new answer is a file under brief/ (the client's words). Record it in
 (status = "answered", choice = the option they picked, answer = { from = "client: <their words, \
 quoted from that file> (cadmind.ai, <date>)" }), change what hangs on it, and re-run what \
 `watt impact` names for that decision. A change request (brief/change-*.md) is the client's too: \
-do what it asks. The validator refuses a delivery that leaves an answer unrecorded. Use \
+do what it asks; a photo they send (kind photo, brief/photo-*) is theirs: look at it with \
+`view_image`. The validator refuses a delivery that leaves an answer unrecorded. Use \
 `wait_for_answer` only when no useful work can go on under the assumptions (it waits briefly). \
 If `client_answers` says `no_questions: true`, the client asked not to be asked: decide every \
 would-be question yourself instead (by = "agent", status = "decided", choice, because)."""
@@ -161,7 +165,8 @@ Decide every would-be question yourself as an agent decision (by = "agent", stat
 choice = the option you build on, because = why), so the client sees it as an assumption on the \
 result. \
 The validator refuses a delivery with an open client decision. Still call `client_answers` after \
-each `watt` command: a change the client sends mid-job arrives there (brief/change-*.md)."""
+each `watt` command: a change the client sends mid-job arrives there (brief/change-*.md), and \
+so does a photo (brief/photo-*: look at it with `view_image`)."""
 
 
 def questions_rule(work: dict[str, Any], ws: str) -> str:

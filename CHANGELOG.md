@@ -5,6 +5,15 @@ All notable changes to this project are listed here. The format follows
 [Semantic Versioning](https://semver.org/). Each release's spec version (`10000*MAJOR + 100*MINOR + PATCH`) is the
 `version_key` the validator sets weights with.
 
+## [Unreleased]
+
+### Changed
+- The reference miner's prompt tells its agent where the client's photos are (`brief/photo-*`, named in the brief,
+  and a photo sent with a change, listed by `client_answers` as kind `photo`) and to look at each with `view_image`.
+  The platform now writes a client's photos into the job workspace's `brief/` (with the brief, with a change while the
+  job is built, and with a change on the result), as Watt's own designer gets them; before, they never reached the miner.
+  MINER.md says the same.
+
 ## [0.3.5] - unreleased
 
 ### Added
