@@ -10,6 +10,7 @@ from typing import Any
 from cadmind_einstein.agent_miner import questions_rule
 from cadmind_einstein.style import check, compare, relative_angle_deg
 from tests.test_einstein import GOOD, TestDesk, project_zip, wait_state
+from tests.test_einstein_answers import OPEN
 
 BASELINE = {
     "version": "watt-contract 1",
@@ -100,6 +101,54 @@ class TestDeskStyle(unittest.TestCase):
         )
         self.assertNotIn("style", st["work"])
         self.assertEqual(st["result"]["label"], "delivered")
+
+
+class TestSettledOpenDecisions(unittest.TestCase):
+    """A client decision open when the version was delivered stays open through its style round
+    when the contract settles it (deciding it would change the contract): the no-questions gate
+    exempts it."""
+
+    tearDown = TestDesk.tearDown
+    tick = TestDesk.tick
+    enqueue = TestDesk.enqueue
+    poll = TestDesk.poll
+    assigned = TestDesk.assigned
+
+    def setUp(self) -> None:
+        TestDesk.setUp(self)  # type: ignore[arg-type]
+
+    def run_style(self, job: str, baseline: dict[str, Any], decisions: str) -> dict[str, Any]:
+        seed = self.p._new(files={**GOOD, "spec/decisions.toml": OPEN})
+        self.poll(*self.reg)
+        self.enqueue(
+            {
+                "job": job,
+                "brief": "Reshape it.",
+                "seed": seed,
+                "no_questions": True,
+                "style": {"baseline": baseline},
+            }
+        )
+        hk, w = self.assigned()
+        self.desk.accept(hk, job)
+        self.p.work(
+            w["workspace"],
+            {"spec/decisions.toml": decisions, "build/report.json": report()},
+            deliverable=True,
+        )
+        self.desk.submit(hk, job, w["workspace"], "d")
+        st = wait_state(self.desk, job, ("queued", "done"))
+        st["hotkey"] = hk
+        return st
+
+    def test_an_open_decision_of_the_version_stays_open(self) -> None:
+        st = self.run_style("o1", BASELINE, OPEN)
+        self.assertEqual(st["result"]["label"], "delivered", st)
+
+    def test_named_settled_decisions_are_the_only_ones_exempt(self) -> None:
+        st = self.run_style("o2", {**BASELINE, "settled_decisions": []}, OPEN)
+        self.assertEqual(st["state"], "queued")
+        self.assertIn("asked not to be asked", self.desk.failures(st["hotkey"])[-1]["why"])
 
 
 class TestStylePrompt(unittest.TestCase):

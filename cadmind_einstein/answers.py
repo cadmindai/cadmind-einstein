@@ -35,7 +35,7 @@ import re
 import time
 import tomllib
 import zipfile
-from collections.abc import Iterable, Mapping
+from collections.abc import Collection, Iterable, Mapping
 from dataclasses import dataclass
 from typing import Any
 
@@ -262,9 +262,17 @@ def project_files(export: bytes) -> tuple[dict[str, str], dict[str, str]]:
     return briefs, specs
 
 
-def check(export: bytes, *, before_ms: int = 0, no_questions: bool = False) -> str:
+def check(
+    export: bytes,
+    *,
+    before_ms: int = 0,
+    no_questions: bool = False,
+    kept_open: Collection[str] = (),
+) -> str:
     """The gate's answers check on a project export: '' when it passes, else the reason (for the
-    miner)."""
+    miner). ``kept_open``: client decisions that may stay open under ``no_questions`` -- a style
+    round's settled ones, open when the version was delivered (deciding one would change the
+    contract the round must keep)."""
     try:
         briefs, specs = project_files(export)
     except (zipfile.BadZipFile, OSError, ValueError):
@@ -279,7 +287,7 @@ def check(export: bytes, *, before_ms: int = 0, no_questions: bool = False) -> s
             "the client's answers are not all recorded: " + "; ".join(problems[:SAID]) + more
         )
     if no_questions:
-        still = open_client(decisions)
+        still = [i for i in open_client(decisions) if i not in set(kept_open)]
         if still:
             said.append(
                 "the client asked not to be asked questions, and client decision(s) "

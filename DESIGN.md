@@ -109,7 +109,9 @@ validator: freeze on submit, fork, read Watt's verdict (the gate), copy check, s
   world item sits, as the platform's `watt style begin` answered it). On its own export of the fork, after its own
   `watt report`, the validator checks (`cadmind_einstein/style.py`) that `build/report.json`'s `contract` is the same
   digest with the same items, each within 0.001 mm and 0.001 degree; otherwise the attempt fails the gate (stage
-  `style`), the differences named in the miner's receipt.
+  `style`), the differences named in the miner's receipt. A client decision the contract settles stays open through
+  the round (deciding it would change the contract), so the no-questions check exempts the baseline's
+  `settled_decisions`, or, when the baseline does not name them, the client decisions open in the version reshaped.
 - **Any attempt that does not pass** -- a rejection, a gate failure, a timeout (not accepted within 2 minutes, or
   late and failing), a copy -- sends the job to **another miner, from scratch**: the brief (or the seed) only, never
   the failed project, and never an earlier miner's rejection message. Each miner decides on its own.

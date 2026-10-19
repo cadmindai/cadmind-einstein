@@ -83,6 +83,7 @@ from dataclasses import asdict, dataclass, field
 from typing import Any, Protocol
 
 from .answers import check as answers_check
+from .answers import decisions_of, open_client, project_files
 from .platform import PlatformError
 from .scoring import JobOutcome, Ledger, size_class
 from .sealing import seal, valid_public
@@ -1987,7 +1988,11 @@ class Desk:
 
     @staticmethod
     def _answers_gate(
-        job: Job, a: Attempt, verdict: dict[str, Any], export: bytes
+        job: Job,
+        a: Attempt,
+        verdict: dict[str, Any],
+        export: bytes,
+        kept_open: frozenset[str] = frozenset(),
     ) -> dict[str, Any]:
         """The client's answers, checked on the validator's own export of its fork
         (:mod:`.answers`): every answer the platform wrote into the workspace's ``brief/`` before
@@ -1998,10 +2003,29 @@ class Desk:
             export,
             before_ms=a.submitted_ms or a.deadline_ms,
             no_questions=job.no_questions,
+            kept_open=kept_open,
         )
         if not why:
             return verdict
         return {**verdict, "deliverable": False, "stage": "answers", "error": why}
+
+    def _settled_open(self, job: Job) -> frozenset[str]:
+        """A style round's client decisions that stay open (cadmind-watt ADR-020: deciding one would
+        change the contract it keeps): the baseline's ``settled_decisions`` when it names them, else
+        the client decisions open in the version it reshapes (its seed). Empty on any other job."""
+        baseline = job.style.get("baseline") if job.style else None
+        if not isinstance(baseline, Mapping):
+            return frozenset()
+        named = baseline.get("settled_decisions")
+        if isinstance(named, list):
+            return frozenset(str(d) for d in named)
+        if not job.seed:
+            return frozenset()
+        try:
+            seed = project_files(self.platform.export(job.seed))[1]
+        except Exception:  # noqa: BLE001 -- unread, nothing is exempt: the stricter gate
+            return frozenset()
+        return frozenset(open_client(decisions_of(seed)))
 
     @staticmethod
     def _style_gate(job: Job, verdict: dict[str, Any], export: bytes) -> dict[str, Any]:
@@ -2036,8 +2060,9 @@ class Desk:
             if verdict["deliverable"]:
                 export = self.platform.export(fork)
                 if job.kind == "client":
+                    kept_open = self._settled_open(job)
                     verdict = self._read_export(
-                        verdict, lambda: self._answers_gate(job, a, verdict, export)
+                        verdict, lambda: self._answers_gate(job, a, verdict, export, kept_open)
                     )
                 if job.kind == "client" and verdict["deliverable"] and job.style.get("baseline"):
                     verdict = self._read_export(

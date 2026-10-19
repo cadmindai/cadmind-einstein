@@ -12,7 +12,8 @@ All notable changes to this project are listed here. The format follows
   `watt style begin` answered for the delivered version the round reshapes. The validator's gate refuses a delivery
   whose own `watt report` shows another contract digest, another set of bought and world items, or any item more than
   0.001 mm or 0.001 degree from where it was delivered (stage `style`; `cadmind_einstein/style.py`). `work` says
-  `style: true`, and the reference miner's prompt says what a style round may change.
+  `style: true`, and the reference miner's prompt says what a style round may change. The no-questions check leaves
+  a style round's settled client decisions open (the baseline's `settled_decisions`, else those open in its seed).
 
 ### Changed
 - The reference miner's prompt tells its agent where the client's photos are (`brief/photo-*`, named in the brief,
