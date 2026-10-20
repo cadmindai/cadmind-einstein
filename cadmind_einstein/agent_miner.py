@@ -174,7 +174,10 @@ words are in brief/style-*.md and the image they picked is brief/photo-*-1 (the 
 delivered, rendered, is brief/photo-*-2); look at both with `view_image`. Read the primer's \
 "Reshaping (a style round)": change printed shapes only (features, sizes, rounds, lofts, where a \
 cover parts); the function is settled and Watt refuses any change to it (W0220), and so does the \
-validator. Record each shape choice as a decided agent decision found_by the style brief."""
+validator. Record each shape choice as a decided agent decision found_by the style brief. \
+Then list every visible difference between the picked image and the delivered render, and \
+answer each: build it, or say in such a decision why not. Sizes are free: a feature too thin to \
+round can be made thicker."""
 
 
 def questions_rule(work: dict[str, Any], ws: str) -> str:
