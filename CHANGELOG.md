@@ -7,6 +7,13 @@ All notable changes to this project are listed here. The format follows
 
 ## [Unreleased]
 
+## [0.3.7] - 2026-10-20
+
+### Changed
+- The reference miner's style-round prompt asks its agent to list every visible difference between the picked
+  image and the delivered render and, for each, build it or record a decided agent decision saying why not; sizes are
+  free in a style round, so a feature too thin to round can be thickened.
+
 ## [0.3.6] - 2026-10-20
 
 ### Added
