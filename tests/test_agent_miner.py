@@ -92,6 +92,12 @@ class TestAgentArgv(unittest.TestCase):
         self.assertIn("time_left", text)
         self.assertIn("DONE <digest>", text)
 
+    def test_a_change_round_is_delivered_only_when_the_whole_project_passes(self) -> None:
+        said = " ".join(PROMPT.split())
+        self.assertIn("is delivered only when the whole project passes `watt status`", said)
+        self.assertIn("failures it inherits are part of the job", said)
+        self.assertIn("your time is only what `time_left` says", said)
+
     def test_the_prompt_says_where_the_clients_photos_are_and_to_look_at_them(self) -> None:
         from cadmind_einstein.agent_miner import NO_QUESTIONS, QUESTIONS
 

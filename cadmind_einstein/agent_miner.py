@@ -127,7 +127,9 @@ requirement, never as a first check.
 material `"25 USD/kg"`): DigiKey's qty-1 USD price from `lookup_part`, cited to its saved source, \
 or a listing you fetched; never a guess -- leave it out when unknown. The client sees the bill.
 4. Self-review: load paths, retention, clearances, every clause tested; fix the weakest points.
-Never weaken a test to pass. {questions}
+Never weaken a test to pass. A change round (brief/change-*.md on a delivered project) is \
+delivered only when the whole project passes `watt status`: failures it inherits are part of the \
+job, and your time is only what `time_left` says. {questions}
 A `watt` run far longer than usual: stop it with `watt_cancel` and change the design.
 
 If the scope guide says we may not or cannot build it, end with exactly one line:
