@@ -29,7 +29,10 @@ recovers) is what miners compete on.
   unit of inference a miner spends is on a real client's job, and the miner's output *is* the job's result.
 - **Watt is the gate; the client is the grader.** Watt decides whether an output is usable (deliverable). How good
   it is comes from the client's own reaction. There is no LLM grader.
-- **Never deliver a failure because one miner failed.** A failing attempt goes to another miner from scratch.
+- **Never throw away a builder's work.** An attempt a miner worked and did not finish ends the round "not
+  finished": its project is kept, and the client may pay for a round that continues it (on any miner, free to start
+  over from the base). Only an attempt nobody worked (not accepted, a copy, a rejection) goes to another miner from
+  scratch.
 - **Nobody is penalised for a job nobody could do.** Fairness is judged on the whole job, not on one attempt.
 - **All emission goes to miners.** Weights are never burned and the subnet owner's hotkey is never weighted. There
   is no team miner.
@@ -73,9 +76,11 @@ validator: freeze on submit, fork, read Watt's verdict (the gate), copy check, s
   from the brief (or, for a later round of a client's project, from the delivered project), granted to that miner's
   key. The miner cannot delete it and it does not count against the miner's own practice quota.
 - **Accept, work, submit -- or reject.** The miner sees the job on `work`, must `accept` within 2 minutes, and
-  `submit {job, workspace, digest}` before the effort's deadline (low 30, medium 60, high 120, max 180 minutes). On
+  `submit {job, workspace, digest, summary?}` before the effort's deadline (low 30, medium 60, high 120, max 180 minutes). On
   submit -- or at the deadline -- the workspace is **frozen** (read-only for the miner) and its compute meter read.
-  Instead of building, the agent may `reject {job, category, message}`, `category` being `not-allowed` or
+  `summary`, optional, is the builder's own words on what still blocks delivery when it hands over a project that
+  is not deliverable (the client reads it; whitespace collapsed, at most 2000 characters). Instead of building,
+  the agent may `reject {job, category, message}`, `category` being `not-allowed` or
   `not-capable` (the two classes of the published scope guide, served to agents through `watt_guide`), with a
   message written for the client.
 - **Throughput scales with miners:** N available miners serve up to N jobs at once, bounded by the agent bench's
@@ -112,32 +117,39 @@ validator: freeze on submit, fork, read Watt's verdict (the gate), copy check, s
   `style`), the differences named in the miner's receipt. A client decision the contract settles stays open through
   the round (deciding it would change the contract), so the no-questions check exempts the baseline's
   `settled_decisions`, or, when the baseline does not name them, the client decisions open in the version reshaped.
-- **Any attempt that does not pass** -- a rejection, a gate failure, a timeout (not accepted within 2 minutes, or
-  late and failing), a copy -- sends the job to **another miner, from scratch**: the brief (or the seed) only, never
-  the failed project, and never an earlier miner's rejection message. Each miner decides on its own.
+- **An attempt the miner worked that does not pass** -- a gate failure, or late and failing -- **ends the round
+  "not finished"** (section "Continuing an unfinished round"): its project is kept, not charged, and the client may
+  pay for a round that continues it.
+- **Any other attempt that does not pass** -- a rejection, a timeout before accepting (not accepted within 2
+  minutes), a copy -- sends the job to **another miner, from scratch**: the brief (or the seed) only, never an
+  earlier miner's rejection message. Each miner decides on its own.
 - **How a job ends** (judged on the whole job):
 
   | What happened | The job | Charged | Scores |
   |---|---|---|---|
   | an attempt passes the gate | **delivered** | yes, once | the passing miner scores; every earlier rejection or gate failure on this job scores 0 |
+  | a worked attempt does not pass (gate failure, or late and failing) | **not finished**: its project kept, the builder's summary for the client | no | a timeout already scored 0; held rejections and the gate failure count (0) unless two coldkeys gave them |
   | two rejections, from two coldkeys | **declined**: the client reads both messages; the brief is flagged for review | no | nobody penalised |
-  | two substantive failures from two coldkeys, a gate failure among them | **out of reach** | no | nobody penalised |
-  | four attempts without either of the above (timeouts, copies) | **didn't finish** | no | each timeout and copy already scored 0; held rejections and failures count (0) unless two coldkeys gave them |
+  | four attempts without either of the above (timeouts before accepting, copies) | **didn't finish** | no | each timeout and copy already scored 0; held rejections count (0) unless two coldkeys gave them |
 
-- **A second opinion is another owner's.** A job one miner rejected or failed goes next to a miner of another
+  Earlier releases also ended a job **out of reach** (two substantive failures from two coldkeys); a worked failure
+  now ends the round at once, so that ending is no longer reached.
+
+- **A second opinion is another owner's.** A job one miner rejected goes next to a miner of another
   coldkey; only after `--second-opinion-wait-s` (30 minutes) may any other miner take it, and that miner's opinion
   is then not a second one. A job ends declined or out of reach only on opinions from `--second-opinion-coldkeys`
   (2) distinct coldkeys, and an undelivered job whose rejections and failures all came from fewer coldkeys counts
   them (0) instead of dropping them. So hotkeys of one owner cannot end a hard job for free between them.
 
 - Timeouts and copies score 0 at once: reliability and honesty are the miner's alone. A rejection or a gate failure
-  is **held**: it scores 0 only when another miner passes the same job. That is what stops miners rejecting hard
+  is **held**: it scores 0 when another miner passes the same job, or when the job ends undelivered on the opinions
+  of fewer than two coldkeys -- so a round one miner ends "not finished" by a gate failure counts it 0. That is what stops miners rejecting hard
   work -- a rejection another miner overturns is a failed job -- while a genuinely impossible or forbidden brief
   costs nobody anything.
 - A `not-allowed` rejection always gets a second, independent opinion: one rejection never ends a job, otherwise
   "not allowed" would be the cheapest way to skip work.
 - A miner that deregisters mid-job, or is disabled for abuse, loses the job without a score, and that attempt does
-  not count toward the four-attempt cap.
+  not count toward the four-attempt cap; nothing of its workspace is kept.
 - A client's **re-run** is a new job, routed away from the miners that had the first one, and a mild negative signal
   for the first job. A client may **cancel** a claimed job: it is frozen, its miner freed, nobody scored, nothing
   charged.
@@ -147,7 +159,8 @@ validator: freeze on submit, fork, read Watt's verdict (the gate), copy check, s
 ```
 timeout or copy:                                  s = 0, at once
 rejection or gate failure, another miner passes:  s = 0
-rejection or gate failure, nobody passes:         no score (declined / out of reach)
+gate failure ending a round "not finished":       s = 0 (one owner's opinion)
+rejections from two coldkeys:                     no score (declined)
 passing job:   I = 0.5 + 0.3·E + 0.2·T            immediate: passed the gate, efficiency, on time
                s = 0.4·I + 0.6·(w·C + (1 - w)·I)  ~40% immediate, ~60% the client's signal
 ```
@@ -188,6 +201,36 @@ passing job:   I = 0.5 + 0.3·E + 0.2·T            immediate: passed the gate, 
 - **The subnet owner's hotkey is never weighted** (weighting it would burn miner emission, and the chain scales a
   subnet's emission down for owner incentive), nor is the validator's own uid. These are dropped again at the last
   step before the chain call, whatever the scorer produced.
+
+### Continuing an unfinished round
+
+A round that runs out of time (or hands over a project that does not pass) used to go to another miner from
+scratch, throwing the first builder's work away; after two or four tries the job ended with nothing kept. Now:
+
+- **The round ends after one worked attempt that does not deliver** (a gate failure, or late and failing). Its
+  project -- the validator's fork of the frozen workspace, kept as a delivery's is, the platform's keep and retention
+  -- is named in the result: `{label: "not finished", charge: false, workspace, digest, stage, error, summary,
+  summary_by, hotkey, attempts, messages, why}`. `summary` is the builder's own words (`submit`'s `summary`,
+  `summary_by: "builder"`) or, when it gave none, a sentence from the gate's stage and error (`"gate"`). Nothing is
+  charged.
+- **The client chooses.** It may pay for a round that continues it, at a normal round's price; which miner gets that
+  round is the router's choice, as for any job. Its claim carries `seed` (the unfinished project) and `continuation:
+  {base}` -- the operator's workspace of the project's last delivered version, or `""` when there is none.
+- **The continuing builder chooses too.** Its workspace starts as the unfinished project. The grant
+  (`POST /api/agent/subnet/workspaces {..., seed, continuation: true, base?}`) also gives it, when there is a
+  delivered version, a read-only fork of that version (`reference`); `work` says `continuation: true` and `base:
+  {kind: "delivered", workspace: <reference>}` or `{kind: "brief"}`. To start over it rewrites `spec/`, `src/` and
+  `tests/` from the reference (read with `list_files`/`read_file`), or clears them and builds from `brief/`. No new
+  tool: any miner that can read and write files can do it.
+- **Rejections are unchanged**: two coldkeys must reject to decline a job.
+- **No farming.** Only a delivery is paid. A "not finished" round's timeout scores 0 at once, and its held gate
+  failure counts 0 whenever the round's opinions came from one owner -- always, when one miner ended it -- so ending
+  rounds unfinished lowers a miner's quality (the router's) and adds nothing to its weight. The abuse counters see
+  every such attempt as before: gate failures (`failed`, the per-coldkey watch), timeouts (the ledger), the miner's
+  receipt (`failures`); the hourly `watch.endings_by_coldkey` adds a `not_finished` count.
+- **Copies.** A continuation's output shares most of its features with its seed and, when its builder started over,
+  with the delivered base: the copy check subtracts the seed's features and the base's (section 9), so neither
+  makes the continuing builder a copier of the earlier builders.
 
 ## 6. Admission and routing
 
@@ -265,7 +308,7 @@ edits do not change:
 - **Other text** (and Python that does not parse): each normalised line of eight or more characters.
 
 Before comparing, the validator subtracts what honest builds share: the features of the project the job started
-from (its seed), of a corpus of public example projects (`--copy-corpus`: project folders or export zips, such as
+from (its seed, and for a continuation its base too), of a corpus of public example projects (`--copy-corpus`: project folders or export zips, such as
 the worked example), and the **common set** -- features present in non-copy outputs of `--copy-common-coldkeys` (3)
 distinct coldkeys other than the two compared. Outputs judged copies never feed the common set, and one coldkey's
 hotkeys count once, so a copier cannot make its victim's features common.

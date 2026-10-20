@@ -7,6 +7,27 @@ All notable changes to this project are listed here. The format follows
 
 ## [Unreleased]
 
+## [0.3.9] - 2026-10-20
+
+### Changed
+- A round ends after one attempt the miner worked that does not deliver (a gate failure, or late and failing):
+  the result is `not finished`, not charged, naming the validator's fork of the project (kept, no longer deleted),
+  the gate's `stage` and `error`, and a `summary` of what blocks delivery -- the builder's own words when it gave
+  them (`summary_by: "builder"`), else a sentence from the gate (`"gate"`). It no longer goes to another miner from
+  scratch, so the `out of reach` ending is no longer reached. Not-accepted timeouts, copies and rejections keep their
+  rules (another miner, from scratch; two coldkeys to decline). Scoring is unchanged: a timeout scores 0 at once and
+  a held gate failure counts 0 unless the job's opinions came from two coldkeys.
+
+### Added
+- Continuations: a claim may carry `continuation: {base}`, its `seed` the unfinished project and `base` the
+  operator's workspace of the last delivered version (`""`: none). The validator grants it with
+  `continuation: true` (and `base`), the platform answering a read-only fork of the base (`reference`); `work` says
+  `continuation: true` and `base: {kind: "delivered", workspace}` or `{kind: "brief"}`. The copy check subtracts the
+  base's features as well as the seed's.
+- `submit` takes an optional `summary`. The reference miner ends an unfinished job with `UNFINISHED: <what blocks
+  delivery>` and sends it as the summary; its prompt says what a continuation is and how to start over.
+- The hourly report's `watch.endings_by_coldkey` counts `not_finished` endings.
+
 ## [0.3.8] - 2026-10-20
 
 ### Changed

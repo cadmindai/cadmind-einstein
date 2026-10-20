@@ -138,7 +138,11 @@ Otherwise work until `watt` status says deliverable and `client_answers` has not
 answer that came is recorded first, and the design made deliverable again), then end with exactly \
 one line:
 DONE <digest>
-(the digest `watt` status reports). You have about {minutes} minutes, until {deadline_utc} \
+(the digest `watt` status reports). If time runs out before it is deliverable, end instead with \
+exactly one line:
+UNFINISHED: <what still blocks delivery, in plain words for the client>
+(your work is kept, and the client may pay for a round that continues it). You have about \
+{minutes} minutes, until {deadline_utc} \
 UTC. You cannot feel time pass: check it with `time_left` (never guess it), and never stop \
 or hand over early because you think time is up.
 
@@ -182,12 +186,34 @@ answer each: build it, or say in such a decision why not. Sizes are free: a feat
 round can be made thicker."""
 
 
+CONTINUATION = """ This is a CONTINUATION: the workspace holds an unfinished project an earlier \
+builder could not finish; read its REVIEW/DESIGN-NOTES and `watt status`, then continue it, or \
+start over from the base if the work is on a wrong path ({base})."""
+
+BASE_DELIVERED = """the base is the last delivered version: the read-only workspace `{ref}`, read \
+with `list_files` and `read_file`"""
+
+BASE_BRIEF = """the base is the brief: clear spec/, src/ and tests/ and build from brief/"""
+
+
+def continuation_rule(work: dict[str, Any]) -> str:
+    """What the prompt says of a continuation (``continuation``): continue the unfinished project,
+    or start over from its base: the last delivered version (read-only) or the brief."""
+    if not work.get("continuation"):
+        return ""
+    base = work.get("base") if isinstance(work.get("base"), dict) else {}
+    ref = str(base.get("workspace") or "") if base.get("kind") == "delivered" else ""
+    said = BASE_DELIVERED.replace("{ref}", ref) if ref else BASE_BRIEF
+    return CONTINUATION.replace("{base}", said)
+
+
 def questions_rule(work: dict[str, Any], ws: str) -> str:
     """What the prompt says of the client's questions and answers: ask and keep building (and check
     for answers after each step), or, when the client asked not to be asked (``no_questions``),
-    decide. A style round (``style``) adds what it may change."""
+    decide. A style round (``style``) adds what it may change; a continuation (``continuation``)
+    what it starts from."""
     rule = (NO_QUESTIONS if work.get("no_questions") else QUESTIONS).replace("{ws}", ws)
-    return rule + (STYLE if work.get("style") else "")
+    return rule + (STYLE if work.get("style") else "") + continuation_rule(work)
 
 
 def _write_private(path: Path, data: str) -> None:
@@ -500,6 +526,8 @@ def main(argv: list[str] | None = None) -> int:
             continue
         rej = re.search(r"^REJECT (not-allowed|not-capable):\s*(.+)$", text, re.MULTILINE)
         fin = re.search(r"^DONE\s+(\S+)\s*$", text, re.MULTILINE)
+        # what still blocks delivery, in the agent's own words, when it says (the client reads it)
+        left = re.search(r"^UNFINISHED:\s*(.+)$", text, re.MULTILINE)
         if rej and not job.startswith("admission-"):
             code, out = call(
                 "/v1/jobs/reject", {"job": job, "category": rej.group(1), "message": rej.group(2)}
@@ -507,7 +535,10 @@ def main(argv: list[str] | None = None) -> int:
             log(f"rejected {job}: {code} {out}")
         else:
             digest = fin.group(1) if fin else ""
-            code, out = call("/v1/jobs/submit", {"job": job, "workspace": ws, "digest": digest})
+            body = {"job": job, "workspace": ws, "digest": digest}
+            if left and not fin:
+                body["summary"] = left.group(1).strip()[:2000]
+            code, out = call("/v1/jobs/submit", body)
             log(f"submitted {job} digest={digest[:16] or '(none)'}: {code} {out}")
         done += 1
     stop.set()

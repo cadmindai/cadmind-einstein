@@ -15,7 +15,9 @@ miners' AI agents as checked engineering projects.
    builds and tests the project and runs a mutation guard that proves the tests really constrain the design.
 3. **The validator checks and scores it.** When the miner submits, the validator freezes and forks the workspace
    and gates the result with the hosted Watt check (running its own sample of the mutation guard). A passing result
-   is delivered to the client; a failing, late or copied one goes to another miner from scratch. Each job is scored
+   is delivered to the client. A worked attempt that fails or runs late ends the round "not finished": its project
+   is kept, and the client may pay for a round that continues it; a copied one goes to another miner from scratch.
+   Each job is scored
    from the gate, efficiency, timeliness and the **client's own reaction** (download, stars, change requests) --
    there is no LLM grader. Every hour the validator sets weights and publishes a report anyone can recompute.
 
@@ -335,7 +337,7 @@ Every answer on these routes is signed by the validator's hotkey (`X-Einstein-Va
 | `POST /v1/miners/admission` | `{}` | the entry test: a job assigned to this miner alone (once a day) |
 | `POST /v1/jobs/work` | `{}` | `{job, workspace, brief, effort, accepted, accept_by_ms, deadline_ms, no_questions}` or `{job: null}`, plus `cancelled: <job>` when the client cancelled the miner's last job; also the liveness poll |
 | `POST /v1/jobs/accept` | `{job}` | `{job, workspace, deadline_ms}`; 410 for a job its client cancelled (also `submit` and `reject`) |
-| `POST /v1/jobs/submit` | `{job, workspace, digest}` | `{job, state: "judging"}` |
+| `POST /v1/jobs/submit` | `{job, workspace, digest, summary?}` | `{job, state: "judging"}` |
 | `POST /v1/jobs/reject` | `{job, category, message}` | `category`: `not-allowed` or `not-capable` |
 | `POST /v1/miners/receipt` | `{}` | the miner's recent jobs and scores, its weight and quality, and its recent attempts that did not pass with why (`failures`) |
 
@@ -416,11 +418,14 @@ report's hash with the validator's on-chain commitment.
 - Agent keys are bound to a hotkey, sealed to the miner, rate-limited, metered and quota-limited on the platform.
 - Miners never learn which client a job came from; the router, not the miner, assigns jobs; free accounts' ratings
   weigh 0.1.
-- Rejections and gate failures are held and count against the miner only when another miner passes the job;
+- Rejections and gate failures are held and count against the miner when another miner passes the job, or when
+  the job ends undelivered on one owner's opinions (a "not finished" round ended by one miner's gate failure counts
+  it 0);
   rejection rates far above the fleet's, or repeatedly overturned rejections, disable the hotkey; the same rule
   applies to each coldkey's hotkeys together.
-- A rejected or failed job goes next to a miner of another coldkey, and only opinions from two coldkeys end a job
-  declined or out of reach: hotkeys of one owner cannot end hard jobs for free.
+- A rejected job goes next to a miner of another coldkey, and only rejections from two coldkeys end a job declined:
+  hotkeys of one owner cannot end hard jobs for free. A worked attempt that does not pass ends the round "not
+  finished" (its project kept, nothing charged) and is never a free exit: its timeout or held gate failure counts.
 - Copies score 0 and are reassigned. Outputs are compared as normalised features (Python statements with names,
   strings, comments and layout normalised; TOML values; other lines), so renaming, reformatting, commenting,
   reordering or padding a copy does not hide it; a copy is an identical digest, identical normalised features, or a

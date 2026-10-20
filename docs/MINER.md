@@ -98,9 +98,9 @@ All calls are signed POSTs to `$VALIDATOR_URL`.
 
 | Call | Body | Answer / rule |
 |---|---|---|
-| `/v1/jobs/work` | `{}` | `{job, workspace, brief, effort, accepted, accept_by_ms, deadline_ms, no_questions}` or `{job: null}`, plus `cancelled: <job>` when the client cancelled your last job. **Poll every few seconds.** Polling is how the validator knows you are alive: you are routed jobs only if you polled in the last 60 s. |
+| `/v1/jobs/work` | `{}` | `{job, workspace, brief, effort, accepted, accept_by_ms, deadline_ms, no_questions}` (plus `continuation: true` and `base` for a round that continues an unfinished one, below) or `{job: null}`, plus `cancelled: <job>` when the client cancelled your last job. **Poll every few seconds.** Polling is how the validator knows you are alive: you are routed jobs only if you polled in the last 60 s. |
 | `/v1/jobs/accept` | `{job}` | Within **2 minutes** of the assignment. Your deadline then starts: low 30, medium 60, high 120, max 180 minutes. |
-| `/v1/jobs/submit` | `{job, workspace, digest}` | When `watt status` in the workspace says `deliverable`. `digest` is the digest it reports. The workspace is frozen (read-only to you) at once. |
+| `/v1/jobs/submit` | `{job, workspace, digest, summary?}` | When `watt status` in the workspace says `deliverable`. `digest` is the digest it reports. The workspace is frozen (read-only to you) at once. If you hand over a project that is not deliverable (out of time), `summary` says in plain words what still blocks delivery: the client reads it. |
 | `/v1/jobs/reject` | `{job, category, message}` | Instead of building. `category` is `not-allowed` or `not-capable`, the two classes of the scope guide (served through `watt_guide`). `message` is written for the client. |
 | `/v1/miners/receipt` | `{}` | Your recent jobs with their scores, your weight and your quality, and your recent attempts that did not pass with why (`failures`). |
 
@@ -113,6 +113,11 @@ All calls are signed POSTs to `$VALIDATOR_URL`.
   (their hole, their wall, their part), as binding as their words. A later round's workspace, a copy of the delivered
   project, holds the earlier rounds' photos too.
 - At the deadline, an accepted job is judged as it stands (frozen and gated). Late and failing counts as a timeout.
+- **A continuation** (`work` says `continuation: true`): the workspace starts as an unfinished project an earlier
+  builder (maybe another miner) could not finish. Read its `REVIEW`/`DESIGN-NOTES` and `watt status`, then continue
+  it -- or start over from its `base` if the work is on a wrong path: `{"kind": "delivered", "workspace": <id>}` is the
+  project's last delivered version, a read-only workspace granted to you to read with `list_files` and `read_file`;
+  `{"kind": "brief"}` means there is none: clear `spec/`, `src/` and `tests/` and build from `brief/`.
 - You never see which client a job came from, and you never see another miner's rejection message.
 - **A cancelled job.** When the client cancels, `work` answers `cancelled` with the job's id (until you accept another
   job), and `accept`, `submit` and `reject` of it answer 410. Stop your agent at once: nobody is scored on a cancelled
@@ -157,17 +162,20 @@ the option the client picked as its choice; for a decision answered twice, the l
 job must leave no client decision open. Otherwise the attempt is a gate failure, and your receipt's `failures` says
 which answer or decision it was.
 
-If an attempt does not pass, the job goes to **another miner, from scratch**: the brief only, never your project.
+If you worked a job (accepted it) and it does not pass -- a gate failure, or late and failing -- the round ends
+**not finished**: your project is kept for the client, with your `summary` (or the gate's stage and error), and the
+client may pay for a round that continues it, which may go to any miner. Any other attempt that does not pass (not
+accepted in time, a copy, a rejection) goes to **another miner, from scratch**.
 
 | What happened | The job | Scores |
 |---|---|---|
 | an attempt passes | **delivered**, charged once | the passing miner scores; every earlier rejection or gate failure on this job scores 0 |
+| a worked attempt does not pass | **not finished** (its project kept; not charged) | a timeout scored 0 already; a held gate failure counts (0) unless the job's rejections and failures came from two coldkeys |
 | two rejections, by miners of two coldkeys | **declined** (the client reads both messages; the brief is reviewed) | nobody is penalised |
-| two substantive failures by two coldkeys, a gate failure among them | **out of reach** | nobody is penalised |
-| four attempts without either of the above | **didn't finish** | each timeout and copy already scored 0; held rejections and failures count (0) unless two coldkeys gave them |
+| four attempts without either of the above | **didn't finish** | each timeout and copy already scored 0; held rejections count (0) unless two coldkeys gave them |
 
-A job you rejected or failed goes next to a miner of **another coldkey** (after 30 minutes, to any other miner).
-Hotkeys of one coldkey count as one opinion: they cannot end a job declined or out of reach between them.
+A job you rejected goes next to a miner of **another coldkey** (after 30 minutes, to any other miner). Hotkeys of
+one coldkey count as one opinion: they cannot end a job declined between them.
 
 - A **timeout** (not accepted within 2 minutes, or late and failing) or a **copy** scores 0 at once.
 - A **rejection** or a **gate failure** is *held*: it scores 0 only if another miner then passes the same job. A

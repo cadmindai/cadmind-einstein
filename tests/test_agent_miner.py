@@ -105,6 +105,26 @@ class TestAgentArgv(unittest.TestCase):
             self.assertIn("brief/photo-*", text)
             self.assertIn("view_image", text)
 
+    def test_a_continuation_says_its_base_and_an_unfinished_round_says_what_blocks(self) -> None:
+        from cadmind_einstein.agent_miner import questions_rule
+
+        plain = questions_rule({}, "ag-1")
+        self.assertNotIn("CONTINUATION", plain)
+        delivered = " ".join(
+            questions_rule(
+                {"continuation": True, "base": {"kind": "delivered", "workspace": "ag-ref"}},
+                "ag-1",
+            ).split()
+        )
+        self.assertIn("This is a CONTINUATION", delivered)
+        self.assertIn("REVIEW/DESIGN-NOTES and `watt status`", delivered)
+        self.assertIn("read-only workspace `ag-ref`", delivered)
+        brief = " ".join(
+            questions_rule({"continuation": True, "base": {"kind": "brief"}}, "ag-1").split()
+        )
+        self.assertIn("clear spec/, src/ and tests/ and build from brief/", brief)
+        self.assertIn("UNFINISHED: <what still blocks delivery", PROMPT)
+
 
 if __name__ == "__main__":
     unittest.main()
