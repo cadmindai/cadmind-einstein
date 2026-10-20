@@ -106,7 +106,7 @@ class TestDeskStyle(unittest.TestCase):
 class TestSettledOpenDecisions(unittest.TestCase):
     """A client decision open when the version was delivered stays open through its style round
     when the contract settles it (deciding it would change the contract): the no-questions gate
-    exempts it."""
+    exempts exactly the baseline's ``settled_decisions``, and nothing without them."""
 
     tearDown = TestDesk.tearDown
     tick = TestDesk.tick
@@ -141,9 +141,14 @@ class TestSettledOpenDecisions(unittest.TestCase):
         st["hotkey"] = hk
         return st
 
-    def test_an_open_decision_of_the_version_stays_open(self) -> None:
-        st = self.run_style("o1", BASELINE, OPEN)
+    def test_an_open_decision_the_contract_settles_stays_open(self) -> None:
+        st = self.run_style("o1", {**BASELINE, "settled_decisions": ["mount"]}, OPEN)
         self.assertEqual(st["result"]["label"], "delivered", st)
+
+    def test_a_baseline_without_settled_decisions_exempts_nothing(self) -> None:
+        st = self.run_style("o3", BASELINE, OPEN)
+        self.assertEqual(st["state"], "queued")
+        self.assertIn("asked not to be asked", self.desk.failures(st["hotkey"])[-1]["why"])
 
     def test_named_settled_decisions_are_the_only_ones_exempt(self) -> None:
         st = self.run_style("o2", {**BASELINE, "settled_decisions": []}, OPEN)

@@ -83,7 +83,6 @@ from dataclasses import asdict, dataclass, field
 from typing import Any, Protocol
 
 from .answers import check as answers_check
-from .answers import decisions_of, open_client, project_files
 from .platform import PlatformError
 from .scoring import JobOutcome, Ledger, size_class
 from .sealing import seal, valid_public
@@ -2011,21 +2010,16 @@ class Desk:
 
     def _settled_open(self, job: Job) -> frozenset[str]:
         """A style round's client decisions that stay open (cadmind-watt ADR-020: deciding one would
-        change the contract it keeps): the baseline's ``settled_decisions`` when it names them, else
-        the client decisions open in the version it reshapes (its seed). Empty on any other job."""
+        change the contract it keeps): exactly the baseline's ``settled_decisions``, as Watt's
+        ``style begin`` answers them. A baseline without them exempts nothing (the stricter gate).
+        Empty on any other job."""
         baseline = job.style.get("baseline") if job.style else None
         if not isinstance(baseline, Mapping):
             return frozenset()
         named = baseline.get("settled_decisions")
-        if isinstance(named, list):
-            return frozenset(str(d) for d in named)
-        if not job.seed:
+        if not isinstance(named, list):
             return frozenset()
-        try:
-            seed = project_files(self.platform.export(job.seed))[1]
-        except Exception:  # noqa: BLE001 -- unread, nothing is exempt: the stricter gate
-            return frozenset()
-        return frozenset(open_client(decisions_of(seed)))
+        return frozenset(str(d) for d in named)
 
     @staticmethod
     def _style_gate(job: Job, verdict: dict[str, Any], export: bytes) -> dict[str, Any]:
