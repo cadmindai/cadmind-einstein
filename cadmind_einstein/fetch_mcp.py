@@ -297,10 +297,14 @@ def time_left(deadline_file: Path | None, now: float | None = None) -> dict[str,
 def said(out: dict[str, Any]) -> str:
     """What the agent reads of an upload: the platform's ``answer`` (Watt's short text: where it
     is stored, its sha256 and what to cite, the research line, the page's text), with the url
-    this tool was asked for when it was redirected; the platform's JSON when it gives none."""
+    this tool was asked for when it was redirected. A platform that gives no ``answer`` is older
+    than this tool: a FetchError that says so, and what was stored."""
     answer = out.get("answer")
     if not isinstance(answer, str):
-        return json.dumps(out, ensure_ascii=False, separators=(",", ":"))
+        raise FetchError(
+            f"the platform stored {out.get('path')} (sha256 {out.get('sha256')}) but answered no"
+            " text (`answer`): it is older than this tool; its operator updates it"
+        )
     return answer + (f"\nasked for {out['asked']} (redirected)" if out.get("asked") else "")
 
 
@@ -373,10 +377,10 @@ class Server:
                 )
             args = params.get("arguments") or {}
             try:
-                out = self.fetch_to_workspace(args if isinstance(args, dict) else {})
+                text = said(self.fetch_to_workspace(args if isinstance(args, dict) else {}))
             except FetchError as e:
                 return _result(ident, {"content": [_text(str(e))], "isError": True})
-            return _result(ident, {"content": [_text(said(out))]})
+            return _result(ident, {"content": [_text(text)]})
         return _error(ident, -32601, f"no method {method!r}")
 
     def serve(self, stdin: IO[str], stdout: IO[str]) -> None:

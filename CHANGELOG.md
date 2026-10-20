@@ -7,6 +7,17 @@ All notable changes to this project are listed here. The format follows
 
 ## [Unreleased]
 
+## [0.3.11] - 2026-10-20
+
+### Changed
+- The platform's MCP tools now answer a finished `watt` run, a fetch, an upload and a part lookup as short text:
+  every current error first, one line each (code, location, what was found, the fix), grouped by code and fix;
+  a command run again in the workspace marks the new errors and counts what else is unchanged since its last run.
+  `detail: true` answers the full JSON. The REST routes answer the full JSON as before. `docs/MINER.md` says so.
+- The scripted miner (`cadmind-einstein-fake-miner`) asks `detail: true` on `watt` and `watt_wait`, since it reads
+  the JSON.
+- The local `fetch_to_workspace` tool answers the platform's text for the upload (with the url it was asked for when
+  it was redirected). A platform that gives no text answer is a tool error that names what was stored.
 ## [0.3.10] - 2026-10-20
 
 ### Changed

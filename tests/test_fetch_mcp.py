@@ -242,11 +242,13 @@ class TestTheTool(unittest.TestCase):
         ]["result"]
 
     def test_the_upload_call_shape(self) -> None:
+        self.platform.extra = {"answer": "stored assets/ds: pdf"}
         got = self.call(self.server, workspace="ag-0123", url=self.base + "/moved", save_as="ds")
         self.assertNotIn("isError", got)
-        answer = json.loads(got["content"][0]["text"])
-        self.assertEqual((answer["path"], answer["via"]), ("assets/ds", "builder"))
-        self.assertEqual(answer["asked"], self.base + "/moved")
+        self.assertEqual(
+            got["content"][0]["text"],
+            f"stored assets/ds: pdf\nasked for {self.base}/moved (redirected)",
+        )
         path, headers, body = self.platform.calls[0]
         self.assertEqual(path, "/api/agent/workspaces/ag-0123/upload")
         self.assertEqual(headers["Authorization"], "Bearer cma_secret")
@@ -262,6 +264,12 @@ class TestTheTool(unittest.TestCase):
             got["content"][0]["text"],
             self.platform.extra["answer"] + f"\nasked for {self.base}/moved (redirected)",
         )
+
+    def test_a_platform_without_a_text_answer_is_an_error_that_names_what_was_stored(self) -> None:
+        got = self.call(self.server, workspace="ag-0123", url=self.base + "/ds.pdf", save_as="ds")
+        self.assertTrue(got["isError"])
+        said = got["content"][0]["text"]
+        self.assertIn("stored assets/ds (sha256 " + "ab" * 32 + ") but answered no text", said)
 
     def test_refusals_are_tool_errors_and_nothing_is_uploaded(self) -> None:
         for args in (
