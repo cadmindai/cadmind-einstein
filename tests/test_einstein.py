@@ -419,35 +419,25 @@ class TestDesk(unittest.TestCase):
             out.setdefault(o.hotkey, []).append(o.s)
         return out
 
-    def test_a_failed_gate_goes_to_another_miner_from_scratch_and_counts_if_it_passes(self) -> None:
+    def test_a_failed_gate_ends_the_round_not_finished_with_its_project_kept(self) -> None:
+        """One worked attempt that does not deliver ends the round (DESIGN.md "Continuing an
+        unfinished round"): the project is kept for the client, never handed to another miner
+        from scratch; nothing is charged; one owner's failure counts (0)."""
         self.poll(A, B, C)
         self.enqueue({"job": "j2", "brief": "A wall hook."})
         first = self.attempt("j2", deliverable=False, files={"src/parts/broken.py": "x"})
-        self.assertEqual(self.ledger.outcomes, [])  # held: nobody has passed this job yet
-        second, w2 = self.assigned()
-        self.assertNotEqual(second, first)
-        self.assertEqual(self.p.grants[-1]["seed"], "")  # from the brief, not the broken project
-        self.assertNotIn("src/parts/broken.py", self.p.ws[w2["workspace"]]["files"])
-        self.desk.accept(second, "j2")
-        self.p.work(w2["workspace"], GOOD, deliverable=True)
-        self.desk.submit(second, "j2", w2["workspace"], "d")
-        st = wait_state(self.desk, "j2", ("done",))
-        self.assertEqual(st["result"]["label"], "delivered")
-        scores = self.scored()
-        self.assertEqual(scores[first], [0.0])  # another miner passed: the failure counts
-        self.assertGreater(scores[second][0], 0.5)
-
-    def test_two_gate_failures_are_out_of_reach_not_charged_and_penalise_nobody(self) -> None:
-        self.poll(A, B, C)
-        self.enqueue({"job": "j3", "brief": "A perpetual motion machine."})
-        self.attempt("j3", deliverable=False)
-        self.attempt("j3", deliverable=False)
-        st = self.desk.status("j3")
+        st = self.desk.status("j2")
+        res = st["result"]
         self.assertEqual(
-            (st["state"], st["result"]["label"], st["result"]["charge"]),
-            ("done", "out of reach", False),
+            (st["state"], res["label"], res["charge"]), ("done", "not finished", False)
         )
-        self.assertEqual(self.ledger.outcomes, [])
+        self.assertEqual(len(st["attempts"]), 1)
+        fork = self.desk.jobs["j2"].attempts[0].fork
+        self.assertEqual(res["workspace"], fork)
+        self.assertNotIn(fork, self.p.deleted)  # kept: the client may continue it
+        self.assertIn("src/parts/broken.py", self.p.ws[fork]["files"])
+        self.assertEqual(self.scored()[first], [0.0])
+        self.assertEqual(self.p.completed["j2"]["label"], "not finished")
 
     def test_two_rejections_decline_the_job_with_the_messages_and_penalise_nobody(self) -> None:
         self.poll(A, B, C)
@@ -695,13 +685,14 @@ class TestGateDraw(unittest.TestCase):
     def test_a_re_rolled_draw_the_validators_draw_refuses_is_not_accepted(self) -> None:
         hk, ws = self.submit("r1", weak=True)
         st = wait_state(self.desk, "r1", ("queued", "done"))
-        self.assertEqual(st["state"], "queued")  # back to another miner, not delivered
+        self.assertEqual(st["result"]["label"], "not finished")  # not delivered, nothing charged
         a = self.desk.jobs["r1"].attempts[0]
         self.assertEqual((a.hotkey, a.kind), (hk, "gate"))
         self.assertIn("validator's own mutation guard did not pass", a.outcome)
         self.assertIn("unguarded R.holds", a.outcome)
-        self.assertNotIn("r1", self.p.completed)
-        self.assertEqual(self.ledger.outcomes, [])  # held, as any gate failure
+        self.assertEqual(self.p.completed["r1"]["charge"], False)
+        # held, then counted (0) at the ending: one owner's opinion only
+        self.assertEqual([o.s for o in self.ledger.outcomes], [0.0])
         self.assertEqual(
             self.gate_runs(ws), ["status", "report"]
         )  # the miner's own record said yes
@@ -715,10 +706,10 @@ class TestGateDraw(unittest.TestCase):
         _, ws = self.submit("r3", weak=False)
         self.p.ws[ws]["report_fails"] = True  # the fork copies it
         st = wait_state(self.desk, "r3", ("queued", "done"))
-        self.assertEqual(st["state"], "queued")
+        self.assertEqual(st["result"]["label"], "not finished")
         a = self.desk.jobs["r3"].attempts[0]
         self.assertIn("did not pass", a.outcome)
-        self.assertNotIn("r3", self.p.completed)
+        self.assertNotEqual(self.p.completed.get("r3", {}).get("label"), "delivered")
 
     def test_a_sound_design_passes_on_the_validators_own_draw(self) -> None:
         hk, ws = self.submit("r2", weak=False)
@@ -747,7 +738,7 @@ class TestGateDraw(unittest.TestCase):
         self.p.run = stale  # type: ignore[method-assign]
         self.submit("r3", weak=False)
         st = wait_state(self.desk, "r3", ("queued", "done"))
-        self.assertEqual(st["state"], "queued")
+        self.assertEqual(st["result"]["label"], "not finished")
         self.assertEqual(self.desk.jobs["r3"].attempts[0].kind, "gate")
 
     def test_no_guard_run_when_the_miners_own_record_is_not_deliverable(self) -> None:
@@ -793,11 +784,11 @@ class TestGateDraw(unittest.TestCase):
         self.desk._retry_at.clear()
         self.tick()
         st = wait_state(self.desk, "r6", ("queued", "done"))
-        self.assertEqual(st["state"], "queued")  # twice: the attempt fails the gate
+        self.assertEqual(st["result"]["label"], "not finished")  # twice: the attempt fails the gate
         a = self.desk.jobs["r6"].attempts[0]
         self.assertEqual(a.kind, "gate")
         self.assertIn("did not finish within the validator's budget", a.outcome)
-        self.assertIn(a.fork, self.p.deleted)  # its fork is not kept
+        self.assertNotIn(a.fork, self.p.deleted)  # its fork is the project kept
 
 
 class TestService(unittest.TestCase):

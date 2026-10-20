@@ -228,7 +228,7 @@ class TestDeskAnswers(unittest.TestCase):
 
     def test_an_answer_left_unrecorded_fails_the_gate_and_the_miner_reads_why(self) -> None:
         st = self.run_job("jb", {PATH: ANSWER, "spec/decisions.toml": OPEN})
-        self.assertEqual(st["state"], "queued")  # another miner gets it, from scratch
+        self.assertEqual(st["result"]["label"], "not finished")  # its project kept, not charged
         failures = self.desk.failures(st["hotkey"])
         self.assertEqual(failures[-1]["kind"], "gate")
         self.assertIn("still open", failures[-1]["why"])
@@ -243,7 +243,7 @@ class TestDeskAnswers(unittest.TestCase):
         self.p.work(w["workspace"], {**GOOD, "spec/decisions.toml": OPEN}, deliverable=True)
         self.desk.submit(hk, "jc", w["workspace"], "d")
         st = wait_state(self.desk, "jc", ("queued", "done"))
-        self.assertEqual(st["state"], "queued")
+        self.assertEqual(st["result"]["label"], "not finished")
         self.assertIn("asked not to be asked", self.desk.failures(hk)[-1]["why"])
 
     def test_a_no_questions_job_with_its_questions_decided_is_delivered(self) -> None:

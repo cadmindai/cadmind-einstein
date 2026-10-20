@@ -139,7 +139,7 @@ class TestGateStoppedOnCancel(_Cases):
         self.desk._retry_at.clear()
         self.tick()
         st = wait_state(self.desk, "g2", ("queued", "done"))
-        self.assertEqual(st["state"], "queued")
+        self.assertEqual(st["result"]["label"], "not finished")
         self.assertEqual(budgets, [900.0, 900.0])
         self.assertEqual(self.desk.jobs["g2"].attempts[0].kind, "gate")
 
@@ -236,7 +236,7 @@ class TestOurErrors(_Cases):
         self.p.export = lambda ws: b"not a zip at all"  # type: ignore[method-assign]
         self.submit("o13")
         st = wait_state(self.desk, "o13", ("queued", "done"))
-        self.assertEqual(st["state"], "queued")
+        self.assertEqual(st["result"]["label"], "not finished")
         self.assertEqual(self.desk.jobs["o13"].attempts[0].kind, "gate")
 
 

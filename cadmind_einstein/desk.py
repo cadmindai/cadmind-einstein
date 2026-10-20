@@ -1,5 +1,5 @@
-"""The job desk (DESIGN.md sections 3-5): one miner per job; a job ends delivered, declined, out of
-reach, or "didn't finish".
+"""The job desk (DESIGN.md sections 3-5): one miner per job; a job ends delivered, not finished,
+declined, or "didn't finish" (out of reach, an older ending, is no longer reached).
 
 A job's life:
 
@@ -23,15 +23,20 @@ reaction scores it further.
 Instead of a project the agent may **reject** the assignment (``not-allowed`` or ``not-capable``,
 from the published scope guide) with a message for the client.
 
-**An attempt that does not pass** goes to ANOTHER miner, **from scratch** (the brief or the seed
-only, never the failed project). Fairness is judged on the whole job:
+**An attempt the miner worked that does not pass** -- a gate failure, or a late attempt that fails
+-- ends the round **not finished** (DESIGN.md "Continuing an unfinished round"): its project, the
+validator's fork, is kept and named in the result with the builder's own summary of what blocks
+delivery (``submit``'s ``summary``) or, without one, the gate's stage and error. Nothing is charged;
+the client may pay for a round that continues it (a claim with ``continuation``: its seed is the
+unfinished project, its base the last delivered version or the brief, and the builder may start
+over from the base). **Any other attempt that does not pass** -- not accepted in time, a copy, a
+rejection -- goes to ANOTHER miner, **from scratch** (the brief or the seed only). Scoring:
 
-- a timeout (not accepted, or late and failing) or a copy scores 0 at once;
-- a rejection or a gate failure scores 0 only if another miner then passes the same job;
+- a timeout or a copy scores 0 at once;
+- a rejection or a gate failure is held: 0 if another miner then passes the same job; at an
+  undelivered ending it counts (0) unless the opinions came from two owners (below);
 - two rejections end the job **declined** (the client reads the messages, the brief is flagged for
-  review); two substantive failures with a gate failure among them end it **out of reach**; four
-  attempts end it **didn't finish**. None is charged, and no miner is penalised for a job nobody
-  could do.
+  review); four attempts without a worked one end it **didn't finish**. None is charged.
 
 **Independent opinions.** "Nobody could do it" takes miners of different owners: a job a miner
 rejected or failed goes next to a miner of ANOTHER coldkey (``SecondOpinion.wait_s`` later, any
@@ -174,6 +179,8 @@ class SecondOpinion:
     other miner may take it"""
 
 
+ENDINGS = {"declined": "declined", "out of reach": "out_of_reach", "not finished": "not_finished"}
+"""the undelivered endings ``watch`` counts per coldkey (observability only)"""
 WATCH_PAIRS = 20_000
 """copy comparisons kept for the hourly report (the oldest dropped past it, and counted)"""
 
@@ -221,6 +228,9 @@ class Platform(Protocol):
     def mint_key(self, hotkey: str) -> dict[str, Any]: ...
     def disable_key(self, hotkey: str) -> dict[str, Any]: ...
     def grant(self, hotkey: str, *, brief: str = "", seed: str = "", name: str = "job") -> str: ...
+    def grant_continuation(
+        self, hotkey: str, *, seed: str, base: str = "", name: str = "job"
+    ) -> tuple[str, str]: ...
     def freeze(self, ws: str) -> dict[str, Any]: ...
     def fork(self, ws: str) -> str: ...
     def run(
@@ -274,6 +284,11 @@ class Attempt:
     retries: int = 0
     """judgements retried on our side"""
     first_retry_ms: int = 0
+    reference: str = ""
+    """a continuation's base, a read-only workspace the platform granted beside this one (the last
+    delivered version), from which the builder may start over; '' when the base is the brief"""
+    summary: str = ""
+    """the builder's own words on what blocks delivery, given with its submit (optional)"""
 
 
 @dataclass
@@ -298,6 +313,10 @@ class Job:
     no_questions: bool = False
     """the client asked not to be asked questions (an API job always does): the builder decides
     every would-be question itself, and the gate refuses a delivery with a client decision open"""
+    continuation: dict[str, Any] = field(default_factory=dict)
+    """a round that continues an unfinished one (DESIGN.md "Continuing an unfinished round"): its
+    seed is the unfinished project and ``base`` the operator's workspace of the project's last
+    delivered version ('' when there is none: the base is the brief). Empty on every other job."""
     style: dict[str, Any] = field(default_factory=dict)
     """a style round (cadmind-watt ADR-020): ``baseline``, the settled contract the round began
     from, as the platform's ``watt style begin`` answered it; the gate refuses a delivery that did
@@ -318,6 +337,33 @@ def _style_of(value: Any) -> dict[str, Any]:
     if not isinstance(baseline, Mapping) or not baseline.get("contract"):
         return {}
     return {"baseline": dict(baseline)}
+
+
+def _continuation_of(value: Any) -> dict[str, Any]:
+    """A claim's ``continuation`` (a round continuing an unfinished one): ``{"base": ws}``, the base
+    '' when the project has no delivered version. Empty when the claim carries none."""
+    if not isinstance(value, Mapping):
+        return {}
+    return {"base": str(value.get("base") or "")[:100]}
+
+
+SUMMARY_MAX = 2000
+"""the longest builder summary kept (characters, whitespace collapsed)"""
+
+
+def _gate_summary(kind: str, verdict: Mapping[str, Any]) -> str:
+    """What blocks delivery, in a sentence, when the builder said nothing: Watt's stage and the
+    gate's error, as the validator read them."""
+    stage = str(verdict.get("stage") or "")
+    error = " ".join(str(verdict.get("error") or "").split())
+    head = (
+        "The builder's time ran out before the project passed Watt's checks"
+        if kind == "timeout"
+        else "The project the builder handed over did not pass Watt's checks"
+    )
+    where = f" (it stopped at Watt's {stage} stage)" if stage and stage != "none" else ""
+    detail = error[:1200]
+    return f"{head}{where}." + (f" {detail[:1].upper()}{detail[1:]}" if detail else "")
 
 
 def _job_from(row: Mapping[str, Any]) -> Job:
@@ -932,7 +978,18 @@ class Desk:
                 "no_questions": job.no_questions,
                 # a style round: printed shapes only; Watt refuses a change of function (W0220)
                 **({"style": True} if job.style.get("baseline") else {}),
+                # a round continuing an unfinished one: the workspace starts as that project; the
+                # builder may continue it or start over from the base
+                **(self._continuation_work(job, a) if job.continuation else {}),
             }
+
+    @staticmethod
+    def _continuation_work(job: Job, a: Attempt) -> dict[str, Any]:
+        """``work``'s words for a continuation: its base, the last delivered version (a read-only
+        workspace granted beside the job's, ``workspace``) or the brief."""
+        if job.continuation.get("base") and a.reference:
+            return {"continuation": True, "base": {"kind": "delivered", "workspace": a.reference}}
+        return {"continuation": True, "base": {"kind": "brief"}}
 
     def failures(self, hotkey: str, limit: int = 20) -> list[dict[str, Any]]:
         """The miner's own recent attempts that did not pass, with why (its receipt shows them): a
@@ -962,7 +1019,11 @@ class Desk:
             job.state = "working"
             return {"job": job_id, "workspace": a.workspace, "deadline_ms": a.deadline_ms}
 
-    def submit(self, hotkey: str, job_id: str, workspace: str, digest: str) -> dict[str, Any]:
+    def submit(
+        self, hotkey: str, job_id: str, workspace: str, digest: str, summary: str = ""
+    ) -> dict[str, Any]:
+        """The hand-over. ``summary``, optional: the builder's own words on what blocks delivery
+        (shown to the client when the round ends not finished)."""
         with self._mut():
             self._miner(hotkey)
             job = self.jobs.get(job_id)
@@ -977,6 +1038,7 @@ class Desk:
                 self._gone(job, hotkey)
                 raise DeskError("no such job in progress for this hotkey", 404)
             a.submitted_ms, a.digest = self.now_ms(), str(digest or "")[:100]
+            a.summary = " ".join(str(summary or "").split())[:SUMMARY_MAX]
             job.state = "judging"
         self._start_judge(job, a)
         return {"job": job_id, "state": "judging"}
@@ -1057,10 +1119,10 @@ class Desk:
           and ``containment`` of the distinctive features, their ``sizes``, how many features the
           learned common set removed (``common``), what decided (``decided_by``) and the verdict
           (``copy``) -- and ``copy_policy``, the thresholds they were judged by;
-        - ``endings_by_coldkey``: per coldkey, the declined and out-of-reach endings its hotkeys
-          took part in over the desk's 7-day memory, and ``same_coldkey_endings``: those whose
-          ending attempts all came from one coldkey (colluding hotkeys; none can end so while
-          ``second_opinion.coldkeys`` is 2 or more);
+        - ``endings_by_coldkey``: per coldkey, the declined, out-of-reach and not-finished endings
+          its hotkeys took part in over the desk's 7-day memory, and ``same_coldkey_endings``:
+          those whose ending attempts all came from one coldkey (colluding hotkeys; none can end so
+          while ``second_opinion.coldkeys`` is 2 or more);
         - ``by_coldkey``: per coldkey, its hotkeys' assignments, rejections, overturned
           rejections, gate failures, copies and delivered jobs (the per-owner rejection rule);
         - ``admitted_by_coldkey``: the admitted hotkeys per coldkey, and ``proven``: the hotkeys
@@ -1079,12 +1141,18 @@ class Desk:
             same: list[dict[str, Any]] = []
             for j in self.jobs.values():
                 label = str(j.result.get("label") or "") if j.state == "done" else ""
-                if j.kind != "client" or label not in ("declined", "out of reach"):
+                if j.kind != "client" or label not in ENDINGS:
                     continue
-                ending = [a.hotkey for a in j.attempts if a.kind in SUBSTANTIVE]
-                key = "declined" if label == "declined" else "out_of_reach"
+                ending = [
+                    a.hotkey
+                    for a in j.attempts
+                    if a.kind in SUBSTANTIVE or (a.kind == "timeout" and a.accepted_ms)
+                ]
+                key = ENDINGS[label]
                 for c in sorted({ck(h) for h in ending}):
-                    row = endings.setdefault(c, {"declined": 0, "out_of_reach": 0, "hotkeys": []})
+                    row = endings.setdefault(
+                        c, {"declined": 0, "out_of_reach": 0, "not_finished": 0, "hotkeys": []}
+                    )
                     row[key] += 1
                     row["hotkeys"] = sorted(set(row["hotkeys"]) | {h for h in ending if ck(h) == c})
                 if len(ending) >= 2 and len({ck(h) for h in ending}) == 1:
@@ -1186,6 +1254,7 @@ class Desk:
                 queued_ms=self.now_ms(),
                 no_questions=body.get("no_questions") is True,
                 style=_style_of(body.get("style")),
+                continuation=_continuation_of(body.get("continuation")),
             )
         return self.status(job_id)
 
@@ -1661,8 +1730,17 @@ class Desk:
         )
 
     def _assign(self, job: Job, m: Miner) -> None:
+        reference = ""
         try:
-            ws = self.platform.grant(m.hotkey, brief=job.brief, seed=job.seed, name=job.job)
+            if job.continuation:
+                ws, reference = self.platform.grant_continuation(
+                    m.hotkey,
+                    seed=job.seed,
+                    base=str(job.continuation.get("base") or ""),
+                    name=job.job,
+                )
+            else:
+                ws = self.platform.grant(m.hotkey, brief=job.brief, seed=job.seed, name=job.job)
         except PlatformError as e:
             if e.code == SUSPENDED:
                 self._suspended(m.hotkey)
@@ -1689,6 +1767,7 @@ class Desk:
                     workspace=ws,
                     assigned_ms=now,
                     accept_by_ms=now + int(self.accept_s * 1000),
+                    reference=str(reference or ""),
                 )
             )
             job.state = "assigned"
@@ -1710,9 +1789,13 @@ class Desk:
           and cheating are the miner's alone.
         - ``reject`` and ``gate`` are held: they score 0 only if another miner then passes the job.
         - ``dereg`` (the miner left the subnet) scores nobody and does not count toward the cap.
-        - Two rejections end the job "declined"; two substantive failures, one of them the gate, end
-          it "out of reach"; past ``max_attempts`` it is "didn't finish". None is charged, and the
-          held failures are dropped: no miner is penalised for a job nobody could do.
+        - An attempt the builder WORKED (accepted) that does not deliver -- a gate failure, or a
+          late attempt that fails -- ends the round "not finished": its project (the validator's
+          fork, ``fork``) is kept for the client, who may pay for a round that continues it.
+        - Two rejections end the job "declined"; past ``max_attempts`` it is "didn't finish". None
+          is charged. The held failures count (0) unless they came from
+          ``second_opinion.coldkeys`` coldkeys (then they are dropped: no miner is penalised for a
+          job nobody could do).
         """
         a.outcome, a.kind = why, kind
         if job.kind == "admission":
@@ -1744,12 +1827,17 @@ class Desk:
         cmap = self._cmap()
         owners = {self.coldkey(x.hotkey, cmap) for x in substantive}
         independent = len(owners) >= max(1, self.second_opinion.coldkeys)
-        ends = len(substantive) >= 2 and independent
+        # The builder worked it and it did not deliver: the round ends here, its project kept
+        # (DESIGN.md "Continuing an unfinished round"), never handed to another miner from scratch.
+        worked = kind in ("gate", "timeout") and bool(a.accepted_ms)
+        ends = (len(substantive) >= 2 and independent) or worked
         if not ends and len(counted) < self.max_attempts:
             job.state = "queued"
             job.queued_ms = self.now_ms()
             return
-        if ends:
+        if worked:
+            label = "not finished"
+        elif ends:
             label = "declined" if all(x.kind == "reject" for x in substantive) else "out of reach"
         else:
             label = "didn't finish"
@@ -1775,6 +1863,10 @@ class Desk:
             "attempts": len(job.attempts),
             **dict(verdict or {}),
         }
+        if worked:
+            job.result.pop("copy", None)
+            job.result["summary"] = a.summary or _gate_summary(kind, verdict or {})
+            job.result["summary_by"] = "builder" if a.summary else "gate"
         self._outbox.append(job.job)
 
     def _release(self, hotkey: str) -> None:
@@ -1796,13 +1888,14 @@ class Desk:
 
     # -- the validator's fork and its guard run --------------------------------------------------
 
-    def _drop_gate(self, job_id: str, a: Attempt) -> None:
+    def _drop_gate(self, job_id: str, a: Attempt, *, keep_fork: bool = False) -> None:
         """Stop the validator's guard run on ``a``'s fork and delete the fork, in the worker pool
-        (a job that ended without a delivery: the fork serves nothing). Under the lock."""
+        (a job that ended without a delivery: the fork serves nothing). ``keep_fork``: a round that
+        ends not finished keeps its fork, the project the client may continue. Under the lock."""
         stop = self._gate_stop.get(job_id)
         if stop is not None:
             stop.set()
-        run, fork = a.gate_run, a.fork
+        run, fork = a.gate_run, ("" if keep_fork else a.fork)
         a.gate_run = ""
         if run or fork:
             self._spawn(self._drop_quietly, run, fork)
@@ -2103,6 +2196,12 @@ class Desk:
                 base = fingerprint(self.platform.export(job.seed)).features if job.seed else base
             except Exception:  # noqa: BLE001 -- the seed is ours: unread, nothing is subtracted
                 base = frozenset()
+            start = str(job.continuation.get("base") or "")
+            if start:
+                # a continuation's builder may have started over from the last delivered version:
+                # its features are subtracted too, as the seed's are
+                with contextlib.suppress(Exception):  # ours too: unread, nothing more subtracted
+                    base = base | fingerprint(self.platform.export(start)).features
             try:
                 mine = fingerprint(export).features
             except Exception as e:  # noqa: BLE001 -- the miner's export: unreadable fails it
@@ -2145,7 +2244,9 @@ class Desk:
                 return
             if not verdict["deliverable"] or copy is not None:
                 kind = "copy" if copy else ("gate" if on_time else "timeout")
-                self._drop_gate(job.job, a)
+                # a worked attempt that does not deliver ends the round not finished: its fork is
+                # the project kept for the client (a copy's never is: it is another job's work)
+                self._drop_gate(job.job, a, keep_fork=copy is None and job.kind == "client")
                 self._fail(
                     job,
                     a,

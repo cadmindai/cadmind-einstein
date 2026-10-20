@@ -91,7 +91,7 @@ class TestDeskStyle(unittest.TestCase):
         st = self.run_job(
             "s2", {"build/report.json": report(digest="sha256:e")}, style={"baseline": BASELINE}
         )
-        self.assertEqual(st["state"], "queued")
+        self.assertEqual(st["result"]["label"], "not finished")
         why = self.desk.failures(st["hotkey"])[-1]["why"]
         self.assertIn("changed the settled contract", why)
 
@@ -147,12 +147,12 @@ class TestSettledOpenDecisions(unittest.TestCase):
 
     def test_a_baseline_without_settled_decisions_exempts_nothing(self) -> None:
         st = self.run_style("o3", BASELINE, OPEN)
-        self.assertEqual(st["state"], "queued")
+        self.assertEqual(st["result"]["label"], "not finished")
         self.assertIn("asked not to be asked", self.desk.failures(st["hotkey"])[-1]["why"])
 
     def test_named_settled_decisions_are_the_only_ones_exempt(self) -> None:
         st = self.run_style("o2", {**BASELINE, "settled_decisions": []}, OPEN)
-        self.assertEqual(st["state"], "queued")
+        self.assertEqual(st["result"]["label"], "not finished")
         self.assertIn("asked not to be asked", self.desk.failures(st["hotkey"])[-1]["why"])
 
 

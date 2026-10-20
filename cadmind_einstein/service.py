@@ -7,8 +7,8 @@ the metagraph):
 - ``POST /v1/jobs/work`` -- the miner's assignment, if any (poll every few seconds: it is also how
   the validator knows the miner is alive), and ``cancelled``: the id of its last job when the
   client cancelled it (stop working on it; said until the miner accepts another job);
-- ``POST /v1/jobs/accept {job}``, ``POST /v1/jobs/submit {job, workspace, digest}`` (410 for a
-  job its client cancelled);
+- ``POST /v1/jobs/accept {job}``, ``POST /v1/jobs/submit {job, workspace, digest, summary?}``
+  (410 for a job its client cancelled; ``summary``: the builder's words on what blocks delivery);
 - ``POST /v1/miners/admission`` -- its entry test, a job assigned to it alone;
 - ``POST /v1/miners/receipt`` -- its jobs, their scores, its weight and quality, and its recent
   attempts that did not pass with why (``failures``: a gate failure says what the gate found).
@@ -563,6 +563,7 @@ def serve(
                                 str(body.get("job") or ""),
                                 str(body.get("workspace") or ""),
                                 str(body.get("digest") or ""),
+                                str(body.get("summary") or ""),
                             ),
                         )
                     elif self.path == "/v1/jobs/reject":

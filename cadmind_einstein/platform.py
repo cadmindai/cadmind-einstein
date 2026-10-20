@@ -276,6 +276,24 @@ class OperatorClient:
             self._call("POST", "/api/agent/subnet/workspaces", body, timeout=320)["workspace"]
         )
 
+    def grant_continuation(
+        self, hotkey: str, *, seed: str, base: str = "", name: str = "job"
+    ) -> tuple[str, str]:
+        """A continuation's grant: the miner's workspace forked from ``seed`` (the unfinished
+        project) and, when ``base`` names the project's last delivered version, a read-only fork of
+        it granted beside it (``reference``), from which the builder may start over."""
+        body: dict[str, Any] = {
+            "hotkey": hotkey,
+            "name": name,
+            "job": name,
+            "seed": seed,
+            "continuation": True,
+        }
+        if base:
+            body["base"] = base
+        out = self._call("POST", "/api/agent/subnet/workspaces", body, timeout=320)
+        return str(out["workspace"]), str(out.get("reference") or "")
+
     def state(self, ws: str) -> dict[str, Any]:
         return dict(self._call("GET", f"/api/agent/subnet/workspaces/{self._ws(ws)}"))
 
