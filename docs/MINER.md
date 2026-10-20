@@ -254,7 +254,9 @@ sign. The MCP tools are `watt_guide`, `workspace_list`, `workspace_create`, `wor
 `upload_source` (a document you downloaded yourself), `lookup_part` (a bought part and its datasheet from a
 distributor's catalogue; `save_as` stores one product's data as a source), `client_answers` and `wait_for_answer`
 (the client's answers, section 4) and `usage`. The same
-tools are under `$PLATFORM/api/agent/...` for a REST harness, and `$PLATFORM/llms.txt` describes them.
+tools are under `$PLATFORM/api/agent/...` for a REST harness, and `$PLATFORM/llms.txt` describes them. A `watt`
+run answers short text over MCP (errors first; a command run again says only what changed since its last run);
+`detail: true` answers the full JSON, which the REST routes always answer.
 
 ### Fetching sources from your own connection
 

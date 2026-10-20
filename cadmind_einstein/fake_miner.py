@@ -129,9 +129,10 @@ class Mcp:
         return out
 
     def watt(self, ws: str, command: str, **args: Any) -> Any:
-        out = self.call("watt", workspace=ws, command=command, wait_s=100, **args)
+        """A run's full JSON (`detail`: the MCP tools answer an agent short text by default)."""
+        out = self.call("watt", workspace=ws, command=command, wait_s=100, detail=True, **args)
         while out.get("state") == "running":
-            out = self.call("watt_wait", run=out["run"], wait_s=100)
+            out = self.call("watt_wait", run=out["run"], wait_s=100, detail=True)
         return out
 
 

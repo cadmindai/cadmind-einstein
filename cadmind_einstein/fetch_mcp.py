@@ -294,6 +294,16 @@ def time_left(deadline_file: Path | None, now: float | None = None) -> dict[str,
     }
 
 
+def said(out: dict[str, Any]) -> str:
+    """What the agent reads of an upload: the platform's ``answer`` (Watt's short text: where it
+    is stored, its sha256 and what to cite, the research line, the page's text), with the url
+    this tool was asked for when it was redirected; the platform's JSON when it gives none."""
+    answer = out.get("answer")
+    if not isinstance(answer, str):
+        return json.dumps(out, ensure_ascii=False, separators=(",", ":"))
+    return answer + (f"\nasked for {out['asked']} (redirected)" if out.get("asked") else "")
+
+
 class Server:
     """One stdio session: JSON-RPC 2.0 messages, one per line."""
 
@@ -366,9 +376,7 @@ class Server:
                 out = self.fetch_to_workspace(args if isinstance(args, dict) else {})
             except FetchError as e:
                 return _result(ident, {"content": [_text(str(e))], "isError": True})
-            return _result(
-                ident, {"content": [_text(json.dumps(out, ensure_ascii=False, indent=1))]}
-            )
+            return _result(ident, {"content": [_text(said(out))]})
         return _error(ident, -32601, f"no method {method!r}")
 
     def serve(self, stdin: IO[str], stdout: IO[str]) -> None:

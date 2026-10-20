@@ -106,6 +106,7 @@ class Platform:
 
     def __init__(self, status: int = 200) -> None:
         self.calls: list[tuple[str, dict[str, str], dict[str, Any]]] = []
+        self.extra: dict[str, Any] = {}
         fake = self
 
         class H(BaseHTTPRequestHandler):
@@ -123,6 +124,7 @@ class Platform:
                         "path": f"assets/{body['save_as']}",
                         "sha256": "ab" * 32,
                         "via": "builder",
+                        **fake.extra,
                     }
                 data = json.dumps(out).encode()
                 self.send_response(status)
@@ -252,6 +254,14 @@ class TestTheTool(unittest.TestCase):
         self.assertEqual(body["url"], self.base + "/ds.pdf")  # the final url, after the redirect
         self.assertEqual((body["save_as"], body["content_type"]), ("ds", "application/pdf"))
         self.assertRegex(body["retrieved"], r"^\d{4}-\d{2}-\d{2}$")
+
+    def test_the_platforms_short_answer_is_what_the_agent_reads(self) -> None:
+        self.platform.extra = {"answer": "stored assets/ds.pdf: pdf, 9 bytes, sha256 " + "ab" * 32}
+        got = self.call(self.server, workspace="ag-0123", url=self.base + "/moved", save_as="ds")
+        self.assertEqual(
+            got["content"][0]["text"],
+            self.platform.extra["answer"] + f"\nasked for {self.base}/moved (redirected)",
+        )
 
     def test_refusals_are_tool_errors_and_nothing_is_uploaded(self) -> None:
         for args in (
