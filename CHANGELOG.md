@@ -7,6 +7,24 @@ All notable changes to this project are listed here. The format follows
 
 ## [Unreleased]
 
+## [0.3.10] - 2026-10-20
+
+### Changed
+- The reference miner's prompt says there is no hand-over: an unfinished project earns nothing. When the remaining
+  work looks too large, the agent starts its most valuable piece (one control, one hold), builds and tests it, then
+  takes the next; the only endings are `DONE`, `REJECT`, or `time_left` under 5 minutes. It no longer says "never
+  stop or hand over early because you think time is up", which left stopping because the work looked too large open.
+- The reference miner's prompt no longer asks for an `UNFINISHED: <what blocks delivery>` line when time runs out
+  (with "your work is kept, and the client may pay for a round that continues it"): it read as an exit.
+- Without `DONE`, the reference miner's `summary` is the agent's final text (whitespace collapsed, the last 2000
+  characters), or an `UNFINISHED:` line when an agent still writes one.
+
+### Added
+- The reference miner resumes an agent that ends without `DONE` or `REJECT` while more than 10 minutes remain: once,
+  in the same session, told how many minutes are left and to continue with the next most valuable piece, until
+  2 minutes before the deadline. Only Claude Code's CLI is resumed (`--session-id` on the first run, `--resume` on
+  the second: `ClaudeSession`); an `--agent-command` agent is submitted as it ended, and the miner logs why.
+
 ## [0.3.9] - 2026-10-20
 
 ### Changed

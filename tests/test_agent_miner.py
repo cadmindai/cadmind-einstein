@@ -9,8 +9,21 @@ import tempfile
 import time
 import unittest
 from pathlib import Path
+from typing import ClassVar
+from unittest import mock
 
-from cadmind_einstein.agent_miner import PROMPT, AgentRun, agent_argv, dropped
+from cadmind_einstein import agent_miner
+from cadmind_einstein.agent_miner import (
+    PROMPT,
+    RESUME,
+    AgentRun,
+    ClaudeSession,
+    agent_argv,
+    build,
+    dropped,
+    outcome,
+    session_for,
+)
 
 
 def ns(**kw: object) -> argparse.Namespace:
@@ -123,11 +136,9 @@ class TestAgentArgv(unittest.TestCase):
             questions_rule({"continuation": True, "base": {"kind": "brief"}}, "ag-1").split()
         )
         self.assertIn("clear spec/, src/ and tests/ and build from brief/", brief)
-        self.assertIn("UNFINISHED: <what still blocks delivery", PROMPT)
-
-
-if __name__ == "__main__":
-    unittest.main()
+        # no exit: the prompt asks for no UNFINISHED line, and no round that continues it
+        self.assertNotIn("UNFINISHED", PROMPT)
+        self.assertNotIn("continues it", PROMPT)
 
 
 class TestCancelledJob(unittest.TestCase):
@@ -182,3 +193,194 @@ class TestCancelledJob(unittest.TestCase):
         denied = argv[argv.index("--disallowedTools") + 1].split(",")
         for tool in ("Bash", "Read", "Write", "Edit", "WebFetch", "Grep", "Glob"):
             self.assertIn(tool, denied)
+
+
+class TestNoHandOver(unittest.TestCase):
+    """An unfinished project earns nothing: the prompt says so, an agent that stops early with time
+    left is resumed once in its session, and what it said last goes to the client as ``summary``."""
+
+    def test_the_prompt_has_no_hand_over_and_names_the_only_endings(self) -> None:
+        said = " ".join(PROMPT.split())
+        self.assertNotIn("hand over early", said)
+        self.assertIn("There is no hand-over: an unfinished project earns nothing.", said)
+        self.assertIn(
+            "When the remaining work looks too large, start its most valuable piece (one control, "
+            "one hold), build it, test it, then take the next.",
+            said,
+        )
+        self.assertIn(
+            "The only endings are `DONE`, `REJECT`, or `time_left` under 5 minutes.", said
+        )
+        msg = " ".join(RESUME.format(minutes=42).split())
+        self.assertEqual(
+            msg,
+            "You stopped with 42 minutes left. There is no hand-over: an unfinished project "
+            "earns nothing. Continue with the next most valuable piece, build it, test it, and "
+            "keep going until `DONE`, `REJECT`, or `time_left` under 5 minutes.",
+        )
+
+    def test_claude_sessions_name_then_resume_the_same_session(self) -> None:
+        s = ClaudeSession("sid-1")
+        cmd = ["claude", "-p", "PROMPT", "--mcp-config", "m.json", "--model", "x"]
+        self.assertEqual(
+            s.first(cmd),
+            [
+                "claude",
+                "--session-id",
+                "sid-1",
+                "-p",
+                "PROMPT",
+                "--mcp-config",
+                "m.json",
+                "--model",
+                "x",
+            ],
+        )
+        self.assertEqual(
+            s.resume(cmd, "go on"),
+            [
+                "claude",
+                "--resume",
+                "sid-1",
+                "-p",
+                "go on",
+                "--mcp-config",
+                "m.json",
+                "--model",
+                "x",
+            ],
+        )
+        with self.assertRaises(ValueError):
+            s.resume(["agent", "--in", "f"], "go on")
+        self.assertIsInstance(session_for(ns()), ClaudeSession)
+        self.assertIsInstance(session_for(ns(agent_cli="/opt/bin/claude")), ClaudeSession)
+        self.assertIsNone(session_for(ns(agent_command="agent --in {prompt_file}")))
+        self.assertNotEqual(session_for(ns()).id, session_for(ns()).id)  # type: ignore[union-attr]
+
+    NOW = 1_000_000.0
+    CMD: ClassVar[list[str]] = ["claude", "-p", "PROMPT", "--strict-mcp-config"]
+
+    def run_build(
+        self,
+        outputs: list[tuple[str, bool]],
+        *,
+        left_s: float,
+        session: ClaudeSession | str | None = "default",
+        cancelled: bool = False,
+    ) -> tuple[agent_miner.Build, list[mock.Mock], list[str]]:
+        """``outputs``: each run's (stdout, timed_out), in order; time is frozen at NOW and the
+        deadline is ``left_s`` after it."""
+        if session == "default":
+            session = ClaudeSession("sid-1")
+        assert not isinstance(session, str)
+        runs: list[mock.Mock] = []
+
+        def fake_run(argv: list[str], *, cwd: Path, stdin: str | None) -> mock.Mock:
+            out, timed_out = outputs[len(runs)]
+            run = mock.Mock(argv=argv, stdin=stdin)
+            run.wait.return_value = (out, "", timed_out)
+            run.stopped.is_set.return_value = timed_out or cancelled
+            runs.append(run)
+            return run
+
+        logs: list[str] = []
+        watched: list[object] = []
+        with (
+            mock.patch.object(agent_miner, "AgentRun", side_effect=fake_run),
+            mock.patch.object(agent_miner.time, "time", return_value=self.NOW),
+        ):
+            got = build(
+                list(self.CMD),
+                session=session,
+                cwd=Path("/w"),
+                stdin=None,
+                timeout_s=3000,
+                deadline_ms=int((self.NOW + left_s) * 1000),
+                watch=watched.append,
+                log=logs.append,
+                job="job-1",
+            )
+        self.assertEqual(watched[-1], None)  # the heartbeat is told when nothing runs
+        return got, runs, logs
+
+    def test_an_agent_that_stops_early_is_resumed_once_in_its_session(self) -> None:
+        got, runs, logs = self.run_build(
+            [("Hand-over note: the rest is too large.", False), ("built more\nDONE abc123", False)],
+            left_s=45 * 60,
+        )
+        self.assertEqual(len(runs), 2)
+        self.assertEqual(runs[0].argv[:3], ["claude", "--session-id", "sid-1"])
+        argv = runs[1].argv
+        self.assertEqual(argv[:4], ["claude", "--resume", "sid-1", "-p"])
+        self.assertTrue(argv[4].startswith("You stopped with 45 minutes left."))
+        self.assertEqual(argv[5:], ["--strict-mcp-config"])
+        # its timeout: the time left minus the margin
+        self.assertEqual(runs[1].wait.call_args.args[0], 45 * 60 - agent_miner.RESUME_MARGIN_S)
+        self.assertTrue(got.resumed)
+        self.assertEqual(got.text, "built more\nDONE abc123")
+        self.assertIn("--- RESUMED with 45 min left ---", got.record)
+        self.assertIn("Hand-over note", got.record)
+        self.assertTrue(any("resuming it once" in m for m in logs))
+        self.assertEqual(outcome("job-1", "ws", got.text)[1]["digest"], "abc123")
+
+    def test_the_resume_happens_once_only(self) -> None:
+        got, runs, _ = self.run_build(
+            [("stopped", False), ("stopped again", False)], left_s=50 * 60
+        )
+        self.assertEqual(len(runs), 2)
+        self.assertEqual(got.text, "stopped again")
+
+    def test_no_resume_after_done_or_reject_or_with_little_time_left(self) -> None:
+        for text in ("work\nDONE d1", "REJECT not-capable: we cannot build engines"):
+            got, runs, _ = self.run_build([(text, False)], left_s=60 * 60)
+            self.assertEqual(len(runs), 1, text)
+            self.assertFalse(got.resumed)
+        got, runs, logs = self.run_build([("stopped", False)], left_s=9 * 60)
+        self.assertEqual(len(runs), 1)
+        self.assertEqual(logs, [])
+
+    def test_no_resume_after_a_timeout_or_a_cancelled_job(self) -> None:
+        got, runs, _ = self.run_build([("partial", True)], left_s=30 * 60)
+        self.assertEqual(len(runs), 1)
+        self.assertTrue(got.timed_out)
+        got, runs, _ = self.run_build([("partial", False)], left_s=30 * 60, cancelled=True)
+        self.assertEqual(len(runs), 1)
+        self.assertTrue(got.cancelled)
+
+    def test_an_agent_command_cli_is_not_resumed_and_says_so(self) -> None:
+        got, runs, logs = self.run_build([("stopped", False)], left_s=40 * 60, session=None)
+        self.assertEqual(len(runs), 1)
+        self.assertEqual(runs[0].argv, self.CMD)  # no session flags for another CLI
+        self.assertFalse(got.resumed)
+        self.assertEqual(len(logs), 1)
+        self.assertIn("cannot resume", logs[0])
+
+    def test_without_done_the_final_text_is_the_summary(self) -> None:
+        kind, body = outcome("job-1", "ws-1", "  Built the base.\n\n  The hinge   still fails.\n")
+        self.assertEqual(kind, "submit")
+        self.assertEqual(
+            body,
+            {
+                "job": "job-1",
+                "workspace": "ws-1",
+                "digest": "",
+                "summary": "Built the base. The hinge still fails.",
+            },
+        )
+        long = "word " * 1000
+        self.assertEqual(len(outcome("j", "w", long + "END")[1]["summary"]), 2000)
+        self.assertTrue(outcome("j", "w", long + "END")[1]["summary"].endswith("END"))
+        # an UNFINISHED line an agent writes anyway (the prompt no longer asks) still wins
+        said = outcome("j", "w", "lots of log\nUNFINISHED: the clip is untested\n")[1]["summary"]
+        self.assertEqual(said, "the clip is untested")
+        self.assertNotIn("summary", outcome("j", "w", "work\nDONE d1\n")[1])
+        self.assertNotIn("summary", outcome("j", "w", "  \n")[1])
+        kind, body = outcome("j", "w", "REJECT not-allowed: a weapon")
+        self.assertEqual(
+            (kind, body["category"], body["message"]), ("reject", "not-allowed", "a weapon")
+        )
+        self.assertEqual(outcome("admission-1", "w", "REJECT not-allowed: x")[0], "submit")
+
+
+if __name__ == "__main__":
+    unittest.main()

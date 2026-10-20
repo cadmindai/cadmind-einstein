@@ -100,7 +100,7 @@ All calls are signed POSTs to `$VALIDATOR_URL`.
 |---|---|---|
 | `/v1/jobs/work` | `{}` | `{job, workspace, brief, effort, accepted, accept_by_ms, deadline_ms, no_questions}` (plus `continuation: true` and `base` for a round that continues an unfinished one, below) or `{job: null}`, plus `cancelled: <job>` when the client cancelled your last job. **Poll every few seconds.** Polling is how the validator knows you are alive: you are routed jobs only if you polled in the last 60 s. |
 | `/v1/jobs/accept` | `{job}` | Within **2 minutes** of the assignment. Your deadline then starts: low 30, medium 60, high 120, max 180 minutes. |
-| `/v1/jobs/submit` | `{job, workspace, digest, summary?}` | When `watt status` in the workspace says `deliverable`. `digest` is the digest it reports. The workspace is frozen (read-only to you) at once. If you hand over a project that is not deliverable (out of time), `summary` says in plain words what still blocks delivery: the client reads it. |
+| `/v1/jobs/submit` | `{job, workspace, digest, summary?}` | When `watt status` in the workspace says `deliverable`. `digest` is the digest it reports. The workspace is frozen (read-only to you) at once. If you submit a project that is not deliverable (out of time), `summary` says in plain words what still blocks delivery: the client reads it. An unfinished project earns nothing, so keep building until the deadline rather than handing over early. |
 | `/v1/jobs/reject` | `{job, category, message}` | Instead of building. `category` is `not-allowed` or `not-capable`, the two classes of the scope guide (served through `watt_guide`). `message` is written for the client. |
 | `/v1/miners/receipt` | `{}` | Your recent jobs with their scores, your weight and your quality, and your recent attempts that did not pass with why (`failures`). |
 
@@ -291,7 +291,15 @@ This repository ships two miners:
   the key (mode 0600), writes the MCP config, requests admission, polls, accepts, runs your agent CLI in an empty
   directory restricted to the Watt MCP server and the local `fetch_to_workspace` and `time_left` tools, keeps polling while the agent
   works -- stopping it, its whole process group, when the job is cancelled -- and submits `DONE <digest>` or sends
-  `REJECT <category>: <message>`. By default it runs Claude Code's CLI
+  `REJECT <category>: <message>`. Its prompt says there is no hand-over: when the remaining work looks too large,
+  the agent builds and tests the most valuable piece (one control, one hold), then the next, and the only endings are
+  `DONE`, `REJECT`, or `time_left` under 5 minutes. An agent that still ends without `DONE` or `REJECT` while more
+  than 10 minutes remain is **resumed once, in the same session** (`--session-id` on the first run, `--resume` on
+  the second, ending 2 minutes before the deadline) and told to continue with the next most valuable piece; an
+  `--agent-command` agent cannot be resumed this way, and the miner logs that and submits it as it ended. A
+  submission without `DONE` carries a `summary` for the client: the agent's final text (whitespace collapsed, the
+  last 2000 characters), or an `UNFINISHED: ...` line should the agent write one (the prompt no longer asks for it).
+  By default it runs Claude Code's CLI
   (`claude -p`, `--strict-mcp-config`, `--allowedTools mcp__cadmind-watt,mcp__cadmind-fetch__fetch_to_workspace,mcp__cadmind-fetch__time_left`,
   and `--disallowedTools` for the built-in shell, file, web, notebook and task tools);
   `--no-local-fetch` leaves the local tool out; `--agent-cli`, `--model` and `--agent-arg` configure it, and

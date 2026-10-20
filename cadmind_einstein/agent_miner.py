@@ -31,6 +31,13 @@ client asked not to be asked questions, decide every one) and ``{no_questions}``
 The agent's last line must be ``DONE <digest>`` or
 ``REJECT <not-allowed|not-capable>: <message for the client>``.
 
+There is no hand-over: an agent that ends without either line while more than 10 minutes remain
+is resumed once, in the same session, and told to take the next most valuable piece. Only Claude
+Code's CLI can be resumed (``--session-id`` on the first run, ``--resume`` on the second:
+:class:`ClaudeSession`); an ``--agent-command`` agent is submitted as it ended. Without ``DONE``
+the submission's ``summary`` is the agent's final text (or an ``UNFINISHED:`` line, should it write
+one: the prompt no longer asks for it).
+
 The agent also gets one local tool, ``fetch_to_workspace`` (:mod:`.fetch_mcp`, a stdio MCP server
 named ``cadmind-fetch``): it downloads a public document from the miner's own connection (many sites
 refuse the platform's address) and uploads it into the job's workspace, as the hosted ``fetch``
@@ -59,6 +66,7 @@ import subprocess
 import sys
 import threading
 import time
+import uuid
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
@@ -138,13 +146,11 @@ Otherwise work until `watt` status says deliverable and `client_answers` has not
 answer that came is recorded first, and the design made deliverable again), then end with exactly \
 one line:
 DONE <digest>
-(the digest `watt` status reports). If time runs out before it is deliverable, end instead with \
-exactly one line:
-UNFINISHED: <what still blocks delivery, in plain words for the client>
-(your work is kept, and the client may pay for a round that continues it). You have about \
-{minutes} minutes, until {deadline_utc} \
-UTC. You cannot feel time pass: check it with `time_left` (never guess it), and never stop \
-or hand over early because you think time is up.
+(the digest `watt` status reports). You have about {minutes} minutes, until {deadline_utc} \
+UTC. You cannot feel time pass: check it with `time_left` (never guess it). There is no \
+hand-over: an unfinished project earns nothing. When the remaining work looks too large, start \
+its most valuable piece (one control, one hold), build it, test it, then take the next. The only \
+endings are `DONE`, `REJECT`, or `time_left` under 5 minutes.
 
 Job: {job}
 Brief:
@@ -321,6 +327,134 @@ class AgentRun:
             self.stop()
             out, err = self.proc.communicate()
             return out or "", err or "", True
+
+
+RESUME = """You stopped with {minutes} minutes left. There is no hand-over: an unfinished project \
+earns nothing. Continue with the next most valuable piece, build it, test it, and keep going until \
+`DONE`, `REJECT`, or `time_left` under 5 minutes."""
+RESUME_MIN_LEFT_S = 600.0
+"""an agent that ends without ``DONE``/``REJECT`` with more than this left is resumed (once)"""
+RESUME_MARGIN_S = 120.0
+"""the resumed run ends this long before the deadline, leaving time to submit"""
+SUMMARY_CHARS = 2000
+"""the most of the agent's final text sent as ``summary`` (the validator keeps as many)"""
+
+_DONE = re.compile(r"^DONE\s+(\S+)\s*$", re.MULTILINE)
+_REJECT = re.compile(r"^REJECT (not-allowed|not-capable):\s*(.+)$", re.MULTILINE)
+_UNFINISHED = re.compile(r"^UNFINISHED:\s*(.+)$", re.MULTILINE)
+
+
+class ClaudeSession:
+    """Claude Code's session flags: the first run names a new session (``--session-id``), a resume
+    continues it (``--resume``) with a new ``-p`` message and the same other flags."""
+
+    def __init__(self, session_id: str | None = None) -> None:
+        self.id = session_id or str(uuid.uuid4())
+
+    def first(self, argv: list[str]) -> list[str]:
+        return [argv[0], "--session-id", self.id, *argv[1:]]
+
+    def resume(self, argv: list[str], message: str) -> list[str]:
+        """``argv``: the first run's command, no session (``[cli, "-p", prompt, ...]``)."""
+        if argv[1:2] != ["-p"]:
+            raise ValueError("not a Claude Code command line: [cli, '-p', prompt, ...]")
+        return [argv[0], "--resume", self.id, "-p", message, *argv[3:]]
+
+
+def session_for(a: argparse.Namespace) -> ClaudeSession | None:
+    """The session adapter for the configured agent: Claude Code's CLI (``--agent-cli``, whose
+    flags the miner writes) can be resumed; an ``--agent-command`` template cannot (None)."""
+    return None if a.agent_command else ClaudeSession()
+
+
+def ended(text: str) -> bool:
+    """Whether the agent's output ends the job itself: a ``DONE`` or ``REJECT`` line."""
+    return bool(_DONE.search(text) or _REJECT.search(text))
+
+
+class Build:
+    """One job's agent runs: the final output (the resumed run's, when there was one), the log."""
+
+    def __init__(self, text: str, record: str, *, timed_out: bool, cancelled: bool) -> None:
+        self.text, self.record, self.timed_out, self.cancelled = text, record, timed_out, cancelled
+        self.resumed = False
+
+
+def build(
+    cmd: list[str],
+    *,
+    session: ClaudeSession | None,
+    cwd: Path,
+    stdin: str | None,
+    timeout_s: float,
+    deadline_ms: int,
+    watch: Any,
+    log: Any,
+    job: str,
+) -> Build:
+    """Run the agent; when it ends without ``DONE`` or ``REJECT`` with more than
+    :data:`RESUME_MIN_LEFT_S` before the deadline, resume the same session once (there is no
+    hand-over: an unfinished project earns nothing). ``watch(run)`` is told the running
+    :class:`AgentRun` (``None`` once it ends), so a cancelled job can stop it."""
+
+    def one(argv: list[str], stdin_: str | None, timeout: float) -> tuple[str, str, bool, bool]:
+        run = AgentRun(argv, cwd=cwd, stdin=stdin_)
+        watch(run)
+        try:
+            out, err, timed_out = run.wait(timeout)
+        finally:
+            watch(None)
+        return out, err, timed_out, run.stopped.is_set() and not timed_out
+
+    text, err, timed_out, cancelled = one(session.first(cmd) if session else cmd, stdin, timeout_s)
+    record = text + ("\n--- TIMEOUT ---\n" if timed_out else "\n--- stderr ---\n") + err
+    got = Build(text, record, timed_out=timed_out, cancelled=cancelled)
+    if cancelled or timed_out or ended(text) or not deadline_ms:
+        return got
+    left_s = deadline_ms / 1000 - time.time()
+    if left_s <= RESUME_MIN_LEFT_S:
+        return got
+    left_min = int(left_s // 60)
+    if session is None:
+        log(
+            f"{job}: agent stopped with {left_min} min left and no DONE; this agent CLI "
+            "(--agent-command) cannot resume a session: submitting as it is"
+        )
+        return got
+    log(f"{job}: agent stopped with {left_min} min left and no DONE; resuming it once")
+    again, err2, timed_out2, cancelled2 = one(
+        session.resume(cmd, RESUME.format(minutes=left_min)),
+        None,
+        max(60.0, left_s - RESUME_MARGIN_S),
+    )
+    got.record += (
+        f"\n--- RESUMED with {left_min} min left ---\n"
+        + again
+        + ("\n--- TIMEOUT ---\n" if timed_out2 else "\n--- stderr ---\n")
+        + err2
+    )
+    got.resumed, got.timed_out, got.cancelled = True, timed_out2, cancelled2
+    if again.strip():
+        got.text = again
+    return got
+
+
+def outcome(job: str, ws: str, text: str) -> tuple[str, dict[str, Any]]:
+    """What to send for the agent's final output: ``("reject", body)`` for a ``REJECT`` line (not
+    on an admission job), else ``("submit", body)``. Without ``DONE`` the body carries a
+    ``summary`` for the client: an ``UNFINISHED:`` line when the agent wrote one anyway, else its
+    final text (whitespace collapsed, the last :data:`SUMMARY_CHARS` characters)."""
+    rej, fin = _REJECT.search(text), _DONE.search(text)
+    if rej and not job.startswith("admission-"):
+        return "reject", {"job": job, "category": rej.group(1), "message": rej.group(2)}
+    digest = fin.group(1) if fin else ""
+    body: dict[str, Any] = {"job": job, "workspace": ws, "digest": digest}
+    if not fin:
+        left = _UNFINISHED.search(text)
+        said = " ".join((left.group(1) if left else text).split())
+        if said:
+            body["summary"] = said[:SUMMARY_CHARS] if left else said[-SUMMARY_CHARS:]
+    return "submit", body
 
 
 def deadline_file(a: argparse.Namespace) -> Path | None:
@@ -506,40 +640,40 @@ def main(argv: list[str] | None = None) -> int:
         )
         t0 = time.time()
         out_file = logs / f"{job}.txt"
-        agent = AgentRun(cmd, cwd=work_dir, stdin=prompt if a.agent_command else None)
-        running.update(job=job, agent=agent)
+
+        def watch(agent: AgentRun | None, job: str = job) -> None:
+            running.update(job=job if agent else "", agent=agent)
+
         busy.set()
         try:
-            text, err, timed_out = agent.wait(minutes * 60)
+            got = build(
+                cmd,
+                session=session_for(a),
+                cwd=work_dir,
+                stdin=prompt if a.agent_command else None,
+                timeout_s=minutes * 60,
+                deadline_ms=deadline_ms,
+                watch=watch,
+                log=log,
+                job=job,
+            )
         finally:
             busy.clear()
-            running.update(job="", agent=None)
-        if timed_out:
-            out_file.write_text(text + "\n--- TIMEOUT ---\n" + err)
-            log(f"{job}: agent timed out after {minutes} min")
-        else:
-            out_file.write_text(text + "\n--- stderr ---\n" + err)
+        out_file.write_text(got.record)
+        if got.timed_out:
+            log(f"{job}: agent timed out")
         log(f"{job}: agent finished in {(time.time() - t0) / 60:.1f} min")
-        if agent.stopped.is_set() and not timed_out:
+        if got.cancelled:
             log(f"{job}: the job was cancelled; nothing submitted")
             done += 1
             continue
-        rej = re.search(r"^REJECT (not-allowed|not-capable):\s*(.+)$", text, re.MULTILINE)
-        fin = re.search(r"^DONE\s+(\S+)\s*$", text, re.MULTILINE)
-        # what still blocks delivery, in the agent's own words, when it says (the client reads it)
-        left = re.search(r"^UNFINISHED:\s*(.+)$", text, re.MULTILINE)
-        if rej and not job.startswith("admission-"):
-            code, out = call(
-                "/v1/jobs/reject", {"job": job, "category": rej.group(1), "message": rej.group(2)}
-            )
+        kind, body = outcome(job, ws, got.text)
+        if kind == "reject":
+            code, out = call("/v1/jobs/reject", body)
             log(f"rejected {job}: {code} {out}")
         else:
-            digest = fin.group(1) if fin else ""
-            body = {"job": job, "workspace": ws, "digest": digest}
-            if left and not fin:
-                body["summary"] = left.group(1).strip()[:2000]
             code, out = call("/v1/jobs/submit", body)
-            log(f"submitted {job} digest={digest[:16] or '(none)'}: {code} {out}")
+            log(f"submitted {job} digest={body['digest'][:16] or '(none)'}: {code} {out}")
         done += 1
     stop.set()
     return 0
