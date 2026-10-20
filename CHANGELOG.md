@@ -7,6 +7,13 @@ All notable changes to this project are listed here. The format follows
 
 ## [Unreleased]
 
+## [0.3.8] - 2026-10-20
+
+### Changed
+- The reference miner's prompt says a change round is delivered only when the whole project passes `watt status`:
+  failures inherited from a version delivered under older checks are part of the job, and time left is only what
+  `time_left` says.
+
 ## [0.3.7] - 2026-10-20
 
 ### Changed
