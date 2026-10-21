@@ -149,7 +149,7 @@ The criteria:
 {criteria}
 
 Answer with ONE JSON object and nothing else (no prose, no code fence), exactly this shape, with \
-"score" last in each criterion:
+"score" last in each criterion, a whole number 0-4 written as a JSON number (3, never "3"):
 {schema}"""
 
 REPLY_SCHEMA: dict[str, Any] = {
@@ -157,13 +157,13 @@ REPLY_SCHEMA: dict[str, Any] = {
         "asks": [{"quote": "<verbatim words of the client>", "status": "|".join(ASK_STATUSES)}],
         "view": "<image name | facts | brief>",
         "seen": "<at most 200 characters>",
-        "score": "<0-4>",
+        "score": 0,
     },
     **{
         cid: {
             "view": "<image name | facts | brief>",
             "seen": "<at most 200 characters>",
-            "score": "<0-4>",
+            "score": 0,
         }
         for cid in CRITERIA[1:]
     },

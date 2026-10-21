@@ -26,9 +26,11 @@ from cadmind_einstein.calibration import CalibrationSet, Item, go_no_go, reliabi
 from cadmind_einstein.desk import Desk, DeskError
 from cadmind_einstein.fake_miner import signed
 from cadmind_einstein.models import Prices, Reply, Spend
+from cadmind_einstein.platform import PlatformError
 from cadmind_einstein.review import (
     BUNDLE_FORMAT,
     CRITERIA,
+    REPLY_SCHEMA,
     WITHHELD,
     BundleError,
     Unavailable,
@@ -662,6 +664,40 @@ class TestCalibration(unittest.TestCase):
         self.assertTrue(out["go"], out)
         self.assertGreater(out["spend"]["usd"], 0)
         self.assertEqual(len(out["votes"]["pixel"]["samples"]), 3)
+
+    def test_a_kept_bundle_is_read_from_file_and_a_refused_item_does_not_stop_the_run(self) -> None:
+        class Refusing(BundlePlatform):
+            def review_bundle(self, job: str, audience: str = "ours") -> dict[str, Any]:
+                if job == "gone":
+                    raise PlatformError("no delivered einstein version by that id", 404)
+                return super().review_bundle(job, audience)
+
+        platform = Refusing()
+        with tempfile.TemporaryDirectory() as d:
+            (Path(d) / "kept.zip").write_bytes(make_bundle())
+            path = Path(d) / "set.json"
+            path.write_text(
+                CalibrationSet(
+                    [
+                        Item("deleted", "reference", "gone", hand_score=0.2),
+                        Item("kept", "reference", "gone-too", hand_score=0.2, bundle="kept.zip"),
+                        Item("live", "reference", "j1", hand_score=0.2),
+                    ]
+                ).dump()
+            )
+            cset = CalibrationSet.load(path)
+            model = FakeModel([reply((1, 1, 1, 0, 1))] * 6)
+            out = run(cset, platform, model, sleep=lambda s: None, clock=Clock())
+        self.assertEqual([j for j, _ in platform.asked], ["j1"])  # never asked for the kept one
+        self.assertEqual(model.calls, 6)
+        self.assertIn("no bundle", out["votes"]["deleted"]["error"])
+        self.assertEqual(len(out["votes"]["kept"]["samples"]), 3)
+        self.assertEqual(out["failed"], ["deleted"])
+
+    def test_the_reply_schema_shows_every_score_as_a_number(self) -> None:
+        # a judge copies the example's types: a quoted placeholder came back as "3" (unavailable)
+        self.assertTrue(all(isinstance(REPLY_SCHEMA[c]["score"], int) for c in CRITERIA))
+        self.assertIn('never "3"', system_prompt())
 
 
 if __name__ == "__main__":

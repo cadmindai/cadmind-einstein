@@ -59,6 +59,9 @@ class Item:
     source: str = ""
     """where the known answer comes from (a review file, a paid client's stars)"""
     tags: list[str] = field(default_factory=list)
+    bundle: str = ""
+    """a review bundle kept on file, read instead of asking the platform for one: an item whose
+    version the platform no longer serves (its client deleted the project) stays in the set"""
 
     def __post_init__(self) -> None:
         if self.kind not in KINDS:
@@ -113,6 +116,9 @@ class CalibrationSet:
     def load(cls, path: Path) -> CalibrationSet:
         raw = json.loads(Path(path).read_text(encoding="utf-8"))
         items = [Item(**row) for row in raw.get("items") or []]
+        for item in items:  # a kept bundle's path is relative to the set's own file
+            if item.bundle and not Path(item.bundle).is_absolute():
+                item.bundle = str(Path(path).parent / item.bundle)
         ids = [i.id for i in items]
         if len(set(ids)) != len(ids):
             raise ValueError("calibration item ids are unique")
@@ -162,7 +168,10 @@ def run(
     bundles (``platform``: an :class:`~.platform.OperatorClient` with the queue key; asking for a
     bundle that is not made yet queues it, and it is waited for up to ``wait_s``), then judge the
     values. Brief swaps need a bundle made with another job's brief (not served yet): skipped and
-    said. Answers ``{go, failed, items, votes, skipped, spend}``."""
+    said. An item with a kept ``bundle`` file is reviewed from it; one the platform refuses (no
+    such delivered version) gets no vote, and the run goes on. Answers ``{go, failed, items,
+    votes, skipped, spend}``."""
+    from .platform import PlatformError  # noqa: PLC0415
     from .review import (  # noqa: PLC0415
         MAX_BUNDLE_BYTES,
         Vote,
@@ -180,21 +189,28 @@ def run(
                 "a brief swap needs a swapped bundle, which the platform does not make yet"
             )
             continue
-        end = clock() + wait_s
-        got: dict[str, Any] = {}
-        while True:
-            got = platform.review_bundle(item.job, "ours")
-            if got.get("ready") or got.get("state") in ("failed", "off") or clock() >= end:
-                break
-            log(f"{item.id}: bundle {got.get('state') or 'not ready'}; waiting")
-            sleep(min(120.0, max(10.0, float(got.get("retry_s") or 30))))
-        if not got.get("ready"):
-            values[item.id] = None
-            votes[item.id] = {"error": f"no bundle: {got.get('state') or 'not ready'}"}
-            continue
-        bundle = read_bundle(platform.fetch_bundle(str(got["bundle_url"]), MAX_BUNDLE_BYTES))
-        if got.get("image_set") and got["image_set"] != bundle.image_set:
-            raise ValueError(f"{item.id}: the bundle is not the image set the platform named")
+        if item.bundle:
+            bundle = read_bundle(Path(item.bundle).read_bytes())
+        else:
+            end = clock() + wait_s
+            got: dict[str, Any] = {}
+            try:
+                while True:
+                    got = platform.review_bundle(item.job, "ours")
+                    if got.get("ready") or got.get("state") in ("failed", "off") or clock() >= end:
+                        break
+                    log(f"{item.id}: bundle {got.get('state') or 'not ready'}; waiting")
+                    sleep(min(120.0, max(10.0, float(got.get("retry_s") or 30))))
+            except PlatformError as e:  # this item has no vote (a no-go); the others are still run
+                got = {"ready": False, "state": f"refused ({e})"}
+            if not got.get("ready"):
+                values[item.id] = None
+                votes[item.id] = {"error": f"no bundle: {got.get('state') or 'not ready'}"}
+                log(f"{item.id}: no bundle: {got.get('state') or 'not ready'}")
+                continue
+            bundle = read_bundle(platform.fetch_bundle(str(got["bundle_url"]), MAX_BUNDLE_BYTES))
+            if got.get("image_set") and got["image_set"] != bundle.image_set:
+                raise ValueError(f"{item.id}: the bundle is not the image set the platform named")
         got_samples, failed = ask_samples(model, bundle, samples=samples, spend=spend)
         vote = Vote(
             review=item.job,
@@ -209,6 +225,8 @@ def run(
         votes[item.id] = {**vote.as_json(), "unavailable": failed}
         n = len(got_samples)
         log(f"{item.id}: {values[item.id]} ({n} sample(s); {len(failed)} unavailable)")
+        for why in sorted(set(failed)):
+            log(f"{item.id}: unavailable: {why}")
     judged = CalibrationSet([i for i in cset.items if i.id not in skipped], cset.version)
     out = go_no_go(judged, values)
     out["votes"] = votes
