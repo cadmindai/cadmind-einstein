@@ -7,7 +7,25 @@ All notable changes to this project are listed here. The format follows
 
 ## [Unreleased]
 
+## [0.4.4] - 2026-10-22
+
+### Added
+- **A third rejection category, `needs-client`.** On a job whose client asked not to be asked questions
+  (`no_questions`), a decision whose option leaves a need of the brief unmet (Watt's W0240, a decision with
+  `misses`) is the client's alone. The reference miner does not decide it and does not deliver: it ends with
+  `REJECT needs-client: <the decision's question>; options: ...`. The desk accepts the category (the job goes to a
+  miner of another coldkey, as for the other two; when every attempt rejects, it ends declined, not charged, with the
+  question shown), and the validator's answers check refuses a no-questions delivery that carries such a decision.
+
 ### Changed
+- **Deliver what you can.** The reference miner's prompt and docs/MINER.md: when part of a request cannot be
+  delivered, build the rest and make that part an open client decision whose option leaves it out
+  (`misses = ["<need>"]`); reject only when nothing in the request can be delivered. A client's "you may quit if it
+  is impossible" does not change that.
+- **Fit-around data.** When a maker publishes no drawing of a product the device fits, keep looking (to-scale
+  community drawings, case and accessory makers' templates, published CAD measurements) and cite one with its
+  tolerance; if none exists, ask the client for measurements or a photo beside a ruler. Never refuse for missing
+  data alone, and never guess silently.
 - **The parts a client selected in the 3D view.** A change file may end with a block from CADmind listing them by
   view key (`build/view/device.json`), name and place. The reference miner's prompt and docs/MINER.md tell the builder
   to read the change file itself (`client_answers` gives only the client's words) and to see the parts with
