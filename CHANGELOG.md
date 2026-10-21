@@ -7,6 +7,18 @@ All notable changes to this project are listed here. The format follows
 
 ## [Unreleased]
 
+## [0.4.1] - 2026-10-21
+
+### Fixed
+- **The reviewer's reply schema** showed each criterion's score as a quoted placeholder (`"<0-4>"`); a judge copied
+  the type and answered `"score": "3"`, which the strict reply check refuses, so every sample was unavailable. The
+  schema now shows a JSON number and the prompt says so (3, never "3"). The strict checks are unchanged; the rubric
+  digest changes with the prompt.
+- **`cadmind-calibrate`** stopped the whole run when the platform refused one item's bundle (404 for a version whose
+  project its client deleted). That item now gets no vote (a no-go, as before) and the run goes on. An item may name
+  a kept bundle file (`"bundle"`, relative to the set's file) that is reviewed instead of asking the platform. The
+  reasons of unavailable samples are logged.
+
 ## [0.4.0] - 2026-10-21
 
 ### Added
