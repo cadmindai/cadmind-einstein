@@ -428,7 +428,7 @@ verdict and provenance kind, the world items and their fidelity, parts, decision
 every image's SHA-256; its own SHA-256 is the **image-set digest** every vote names. Third-party validators get
 bundles of public projects only; our validator reviews every delivery.
 
-**The rubric** (`cadmind_einstein.review`, rubric version `cadmind-einstein-rubric/1`), each criterion 0-4 with
+**The rubric** (`cadmind_einstein.review`, rubric version `cadmind-einstein-rubric/2`), each criterion 0-4 with
 its evidence `{view, seen, score}` and the score last:
 
 | # | Criterion | Weight |
@@ -439,7 +439,11 @@ its evidence `{view, seen, score}` and the score last:
 | R4 | Completeness: all parts present and joined | 0.10 |
 | R5 | Finish: edges, proportions, the stated look, makeable by the stated method | 0.10 |
 
-`v = sum(weight_i * score_i / 4)`. The prompt, rubric, reply schema and bundle format are hashed into the rubric
+`v = min(sum(weight_i * score_i / 4), cap)`. **The function cap** (rubric 2): a device that does not work scores at
+most 0.35 whatever it looks like, read mechanically from the fact sheet's `function` section (Watt's own verdicts:
+a must failing, a relied control unwired, unworked or without travel, the client's product unreachable or not
+fitting set R2 to 0 and cap the value; "unverified" bounds R2 at 2) and from the reviewer's own R2 of 0
+(docs/VALIDATOR.md). The prompt, rubric, reply schema, bundle format and cap rules are hashed into the rubric
 digest each vote names. A reply must be one JSON object with exactly the five criteria, their keys in order and no
 repeated key; a view not in the bundle is refused; a criterion without evidence scores 0; an R1 quote not found
 verbatim in the client's words makes R1 score 0; any other defect makes the reply **unavailable**, never a score.

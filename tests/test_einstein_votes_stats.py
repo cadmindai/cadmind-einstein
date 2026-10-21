@@ -30,13 +30,19 @@ from cadmind_einstein.platform import PlatformError
 from cadmind_einstein.review import (
     BUNDLE_FORMAT,
     CRITERIA,
+    FUNCTION_CAP,
     REPLY_SCHEMA,
+    RUBRIC_VERSION,
+    UNVERIFIED_R2_MAX,
     WITHHELD,
+    Bounds,
     BundleError,
     Unavailable,
     Vote,
     Voter,
     aggregate,
+    ask_samples,
+    function_bounds,
     instruction_like,
     parse_sample,
     read_bundle,
@@ -233,6 +239,18 @@ class TestScoreWithVotesAndRefunds(unittest.TestCase):
             self.assertEqual(Ledger(report_dir=Path(d)).last_vector(), {A: 65_535})
 
 
+class _Fixed:
+    """A model that answers the same text every time."""
+
+    name = "fake:fixed"
+
+    def __init__(self, text: str) -> None:
+        self.text = text
+
+    def ask(self, system: str, text: str, images: Any) -> Reply:
+        return Reply(text=self.text)
+
+
 class TestRubricAndReplies(unittest.TestCase):
     def setUp(self) -> None:
         self.kw: dict[str, Any] = {"views": VIEWS, "client_text": BRIEF}
@@ -249,8 +267,53 @@ class TestRubricAndReplies(unittest.TestCase):
     def test_a_good_reply_scores_on_the_weights(self) -> None:
         s = parse_sample(reply((4, 4, 4, 4, 4)), **self.kw)
         self.assertEqual(s.value, 1.0)
+        s = parse_sample(reply((2, 1, 4, 4, 4)), **self.kw)
+        self.assertAlmostEqual(s.value, 0.35 * 0.5 + 0.30 * 0.25 + 0.15 + 0.10 + 0.10)
+        self.assertIsNone(s.cap)
+
+    def test_a_reviewers_r2_of_zero_caps_the_value(self) -> None:
         s = parse_sample(reply((2, 0, 4, 4, 4)), **self.kw)
-        self.assertAlmostEqual(s.value, 0.35 * 0.5 + 0 + 0.15 + 0.10 + 0.10)
+        self.assertAlmostEqual(s.raw_value, 0.35 * 0.5 + 0 + 0.15 + 0.10 + 0.10)
+        self.assertEqual((s.cap, s.value), (FUNCTION_CAP, FUNCTION_CAP))
+        self.assertEqual(s.as_json()["value"], FUNCTION_CAP)
+
+    def test_the_function_evidence_caps_mechanically(self) -> None:
+        def facts(fails=(), unverified=(), musts=()) -> dict:
+            return {
+                "function": {
+                    "summary": {"fails": list(fails), "unverified": list(unverified)},
+                    "musts": list(musts),
+                }
+            }
+
+        self.assertEqual(function_bounds({}), Bounds())
+        self.assertEqual(function_bounds(facts()), Bounds())
+        b = function_bounds(facts(["control_unworked"], ["inventory_undeclared"]))
+        self.assertEqual(b, Bounds(FUNCTION_CAP, 0, ("control_unworked",)))
+        # a perfect-looking device that does not work: R2 0 and at most the cap
+        s = parse_sample(reply((4, 4, 4, 4, 4)), **self.kw, bounds=b)
+        self.assertEqual(s.scores["R2"]["score"], 0)
+        self.assertEqual(s.value, FUNCTION_CAP)
+        self.assertTrue(any("control_unworked" in n for n in s.notes))
+        # a must whose verdict is failed caps without a listed reason
+        b = function_bounds(facts(musts=[{"id": "m", "verdict": "failed"}]))
+        self.assertEqual(b.reasons, ("must_failed",))
+        # unverified: R2 at most 2, no cap
+        b = function_bounds(facts(unverified=["inventory_undeclared", "something_new"]))
+        self.assertEqual(b, Bounds(None, UNVERIFIED_R2_MAX, ("inventory_undeclared",)))
+        s = parse_sample(reply((4, 4, 4, 4, 4)), **self.kw, bounds=b)
+        self.assertEqual(s.scores["R2"]["score"], UNVERIFIED_R2_MAX)
+        self.assertIsNone(s.cap)
+        self.assertAlmostEqual(s.value, 0.35 + 0.30 * 0.5 + 0.15 + 0.10 + 0.10)
+        # a reason this rubric does not know bounds nothing (a newer platform needs a new rubric)
+        self.assertEqual(function_bounds(facts(["a_new_reason"])), Bounds())
+        # the bounds reach the model's samples through the bundle's facts
+        bundle = read_bundle(make_bundle(facts=facts(["product_unfit"])))
+        model = _Fixed(reply((4, 4, 4, 4, 4)))
+        got, failed = ask_samples(model, bundle, samples=2)
+        self.assertEqual((failed, [x.value for x in got]), ([], [FUNCTION_CAP, FUNCTION_CAP]))
+        self.assertIn("facts.function", system_prompt())
+        self.assertTrue(RUBRIC_VERSION.endswith("/2"))
 
     def test_strict_replies(self) -> None:
         good = reply()
@@ -353,6 +416,28 @@ class TestVoteAndAverage(unittest.TestCase):
         self.assertFalse(verify_vote(tampered))
         v.samples[0] = {**v.samples[0], "value": 0.0}
         self.assertFalse(verify_vote(v))
+
+    def test_a_capped_vote_publishes_its_caps_and_recomputes(self) -> None:
+        b = read_bundle(make_bundle())
+        bounds = function_bounds({"function": {"summary": {"fails": ["control_unwired"]}}})
+        capped = parse_sample(reply((4, 4, 4, 4, 4)), views=VIEWS, client_text=BRIEF, bounds=bounds)
+        free = parse_sample(reply(), views=VIEWS, client_text=BRIEF)
+        v = Vote(
+            review="job-2",
+            image_set=b.image_set,
+            rubric=rubric_digest(),
+            model="fake:reviewer",
+            validator=VALIDATOR.ss58_address,
+            samples=[capped.as_json(), free.as_json(), capped.as_json()],
+            at_ms=124,
+        )
+        v.sig = "0x" + bytes(VALIDATOR.sign(v.payload())).hex()
+        pub = v.public()
+        self.assertEqual(pub["caps"], [FUNCTION_CAP, None, FUNCTION_CAP])
+        self.assertAlmostEqual(pub["value"], (FUNCTION_CAP * 2 + 0.75) / 3, places=5)
+        self.assertEqual(check_votes({"items": [pub]}), [])
+        uncapped = dict(pub, caps=[None, None, None])
+        self.assertEqual(check_votes({"items": [uncapped]})[0]["why"], "value")
 
     def test_the_average_merges_coldkeys_clamps_and_caps(self) -> None:
         self.assertEqual(aggregate([]), (None, 0.0))
