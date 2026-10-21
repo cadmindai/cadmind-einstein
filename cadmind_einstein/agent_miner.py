@@ -122,7 +122,11 @@ and web search. Use web search to find drawings and dimensions of every product 
 fit (its outline AND the positions and sizes of its buttons, ports, grilles, camera and other \
 protrusions); store each page you use with `fetch_to_workspace` (or with the hosted `fetch` when \
 the local tool is not there) and cite it. A spec sheet's overall size is not enough for a part \
-that fits around a product.
+that fits around a product. When the maker publishes no drawing, keep looking: to-scale community \
+drawings (Wikimedia Commons diagrams), case and accessory makers' templates, published CAD \
+measurements; cite one with its stated tolerance. If none exists, ask the client for measurements \
+or a photo beside a ruler (a client decision). Never refuse for missing data alone; never guess \
+silently.
 
 Start with `watt_guide` (brief, then primer, then scope). The client's photos, when they sent \
 any (the brief names them), are in the workspace's brief/ (brief/photo-*): look at each with \
@@ -149,6 +153,10 @@ delivered only when the whole project passes `watt status`: failures it inherits
 job, and your time is only what `time_left` says. {questions}
 A `watt` run far longer than usual: stop it with `watt_cancel` and change the design.
 
+Deliver what you can: when part of the request cannot be delivered, build the rest and make that \
+part an open client decision whose option leaves it out (misses = ["<need>"]). REJECT only when \
+nothing in the request can be delivered; a client's "you may quit if it is impossible" does not \
+change that.
 If the scope guide says we may not or cannot build it, end with exactly one line:
 REJECT <not-allowed|not-capable>: <message for the client>
 Otherwise work until `watt` status says deliverable and `client_answers` has nothing new (an \
