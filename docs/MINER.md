@@ -137,6 +137,10 @@ assumption you build on, why, and what it affects -- and may answer while you wo
   words; you cannot write `brief/`): `brief/answer-<date>-<decision>-<HHMMSS>.md`, `brief/change-<date>-<HHMMSS>.md`
   for a change request, or `brief/photo-<date>-<HHMMSS>-<n>.<kind>` for a photo sent with it (kind `photo`: look at it
   with `view_image`).
+- **A change file may end with a block from CADmind listing the parts the client selected in the 3D view**, by their
+  view key (`build/view/device.json`), name and place; the request's "this"/"these" mean them. The answer's `text` is
+  only the client's words: read the change file itself (`read_file` its `path`) for that block. `watt inspect` with
+  `show: [<their keys>]` shows them.
 - **Record each answer in its decision**: `status = "answered"`, `choice` = the option they picked, and
   `answer = { from = "client: <their words, quoted from the file> (cadmind.ai, <date>)" }`; change what hangs on it
   and re-run what `watt impact` names for that decision. Do what a change request asks.

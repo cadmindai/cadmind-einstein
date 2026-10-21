@@ -167,7 +167,14 @@ Brief:
 """
 
 
-QUESTIONS = """What only the client can decide is an open client decision (by = "client", \
+PARTS = """A change file may end with a block from CADmind listing the parts the client \
+selected in the 3D view, by their view key (build/view/device.json), name and place; the \
+request's "this"/"these" mean them. The answer's `text` is only the client's words: read the \
+change file itself (`read_file` its `path`) for that block. `watt inspect` with \
+`show: [<their keys>]` shows them."""
+
+QUESTIONS = (
+    """What only the client can decide is an open client decision (by = "client", \
 status = "open"), designed around your best sourced assumption: the client sees it in their chat \
 and may answer while you work. Keep building on the assumption; never wait for an answer. After \
 each `watt` command, call `client_answers` (workspace `{ws}`, `after` = the last `cursor` it \
@@ -179,15 +186,20 @@ do what it asks; a photo they send (kind photo, brief/photo-*) is theirs: look a
 `view_image`. The validator refuses a delivery that leaves an answer unrecorded. Use \
 `wait_for_answer` only when no useful work can go on under the assumptions (it waits briefly). \
 If `client_answers` says `no_questions: true`, the client asked not to be asked: decide every \
-would-be question yourself instead (by = "agent", status = "decided", choice, because)."""
+would-be question yourself instead (by = "agent", status = "decided", choice, because). """
+    + PARTS
+)
 
-NO_QUESTIONS = """The client asked NOT to be asked questions: leave no client decision open. \
+NO_QUESTIONS = (
+    """The client asked NOT to be asked questions: leave no client decision open. \
 Decide every would-be question yourself as an agent decision (by = "agent", status = "decided", \
 choice = the option you build on, because = why), so the client sees it as an assumption on the \
 result. \
 The validator refuses a delivery with an open client decision. Still call `client_answers` after \
 each `watt` command: a change the client sends mid-job arrives there (brief/change-*.md), and \
-so does a photo (brief/photo-*: look at it with `view_image`)."""
+so does a photo (brief/photo-*: look at it with `view_image`). """
+    + PARTS
+)
 
 
 STYLE = """ This is a STYLE ROUND on a delivered device (its watt.toml has [style]): the client's \
