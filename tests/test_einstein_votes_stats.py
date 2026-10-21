@@ -275,6 +275,10 @@ class TestRubricAndReplies(unittest.TestCase):
         s = parse_sample(reply((2, 0, 4, 4, 4)), **self.kw)
         self.assertAlmostEqual(s.raw_value, 0.35 * 0.5 + 0 + 0.15 + 0.10 + 0.10)
         self.assertEqual((s.cap, s.value), (FUNCTION_CAP, FUNCTION_CAP))
+        # an unverified bound does not name the cap's reason: the reviewer's R2 of 0 does
+        b = function_bounds({"function": {"summary": {"unverified": ["fact_guessed"]}}})
+        s = parse_sample(reply((2, 0, 4, 4, 4)), **self.kw, bounds=b)
+        self.assertIn("value capped at 0.35 (the reviewer's R2 of 0)", s.notes)
         self.assertEqual(s.as_json()["value"], FUNCTION_CAP)
 
     def test_the_function_evidence_caps_mechanically(self) -> None:

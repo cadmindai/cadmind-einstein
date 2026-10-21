@@ -621,7 +621,8 @@ def parse_sample(
         scores[cid] = {"view": view, "seen": seen, "score": score}
     cap = sample_cap(scores, bounds)
     if cap is not None:
-        notes.append(f"value capped at {cap} (" + (", ".join(bounds.reasons) or "R2 0") + ")")
+        why = ", ".join(bounds.reasons) if bounds.cap is not None else "the reviewer's R2 of 0"
+        notes.append(f"value capped at {cap} ({why})")
     return Sample(scores, asks, notes, cap)
 
 
