@@ -72,6 +72,19 @@ because = "the client asked not to be asked; tape needs no drill"
 affects = ["R.holds"]
 """
 PATH = "brief/answer-2026-10-15-mount-115800.md"
+NEEDS = """[need.charge]
+quote = "A USB-C port to charge the phone while I play."
+"""
+TRADED = """[decision.charge_path]
+question = "Charge the phone through a role-swap part, or leave charging out?"
+options = { swap = "a role-swap part", leave = "the controller does not charge the phone" }
+by = "agent"
+status = "decided"
+choice = "leave"
+because = "the part is not sized from the brief"
+affects = ["R.charge"]
+misses = ["charge"]
+"""
 
 
 def exported(files: dict[str, str]) -> bytes:
@@ -175,6 +188,35 @@ class TestCheck(unittest.TestCase):
         # without the flag an open question is the client's to answer, and passes
         self.assertEqual(check(exported({"spec/decisions.toml": OPEN})), "")
 
+    def test_a_missed_need_with_no_one_to_ask_is_never_delivered(self) -> None:
+        """Watt's W0240 (ADR-027): only the client trades a need away. A no-questions job whose
+        decision misses a need fails the gate, which tells the builder to reject the job
+        (needs-client) with the decision's question -- not to decide it itself."""
+        files = {"spec/needs.toml": NEEDS, "spec/decisions.toml": TRADED}
+        why = check(exported(files), no_questions=True)
+        self.assertIn("decision charge_path leaves need(s) charge unmet", why)
+        self.assertIn("reject it with category needs-client", why)
+        self.assertIn("Charge the phone through a role-swap part", why)
+        opened = TRADED.replace(
+            'by = "agent"\nstatus = "decided"\nchoice = "leave"',
+            'by = "client"\nstatus = "open"\nassumption = "leave"',
+        )
+        why = check(exported({**files, "spec/decisions.toml": opened}), no_questions=True)
+        self.assertIn("needs-client", why)
+        self.assertNotIn("decide each yourself", why)
+        # a need the client accepted as a wish may be missed; and with questions allowed, it is
+        # Watt's W0240 (and the client's answer), not this check
+        wish = NEEDS + 'wish = "charging would be nice"\n'
+        self.assertEqual(check(exported({**files, "spec/needs.toml": wish}), no_questions=True), "")
+        accepted = TRADED.replace(
+            'by = "agent"\nstatus = "decided"\nchoice = "leave"',
+            'by = "client"\nstatus = "answered"\nchoice = "accept"',
+        ).replace('affects = ["R.charge"]', 'affects = ["R.charge", "needs.charge"]')
+        self.assertEqual(
+            check(exported({**files, "spec/decisions.toml": accepted}), no_questions=True), ""
+        )
+        self.assertEqual(check(exported(files)), "")
+
     def test_an_unreadable_export_fails_closed(self) -> None:
         self.assertIn("could not be read", check(b"not a zip"))
 
@@ -277,6 +319,8 @@ class TestMinerPrompt(unittest.TestCase):
         decide = questions_rule({"no_questions": True}, "ag-1")
         self.assertIn("NOT to be asked questions", decide)
         self.assertIn('by = "agent", status = "decided"', decide)
+        self.assertIn("REJECT needs-client: <the decision's question>", decide)
+        self.assertIn('misses = ["<need>"]', decide)
         # an older template (no {questions}) still formats
         old = "{ws} {job}"
         extra = {"questions": "q", "no_questions": "no"}

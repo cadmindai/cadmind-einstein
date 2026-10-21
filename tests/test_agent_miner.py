@@ -430,6 +430,10 @@ class TestNoHandOver(unittest.TestCase):
             (kind, body["category"], body["message"]), ("reject", "not-allowed", "a weapon")
         )
         self.assertEqual(outcome("admission-1", "w", "REJECT not-allowed: x")[0], "submit")
+        # a no-questions job whose design would miss a need of the brief is the client's to decide
+        said = "REJECT needs-client: charge the phone? options: a: no; b: a PD chip"
+        kind, body = outcome("j", "w", said)
+        self.assertEqual((kind, body["category"]), ("reject", "needs-client"))
 
 
 if __name__ == "__main__":

@@ -103,6 +103,8 @@ EXPLORE = 0.10
 THIN_JOBS = 5
 DONE_KEEP_MS = 7 * 24 * 3_600_000
 """how long a finished job stays queryable (and in the store)"""
+CATEGORIES = ("not-allowed", "not-capable", "needs-client")
+"""What an agent may reject a job as (:meth:`Desk.reject`)."""
 SUBSTANTIVE = ("reject", "gate")
 """attempt kinds that are an opinion on the job (it cannot or should not be done)"""
 UNCOUNTED = ("dereg", "disabled", "stale", "ours")
@@ -274,7 +276,8 @@ class Attempt:
     """'' while open; pass | reject | gate | timeout | copy"""
     category: str = ""
     message: str = ""
-    """a rejection's category (not-allowed | not-capable) and the agent's message to the client"""
+    """a rejection's category (not-allowed | not-capable | needs-client) and the agent's message to
+    the client"""
     fork: str = ""
     """the validator's fork being gated, kept across a judgement retried on our side (its guard
     outcomes and build are reused, and no second fork is made)"""
@@ -1070,11 +1073,16 @@ class Desk:
         self._spawn(self._judge, job, a)
 
     def reject(self, hotkey: str, job_id: str, category: str, message: str) -> dict[str, Any]:
-        """The agent declines the assignment (the scope guide: not allowed, or not capable), with a
-        message the client reads if the job ends declined. The job goes to a second miner, which
-        decides on its own and is not shown the first one's message."""
-        if category not in ("not-allowed", "not-capable"):
-            raise DeskError("category is not-allowed or not-capable")
+        """The agent declines the assignment (the scope guide: not allowed, or not capable; or
+        ``needs-client``: the client asked not to be asked questions, and a need of the brief can
+        only be met or traded away by the client's decision -- Watt's W0240, a decision that
+        ``misses`` a need -- whose question and options are the message), with a message the
+        client reads if the job ends declined. The job goes to a second miner, which decides on its
+        own and is not shown the first one's message. A ``needs-client`` rejection counts like the
+        others in the miner's telemetry: another miner that delivers the job overturns it, which is
+        the check on a miner that sheds hard work under that category."""
+        if category not in CATEGORIES:
+            raise DeskError("category is not-allowed, not-capable or needs-client")
         text = " ".join(str(message or "").split())[:2000]
         if not text:
             raise DeskError("a rejection says why, for the client")

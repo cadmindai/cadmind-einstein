@@ -453,6 +453,25 @@ class TestDesk(unittest.TestCase):
         self.assertEqual(self.ledger.outcomes, [])
         self.assertEqual(self.desk.telemetry()[r1]["rejected"], 1)
 
+    def test_a_need_only_the_client_can_trade_declines_the_job_with_its_question(self) -> None:
+        """ADR-027: a no-questions job whose design would miss a need ends declined, not charged,
+        with the decision's question for the client (category needs-client)."""
+        self.poll(A, B, C)
+        self.enqueue(
+            {"job": "jn", "brief": "A gamepad that charges the phone.", "no_questions": True}
+        )
+        question = "Charge the phone through a role-swap part, or leave charging out?"
+        for _ in range(2):
+            hk, _ = self.assigned()
+            self.desk.reject(hk, "jn", "needs-client", question)
+            self.poll(A, B, C)
+            self.tick()
+        res = self.desk.status("jn")["result"]
+        self.assertEqual((res["label"], res["charge"]), ("declined", False))
+        self.assertEqual(res["messages"][0], {"category": "needs-client", "message": question})
+        with self.assertRaises(DeskError):
+            self.desk.reject(A, "jn", "need-client", "x")
+
     def test_a_rejection_overturned_by_a_pass_counts_against_the_rejecter(self) -> None:
         self.poll(A, B, C)
         self.enqueue({"job": "j8", "brief": "A wall hook."})

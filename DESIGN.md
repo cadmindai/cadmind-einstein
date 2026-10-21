@@ -84,7 +84,10 @@ validator: freeze on submit, fork, read Watt's verdict (the gate), copy check, s
   is not deliverable (the client reads it; whitespace collapsed, at most 2000 characters). Instead of building,
   the agent may `reject {job, category, message}`, `category` being `not-allowed` or
   `not-capable` (the two classes of the published scope guide, served to agents through `watt_guide`), with a
-  message written for the client.
+  message written for the client; or `needs-client` when the client asked not to be asked questions and a
+  decision would leave a need of the brief unmet (Watt's W0240, a decision with `misses`): only the client trades
+  a need away, so such a job is declined with the decision's question and options, never delivered. The gate
+  refuses that delivery too (the answers check).
 - **Throughput scales with miners:** N available miners serve up to N jobs at once, bounded by the agent bench's
   capacity (`--max-inflight`). A miner holds one job at a time.
 

@@ -29,7 +29,7 @@ questions and answers: check
 ``client_answers`` after each ``watt`` step, record each answer in its decision -- or, when the
 client asked not to be asked questions, decide every one) and ``{no_questions}`` (``yes``/``no``).
 The agent's last line must be ``DONE <digest>`` or
-``REJECT <not-allowed|not-capable>: <message for the client>``.
+``REJECT <not-allowed|not-capable|needs-client>: <message for the client>``.
 
 There is no hand-over: an agent that ends without either line while more than 10 minutes remain
 is resumed once, in the same session, and told to take the next most valuable piece. Only Claude
@@ -159,6 +159,8 @@ nothing in the request can be delivered; a client's "you may quit if it is impos
 change that.
 If the scope guide says we may not or cannot build it, end with exactly one line:
 REJECT <not-allowed|not-capable>: <message for the client>
+(and, only when the client asked not to be asked questions, `REJECT needs-client:` as the \
+questions rule says)
 Otherwise work until `watt` status says deliverable and `client_answers` has nothing new (an \
 answer that came is recorded first, and the design made deliverable again), then end with exactly \
 one line:
@@ -205,7 +207,12 @@ choice = the option you build on, because = why), so the client sees it as an as
 result. \
 The validator refuses a delivery with an open client decision. Still call `client_answers` after \
 each `watt` command: a change the client sends mid-job arrives there (brief/change-*.md), and \
-so does a photo (brief/photo-*: look at it with `view_image`). """
+so does a photo (brief/photo-*: look at it with `view_image`). \
+One exception: a decision whose option you would build on leaves a need of the brief unmet \
+(record it with misses = ["<need>"]; Watt's W0240 refuses it as yours to take). Trading a need \
+away is the client's alone, and this client cannot be asked: do not decide it and do not \
+deliver. End instead with exactly one line: REJECT needs-client: <the decision's question>; \
+options: <id: its consequence>; ... (one line, written for the client). """
     + PARTS
 )
 
@@ -371,7 +378,7 @@ SUMMARY_CHARS = 2000
 """the most of the agent's final text sent as ``summary`` (the validator keeps as many)"""
 
 _DONE = re.compile(r"^DONE\s+(\S+)\s*$", re.MULTILINE)
-_REJECT = re.compile(r"^REJECT (not-allowed|not-capable):\s*(.+)$", re.MULTILINE)
+_REJECT = re.compile(r"^REJECT (not-allowed|not-capable|needs-client):\s*(.+)$", re.MULTILINE)
 _UNFINISHED = re.compile(r"^UNFINISHED:\s*(.+)$", re.MULTILINE)
 
 
