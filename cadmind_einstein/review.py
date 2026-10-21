@@ -27,10 +27,10 @@ then **capped** (rubric 2, :func:`function_bounds`, :func:`sample_cap`).
 **The function cap** (rubric 2). A device that does not work scores at most :data:`FUNCTION_CAP`,
 whatever it looks like. "Does not work" is read MECHANICALLY from the fact sheet's ``function``
 section, Watt's own verdicts (the platform's ``cadmind-review-facts/2``): its ``summary.fails``
-names one of :data:`FAIL_REASONS` (a must failing, a control a must relies on unwired, worked by no
-operator or without travel, the client's product unreachable or not fitting), or a must's verdict
-is ``failed``. Then R2 is 0 and the value is capped. When Watt cannot show that the device works
-(``summary.unverified``: one of :data:`UNVERIFIED_REASONS`), R2 is at most
+names one of :data:`FAIL_REASONS` (a must failing, a control a must relies on undeclared, unwired,
+worked by no operator or without travel, the client's product unreachable or not fitting), or a
+must's verdict is ``failed``. Then R2 is 0 and the value is capped. When Watt cannot show that
+the device works (``summary.unverified``: one of :data:`UNVERIFIED_REASONS`), R2 is at most
 :data:`UNVERIFIED_R2_MAX`. Where Watt cannot see (a third-party product modelled as a box), the
 reviewer's own R2 of 0 -- "it would not work as made" -- caps the value the same way. A fact sheet
 without the section (format 1) bounds nothing.
@@ -85,6 +85,7 @@ UNVERIFIED_R2_MAX = 2
 """R2's most when Watt cannot show that the device works (rubric 2)."""
 FAIL_REASONS = (
     "must_failed",
+    "control_undeclared",
     "control_unwired",
     "control_unworked",
     "control_no_travel",

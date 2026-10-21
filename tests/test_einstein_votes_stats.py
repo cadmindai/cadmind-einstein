@@ -295,6 +295,8 @@ class TestRubricAndReplies(unittest.TestCase):
         self.assertEqual(s.scores["R2"]["score"], 0)
         self.assertEqual(s.value, FUNCTION_CAP)
         self.assertTrue(any("control_unworked" in n for n in s.notes))
+        # an undeclared control on a part a must relies on is a failure too
+        self.assertEqual(function_bounds(facts(["control_undeclared"])).cap, FUNCTION_CAP)
         # a must whose verdict is failed caps without a listed reason
         b = function_bounds(facts(musts=[{"id": "m", "verdict": "failed"}]))
         self.assertEqual(b.reasons, ("must_failed",))

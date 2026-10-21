@@ -48,7 +48,9 @@ names, never Watt's prose). The platform classes each finding by its Watt code a
 `function.summary` (`status`: `fails`, `unverified` or `no_finding` -- never "verified": Watt judges the client's
 products as modelled, so no finding is not proof of a fit with the real product):
 
-- `fails` -- it does not work as built: `must_failed` (a must's test fails), `control_unwired` (a control a must
+- `fails` -- it does not work as built: `must_failed` (a must's test fails), `control_undeclared` (a bought item a
+  must relies on does not state its controls, W0808: a control nothing can check; "relied on" = placed by a hold that
+  serves a must, read from Watt's assembly instructions), `control_unwired` (a control a must
   relies on is not wired, W0801), `control_unworked` (a control no operator works, W0724), `control_no_travel` (a
   control with no free motion, W0723), `product_unreachable` (a plug cannot reach the client's port, W0719),
   `product_unfit` (an interference, keep-out, hold apart or unsolved, or an item free to leave, naming a client
@@ -94,7 +96,7 @@ A reason a rubric does not list bounds nothing (a new reason needs a new rubric)
 
 The system prompt, the rubric, the anchors, the reply schema, the bundle format and the cap rules are hashed together
 into the **rubric digest** (`cadmind_einstein.review.rubric_digest()`; rubric 2 in einstein 0.4.2 is
-`sha256:294ea60c6a2f66147a8940f5eefbcf351595e079512cf3f763bbb35f164af822`); a vote names it, and a vote naming another digest or another image set is not counted.
+`sha256:6ff1181e60f1aad47c0b30087014c08ff5e81e34662fd4560c3c9e31eaaa6cd2`); a vote names it, and a vote naming another digest or another image set is not counted.
 
 ### The reply
 

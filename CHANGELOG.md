@@ -14,7 +14,7 @@ All notable changes to this project are listed here. The format follows
   whatever it looks like. The cap is applied mechanically after the reply is parsed, from the review bundle's
   **function evidence** (`facts.function`, fact sheet format 2: Watt's own verdicts -- each must and how it is
   checked, the controls and the client's products with their findings, the version re-checked under today's Watt):
-  a reason in `summary.fails` (a must failing, a control a must relies on unwired, worked by no operator or without
+  a reason in `summary.fails` (a must failing, a control a must relies on undeclared, unwired, worked by no operator or without
   travel, the client's product unreachable or not fitting) sets R2 to 0 and caps the value; a reason in
   `summary.unverified` bounds R2 at 2; the reviewer's own R2 of 0 caps the value too. Each sample records
   `raw_value`, `cap` and `value`; the public vote publishes each sample's cap (`caps`) and `cadmind-recompute`
