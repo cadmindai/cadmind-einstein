@@ -100,7 +100,6 @@ BUILTIN_TOOLS = (
     "Grep",
     "LS",
     "WebFetch",
-    "WebSearch",
     "NotebookEdit",
     "NotebookRead",
     "Task",
@@ -108,12 +107,22 @@ BUILTIN_TOOLS = (
 )
 """Claude Code's built-in tools, denied by name: ``--allowedTools`` only pre-approves the MCP tools,
 it does not take the built-ins away, and a hostile brief must not steer the agent into reading or
-sending anything from the miner's machine."""
+sending anything from the miner's machine. ``WebSearch`` is not here: it runs on the model
+provider's side and touches nothing on this machine (``WEB_SEARCH``). ``WebFetch`` stays denied, so
+every page the agent uses is downloaded with ``fetch_to_workspace`` (or the hosted ``fetch``),
+stored in the project and cited."""
+WEB_SEARCH = "WebSearch"
+"""Claude Code's web search, pre-approved: the agent needs real drawings and dimensions of every
+product the device fits (positions of ports, buttons, cameras), not only a spec sheet's outline."""
 KILL_GRACE_S = 10.0
 
 PROMPT = """You are a CADmind einstein miner. Build this client's device in the Watt workspace \
-`{ws}` (made from the brief), using ONLY the {server} MCP tools (and the local \
-`fetch_to_workspace` tool when it is there).
+`{ws}` (made from the brief), with the {server} MCP tools, the local `fetch_to_workspace` tool \
+and web search. Use web search to find drawings and dimensions of every product the device must \
+fit (its outline AND the positions and sizes of its buttons, ports, grilles, camera and other \
+protrusions); store each page you use with `fetch_to_workspace` (or with the hosted `fetch` when \
+the local tool is not there) and cite it. A spec sheet's overall size is not enough for a part \
+that fits around a product.
 
 Start with `watt_guide` (brief, then primer, then scope). The client's photos, when they sent \
 any (the brief names them), are in the workspace's brief/ (brief/photo-*): look at each with \
@@ -264,11 +273,13 @@ def agent_argv(
 
 
 def allowed_tools(a: argparse.Namespace) -> str:
-    """Claude Code's ``--allowedTools``: the Watt MCP server's tools, and the local fetch tool."""
+    """Claude Code's ``--allowedTools``: the Watt MCP server's tools, the local fetch tool, and web
+    search."""
     tools = [f"mcp__{MCP_SERVER}"]
     if getattr(a, "local_fetch", True):
         tools.append(f"mcp__{FETCH_SERVER}__{FETCH_TOOL}")
         tools.append(f"mcp__{FETCH_SERVER}__{TIME_TOOL}")
+    tools.append(WEB_SEARCH)
     return ",".join(tools)
 
 

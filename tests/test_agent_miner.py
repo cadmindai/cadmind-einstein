@@ -52,10 +52,10 @@ class TestAgentArgv(unittest.TestCase):
         argv = self.call(ns())
         self.assertEqual(argv[:3], ["claude", "-p", "P"])
         self.assertIn("--strict-mcp-config", argv)
-        # the Watt MCP server's tools and the one local fetch tool (tests/test_fetch_mcp.py)
+        # the Watt tools, the local fetch tools (tests/test_fetch_mcp.py) and web search
         self.assertEqual(
             argv[argv.index("--allowedTools") + 1],
-            "mcp__cadmind-watt,mcp__cadmind-fetch__fetch_to_workspace,mcp__cadmind-fetch__time_left",
+            "mcp__cadmind-watt,mcp__cadmind-fetch__fetch_to_workspace,mcp__cadmind-fetch__time_left,WebSearch",
         )
         self.assertNotIn("--model", argv)
 
@@ -193,6 +193,38 @@ class TestCancelledJob(unittest.TestCase):
         denied = argv[argv.index("--disallowedTools") + 1].split(",")
         for tool in ("Bash", "Read", "Write", "Edit", "WebFetch", "Grep", "Glob"):
             self.assertIn(tool, denied)
+
+    def test_web_search_is_allowed_and_web_fetch_is_not(self) -> None:
+        """Web search runs on the model provider's side; downloads go through the fetch tool, so
+        every source is stored in the project and cited."""
+        argv = agent_argv(
+            ns(),
+            prompt="P",
+            prompt_file=Path("/s/p"),
+            mcp_file=Path("/s/m"),
+            ws="w",
+            job="j",
+        )
+        allowed = argv[argv.index("--allowedTools") + 1].split(",")
+        denied = argv[argv.index("--disallowedTools") + 1].split(",")
+        self.assertIn("WebSearch", allowed)
+        self.assertNotIn("WebSearch", denied)
+        self.assertIn("WebFetch", denied)
+        self.assertNotIn("WebFetch", allowed)
+        self.assertFalse(set(allowed) & set(denied))
+
+    def test_the_prompt_says_to_search_the_web_for_the_fitted_products(self) -> None:
+        said = " ".join(PROMPT.split())
+        self.assertNotIn("ONLY", said)
+        self.assertIn(
+            "with the {server} MCP tools, the local `fetch_to_workspace` tool and web search. Use "
+            "web search to find drawings and dimensions of every product the device must fit (its "
+            "outline AND the positions and sizes of its buttons, ports, grilles, camera and other "
+            "protrusions); store each page you use with `fetch_to_workspace` (or with the hosted "
+            "`fetch` when the local tool is not there) and cite it. A spec sheet's overall size is "
+            "not enough for a part that fits around a product.",
+            said,
+        )
 
 
 class TestNoHandOver(unittest.TestCase):

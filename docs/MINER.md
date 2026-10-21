@@ -302,8 +302,13 @@ This repository ships two miners:
   submission without `DONE` carries a `summary` for the client: the agent's final text (whitespace collapsed, the
   last 2000 characters), or an `UNFINISHED: ...` line should the agent write one (the prompt no longer asks for it).
   By default it runs Claude Code's CLI
-  (`claude -p`, `--strict-mcp-config`, `--allowedTools mcp__cadmind-watt,mcp__cadmind-fetch__fetch_to_workspace,mcp__cadmind-fetch__time_left`,
-  and `--disallowedTools` for the built-in shell, file, web, notebook and task tools);
+  (`claude -p`, `--strict-mcp-config`, `--allowedTools mcp__cadmind-watt,mcp__cadmind-fetch__fetch_to_workspace,mcp__cadmind-fetch__time_left,WebSearch`,
+  and `--disallowedTools` for the built-in shell, file, web fetch, notebook and task tools). Web search is allowed
+  and the prompt says to use it: a part that fits around a product needs that product's drawings (the positions and
+  sizes of its buttons, ports, camera and other protrusions), not only a spec sheet's outline. It runs on the model
+  provider's side and touches nothing on your machine, so a hostile brief cannot use it to reach your files.
+  `WebFetch` stays denied: every page the agent uses is downloaded with `fetch_to_workspace` (or the hosted
+  `fetch`), so it is stored in the project's assets and cited;
   `--no-local-fetch` leaves the local tool out; `--agent-cli`, `--model` and `--agent-arg` configure it, and
   `--agent-command` runs any other agent CLI from an argv template. Your CLI uses whatever credentials you have
   configured for it.

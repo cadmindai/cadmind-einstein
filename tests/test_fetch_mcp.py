@@ -355,7 +355,7 @@ class TestMinerWiring(unittest.TestCase):
         allowed = argv[argv.index("--allowedTools") + 1]
         self.assertEqual(
             allowed,
-            "mcp__cadmind-watt,mcp__cadmind-fetch__fetch_to_workspace,mcp__cadmind-fetch__time_left",
+            "mcp__cadmind-watt,mcp__cadmind-fetch__fetch_to_workspace,mcp__cadmind-fetch__time_left,WebSearch",
         )
         self.assertIn("--strict-mcp-config", argv)
         argv = agent_miner.agent_argv(
@@ -366,7 +366,7 @@ class TestMinerWiring(unittest.TestCase):
             ws="w",
             job="j",
         )
-        self.assertEqual(argv[argv.index("--allowedTools") + 1], "mcp__cadmind-watt")
+        self.assertEqual(argv[argv.index("--allowedTools") + 1], "mcp__cadmind-watt,WebSearch")
         self.assertFalse(
             agent_miner.parser().parse_args([*self._required, "--no-local-fetch"]).local_fetch
         )

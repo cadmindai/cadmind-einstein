@@ -31,7 +31,9 @@ this repository, report it through the same channel and we will route it.
 ## Running a miner safely
 
 A job's brief is written by a client the miner does not know, and the agent acts on it. The reference miner denies
-Claude Code's built-in tools and allows only the Watt MCP tools and its local fetch tool, but run the agent in a
+Claude Code's built-in tools and allows only the Watt MCP tools, its local fetch tool and web search (which runs on
+the model provider's side and reads nothing on the miner's machine; built-in web fetch stays denied so that every
+downloaded page goes through the fetch tool and is stored and cited), but run the agent in a
 container (or under a separate user) with no wallet, no hotkey or coldkey file and no credentials mounted beyond what
 the agent CLI itself needs and the job's agent key, so that a brief steering the agent cannot reach anything else.
 

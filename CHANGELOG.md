@@ -7,6 +7,22 @@ All notable changes to this project are listed here. The format follows
 
 ## [Unreleased]
 
+## [0.3.12] - 2026-10-21
+
+### Changed
+- The reference miner allows Claude Code's web search: `WebSearch` is no longer in `--disallowedTools` and is
+  pre-approved in `--allowedTools`. A part that fits around a product needs that product's drawings (the positions
+  and sizes of its buttons, ports, camera and other protrusions), and a spec page's outline was all the agent could
+  find without it. Web search runs on the model provider's side and touches nothing on the miner's machine.
+  `WebFetch` stays denied: every page the agent uses is downloaded with `fetch_to_workspace` (or the hosted
+  `fetch`), so it is stored in the project and cited. Every other built-in tool stays denied.
+- The reference miner's prompt no longer says to use ONLY the Watt MCP tools: it names the Watt tools, the local
+  `fetch_to_workspace` tool and web search, says to search the web for drawings and dimensions of every product the
+  device must fit, to store each page used with `fetch_to_workspace` (or with the hosted `fetch` when the local
+  tool is not there, `--no-local-fetch`) and cite it, and that a spec sheet's overall size is not enough for a part
+  that fits around a product.
+- `docs/MINER.md` and `SECURITY.md` say why web search is allowed and web fetch is not.
+
 ## [0.3.11] - 2026-10-20
 
 ### Changed
