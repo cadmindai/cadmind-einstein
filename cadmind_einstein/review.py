@@ -204,17 +204,26 @@ def rubric_digest() -> str:
 
 # -- prompt injection ------------------------------------------------------------------------------
 
+INJECTION_PATTERNS: tuple[str, ...] = (
+    (
+        r"\b(ignore|disregard|forget|override)\b.{0,40}\b(previous|prior|above|earlier|all|any)\b"
+        r".{0,40}\b(instructions?|prompts?|rules?|messages?|text)\b"
+    ),
+    r"\b(score|rate|grade|mark|evaluate|judge)\s+(this|it|the\s+device|the\s+design|me|us)\b",
+    r"\b(give|award|assign)\b.{0,30}\b(score|rating|grade|stars?|points?|marks?)\b",
+    r"\b(full|maximum|max|perfect|top|highest)\s+(score|marks?|rating|points?)\b",
+    r"\byou\s+(are|must|should|will)\b",
+    r"\b(system|assistant|developer)\s*(prompt|message|:)",
+    r"^\s*(system|assistant|user|developer)\s*:",
+    r"<\s*/?\s*(system|assistant|user|instructions?)\s*>",
+    r"\{\s*\"?R[1-5]\"?\s*:",
+    r"\bnew\s+instructions?\b",
+    r"\bjailbreak\b",
+)
+"""Instruction-shaped text (case-insensitive): what the platform withholds from the fact sheet,
+the same list as its ``backend/review/facts.py``."""
 _INSTRUCTION = re.compile(
-    r"(?ix)"
-    r"\b(ignore|disregard|forget|override)\b[^.\n]{0,40}\b(previous|prior|above|earlier|all|"
-    r"instruction|instructions|rules|rubric|prompt)\b"
-    r"|\b(score|rate|grade|mark|rank)\b[^.\n]{0,30}\b(this|it|me|the\s+device|as|with|a|an)\b"
-    r"[^.\n]{0,20}\b([0-4]|10|five|four|full|maximum|max|highest|perfect)\b"
-    r"|\byou\s+are\s+(now|a|an|the)\b"
-    r"|(^|[\s\[<{])(system|assistant|developer)\s*[:>\]]"
-    r"|<\s*/?\s*(system|assistant|user|instructions?)\s*>"
-    r"|\bnew\s+instructions?\b"
-    r"|\{\s*\"R[1-5]\"\s*:"
+    "|".join(f"(?:{p})" for p in INJECTION_PATTERNS), re.IGNORECASE | re.MULTILINE
 )
 
 
@@ -322,16 +331,21 @@ def read_bundle(data: bytes) -> Bundle:
             digest, _, name = line.partition("  ")
             sums[name.strip()] = digest.strip()
         images: dict[str, bytes] = {}
+        seen: set[str] = set()
         for item in manifest.get("images") or []:
             name = str(item.get("name") or "")
             path = str(item.get("path") or f"images/{name}")
-            if name not in sums or path not in names:
+            # images.sha256 names each file by its path in the bundle (or by its bare name)
+            listed = path if path in sums else name
+            if listed not in sums or path not in names:
                 raise BundleError(f"image {name!r} is not in the bundle")
             raw = z.read(path)
-            if _sha(raw) != sums[name] or str(item.get("sha256") or sums[name]) != sums[name]:
+            want = sums[listed]
+            if _sha(raw) != want or str(item.get("sha256") or want) != want:
                 raise BundleError(f"image {name!r} does not match its digest")
             images[name] = raw
-        if set(images) != set(sums):
+            seen.add(listed)
+        if seen != set(sums):
             raise BundleError("images.sha256 and the manifest list different images")
         facts_raw, client_raw = z.read("facts.json"), z.read("client.json")
         if manifest.get("facts_sha256") and manifest["facts_sha256"] != _sha(facts_raw):

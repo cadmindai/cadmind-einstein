@@ -73,7 +73,8 @@ def make_bundle(
 ) -> bytes:
     images = {name: PNG + name.encode() for name in VIEWS}
     listing = "".join(
-        f"{hashlib.sha256(raw).hexdigest()}  {name}\n" for name, raw in sorted(images.items())
+        f"{hashlib.sha256(raw).hexdigest()}  images/{name}\n"
+        for name, raw in sorted(images.items())
     ).encode()
     facts_raw = json.dumps(facts or {"requirements": [{"id": "holds", "statement": "holds 5 kg"}]})
     client_raw = json.dumps(client or {"brief": BRIEF})
@@ -83,7 +84,6 @@ def make_bundle(
         "images": [
             {
                 "name": n,
-                "path": f"images/{n}",
                 "sha256": hashlib.sha256(r).hexdigest(),
                 "kind": "world" if n.startswith("world") else "analytic",
                 "view": n.split("-", 1)[1].removesuffix(".png"),
