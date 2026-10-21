@@ -222,7 +222,9 @@ do what it asks; a photo they send (kind photo, brief/photo-*) is theirs: look a
 `view_image`. The validator refuses a delivery that leaves an answer unrecorded. Use \
 `wait_for_answer` only when no useful work can go on under the assumptions (it waits briefly). \
 If `client_answers` says `no_questions: true`, the client asked not to be asked: decide every \
-would-be question yourself instead (by = "agent", status = "decided", choice, because). """
+would-be question yourself instead (by = "agent", status = "decided", choice, because), save one \
+that trades a need away: it ends the job with `REJECT needs-client` (the deliver-what-you-can \
+rule). """
     + PARTS
 )
 
