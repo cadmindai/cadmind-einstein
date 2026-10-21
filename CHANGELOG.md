@@ -7,6 +7,41 @@ All notable changes to this project are listed here. The format follows
 
 ## [Unreleased]
 
+## [0.4.5] - 2026-10-22
+
+### Changed
+- **One rule for a part that cannot be delivered.** When the client can be asked, the builder builds everything
+  that can be delivered without giving up a need and leaves the missing part as an open client decision with
+  `misses`. On a `no_questions` job the same decision ends the job with `REJECT needs-client`, never a delivery;
+  every other would-be question is still decided and built as usual. The reference prompt and docs/MINER.md say it
+  once, the same way.
+- **Sub-projects.** The prompt and docs/MINER.md say when to split a device (too big for one round), what the parent
+  delivers (its own parts and each sub-device's interface, not the sub-devices), and what a sub-device's workspace
+  holds (`brief/contract.toml`, `brief/parent.md`).
+- **The client always reads the builder's summary.** A submission now carries the agent's final text without its
+  `DONE` line, so the builder's notes on a delivered project reach the client too. A model provider's usage-limit
+  notice is never sent as the builder's words.
+- **A `REJECT` message is kept whole**: everything from the line to the end of the output, not its first line only.
+- **Resume.** An agent that stops early is resumed up to 3 times (was once). A session that ended with no output or
+  answers `No response requested.` is replaced by a new session told that the workspace holds its earlier work.
+  Every run's exit code and error output are logged and kept in the job's log.
+- **Answers.** The prompt says to keep a decision's `assumption` line when recording the client's answer: an answer
+  that picks the assumption keeps the recorded guard. A `watt` answer now says when the client wrote and the builder
+  has not read it.
+
+### Fixed
+- **A lost submit or reject is sent again** with a backoff on no answer, 429 or 5xx; 200, 404, 410 and other 4xx
+  answers are final.
+- **A revoked key or a dropped admission recovers.** While idle, the miner checks every hour that the platform still
+  takes its agent key and asks for admission again; a revoked key is minted again. Before, both happened only at
+  startup.
+- **The local fetch reaches dual-stack hosts when IPv6 has no route.** `fetch_to_workspace` tries each checked
+  address in turn, so a host whose IPv6 address comes first is reached over IPv4 instead of failing with
+  `Network is unreachable`.
+- **The local fetch percent-encodes the url's path and query**, so a non-ASCII or spaced path no longer fails with
+  `UnicodeEncodeError` or `InvalidURL`. A redirected fetch says so plainly, so the builder checks that the stored page
+  is the product it meant.
+
 ## [0.4.4] - 2026-10-22
 
 ### Added

@@ -58,6 +58,8 @@ class Site(BaseHTTPRequestHandler):
         p = self.path
         if p == "/ds.pdf":
             return self._send(200, PDF)
+        if p == "/blogs/%E7%9F%A5%E8%AD%98/a%20b.pdf?q=%C3%A9":  # sent encoded, as a browser does
+            return self._send(200, PDF)
         if p == "/moved":
             return self._send(302, b"", Location="/ds.pdf")
         if p == "/to-private":
@@ -93,6 +95,13 @@ class Site(BaseHTTPRequestHandler):
             self.send_header("Content-Length", str(10_000))
         self.end_headers()
         self.wfile.write(b"%PDF" + b"x" * 9_996)
+
+
+def redirected(asked: str) -> str:
+    return (
+        f"\nREDIRECTED: you asked for {asked}; the stored page is the one above. Check it is the"
+        " product you meant before citing it."
+    )
 
 
 def loopback_only(host: str, port: int) -> str:
@@ -143,6 +152,40 @@ class TestDownloadFences(unittest.TestCase):
 
     def get(self, path: str, **kw: Any):
         return download(self.base + path, resolver=loopback_only, **kw)
+
+    def test_a_non_ascii_or_spaced_path_is_percent_encoded(self) -> None:
+        """2026-10-21: a `/blogs/知識/...` path failed with UnicodeEncodeError, and a
+        Mouser url with spaces with InvalidURL."""
+        got = self.get("/blogs/知識/a b.pdf?q=é")
+        self.assertEqual((got.status, got.data), (200, PDF))
+
+    def test_each_address_is_tried_until_one_answers(self) -> None:
+        """2026-10-19..21: every dual-stack host failed with `Network is unreachable` while this
+        machine's IPv6 had no route; its IPv4 address answered."""
+        from cadmind_einstein import fetch_mcp
+
+        seen: list[str] = []
+
+        def connect(addr: tuple[str, int], timeout: float) -> str:
+            seen.append(addr[0])
+            if ":" in addr[0]:
+                raise OSError(101, "Network is unreachable")
+            return "sock"
+
+        with mock.patch.object(fetch_mcp.socket, "create_connection", side_effect=connect):
+            self.assertEqual(fetch_mcp._connect(["2001:db8::1", "192.0.2.1"], 443, 5.0), "sock")
+            self.assertEqual(seen, ["2001:db8::1", "192.0.2.1"])
+            with self.assertRaises(OSError):
+                fetch_mcp._connect(["2001:db8::1"], 443, 5.0)
+        infos = [
+            (socket.AF_INET6, socket.SOCK_STREAM, 6, "", ("2606:4700::1", 443, 0, 0)),
+            (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("104.16.0.1", 443)),
+            (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("104.16.0.1", 443)),
+        ]
+        with mock.patch.object(fetch_mcp.socket, "getaddrinfo", return_value=infos):
+            self.assertEqual(
+                fetch_mcp.public_addresses("example.com", 443), ["2606:4700::1", "104.16.0.1"]
+            )
 
     def test_a_document_and_a_checked_redirect(self) -> None:
         got = self.get("/ds.pdf")
@@ -247,7 +290,7 @@ class TestTheTool(unittest.TestCase):
         self.assertNotIn("isError", got)
         self.assertEqual(
             got["content"][0]["text"],
-            f"stored assets/ds: pdf\nasked for {self.base}/moved (redirected)",
+            f"stored assets/ds: pdf{redirected(self.base + '/moved')}",
         )
         path, headers, body = self.platform.calls[0]
         self.assertEqual(path, "/api/agent/workspaces/ag-0123/upload")
@@ -262,7 +305,7 @@ class TestTheTool(unittest.TestCase):
         got = self.call(self.server, workspace="ag-0123", url=self.base + "/moved", save_as="ds")
         self.assertEqual(
             got["content"][0]["text"],
-            self.platform.extra["answer"] + f"\nasked for {self.base}/moved (redirected)",
+            self.platform.extra["answer"] + redirected(self.base + "/moved"),
         )
 
     def test_a_platform_without_a_text_answer_is_an_error_that_names_what_was_stored(self) -> None:

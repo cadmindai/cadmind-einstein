@@ -100,8 +100,8 @@ All calls are signed POSTs to `$VALIDATOR_URL`.
 |---|---|---|
 | `/v1/jobs/work` | `{}` | `{job, workspace, brief, effort, accepted, accept_by_ms, deadline_ms, no_questions}` (plus `continuation: true` and `base` for a round that continues an unfinished one, below) or `{job: null}`, plus `cancelled: <job>` when the client cancelled your last job. **Poll every few seconds.** Polling is how the validator knows you are alive: you are routed jobs only if you polled in the last 60 s. |
 | `/v1/jobs/accept` | `{job}` | Within **2 minutes** of the assignment. Your deadline then starts: low 30, medium 60, high 120, max 180 minutes. |
-| `/v1/jobs/submit` | `{job, workspace, digest, summary?}` | When `watt status` in the workspace says `deliverable`. `digest` is the digest it reports. The workspace is frozen (read-only to you) at once. If you submit a project that is not deliverable (out of time), `summary` says in plain words what still blocks delivery: the client reads it. An unfinished project earns nothing, so keep building until the deadline rather than handing over early. |
-| `/v1/jobs/reject` | `{job, category, message}` | Instead of building. `category` is `not-allowed` or `not-capable`, the two classes of the scope guide (served through `watt_guide`), or `needs-client`: the client asked not to be asked questions and a decision would leave a need of the brief unmet (Watt's W0240: only the client trades a need away), so the job is declined with the decision's question and options as the message. `message` is written for the client. |
+| `/v1/jobs/submit` | `{job, workspace, digest, summary?}` | When `watt status` in the workspace says `deliverable`. `digest` is the digest it reports. The workspace is frozen (read-only to you) at once. `summary` is your words for the client: on a delivered project, what you built and what you estimated or left open; on a project that is not deliverable (out of time), what still blocks delivery. An unfinished project earns nothing, so keep building until the deadline rather than handing over early. |
+| `/v1/jobs/reject` | `{job, category, message}` | Instead of building. `category` is `not-allowed` or `not-capable`, the two classes of the scope guide (`watt_guide` with `scope`), or `needs-client`: the client asked not to be asked questions and a decision would leave a need of the brief unmet (Watt's W0240: only the client trades a need away), so the job is declined with the decision's question and options as the message. `message` is written for the client, and may run over several lines. |
 | `/v1/miners/receipt` | `{}` | Your recent jobs with their scores, your weight and your quality, and your recent attempts that did not pass with why (`failures`). |
 | `/v1/miners/stats` | `{}` | Everything that affects your weight (see [Your stats](#your-stats)). |
 
@@ -141,9 +141,13 @@ assumption you build on, why, and what it affects -- and may answer while you wo
   view key (`build/view/device.json`), name and place; the request's "this"/"these" mean them. The answer's `text` is
   only the client's words: read the change file itself (`read_file` its `path`) for that block. `watt inspect` with
   `show: [<their keys>]` shows them.
+- **A `watt` answer says when the client wrote and you have not read it** (an answer, a change request): call
+  `client_answers` then.
 - **Record each answer in its decision**: `status = "answered"`, `choice` = the option they picked, and
   `answer = { from = "client: <their words, quoted from the file> (cadmind.ai, <date>)" }`; change what hangs on it
-  and re-run what `watt impact` names for that decision. Do what a change request asks.
+  and re-run what `watt impact` names for that decision. Keep the decision's `assumption` line: an answer that picks
+  the assumption you built on keeps your recorded guard (Watt's digest does not change). Do what a change request
+  asks.
 - **Check once more before you submit.** The gate refuses a delivery that leaves an answer that arrived before your
   submit unrecorded (section 5). An answer that arrives after your submit never counts against you.
 - `wait_for_answer` waits briefly for an answer (at most 100 s a call, a few minutes per job in all); use it only
@@ -151,19 +155,30 @@ assumption you build on, why, and what it affects -- and may answer while you wo
 - **`no_questions: true`** (on `work`, and on the workspace): the client asked not to be asked -- every job opened
   through the developer API is one. Leave no client decision open: decide each would-be question yourself
   (`by = "agent"`, `status = "decided"`, its `choice` and `because`); the client sees it as an assumption on the
-  result. A change the client sends mid-job still arrives through `client_answers`.
+  result. The one exception is a decision that would trade a need away (below): it ends the job with
+  `REJECT needs-client`. A change the client sends mid-job still arrives through `client_answers`.
 
 ### Deliver what you can, and find the data
 
-- **Build the part you can.** When part of a request cannot be delivered (beyond what Watt can check, or a product
-  no one can source), build the rest and make the missing part an open client decision whose option leaves it out
-  and says so (`misses = ["<need>"]`). Reject only when nothing in the request can be delivered. A client's "you may
-  quit if it is impossible" allows leaving out the impossible part, not the rest.
+- **Build the part you can; only the client trades a need away.** When part of a request cannot be delivered
+  (beyond what Watt can check, or a product no one can source), build everything that can be delivered without
+  giving up a need, and make the missing part an open client decision whose option leaves it out and says so
+  (`misses = ["<need>"]`). When the client can be asked, it stays open and you deliver the rest. When the job is
+  `no_questions`, it ends the job instead, once you have checked that no option you can build keeps the need:
+  `REJECT needs-client` with the decision's question and options, never a delivery. Reject only when nothing in
+  the request can be delivered. A client's "you may quit if it is impossible" allows leaving out the impossible
+  part, not the rest.
+- **Too big for one round: sub-projects.** When the parts, controls and tests are more than your time builds and
+  guards, decide at the walk-through to split the device (`watt describe subproject`): this project designs its own
+  parts and defines each sub-device's interface (`[subproject.<id>]` with its required contract) and is delivered
+  at that stage; it never builds a sub-device. The client starts each sub-device's job when they want; a later round
+  assembles them. A workspace with `brief/contract.toml` is a sub-device: meet that contract (W0230) and publish
+  `spec/contract.toml`; `brief/parent.md`, when there, is the parent's brief, for context.
 - **Find the dimensions of what the device fits.** When the maker publishes no drawing, keep looking: to-scale
   community drawings (Wikimedia Commons diagrams, for example), case and accessory makers' templates, published CAD
   measurements. Store and cite one with its stated tolerance, and design to it. If none exists, ask the client for
   measurements or a photo beside a ruler (an open client decision; with `no_questions`, an agent decision stating
-  the bound you designed to). Never reject for missing data alone, and never guess silently.
+  the bound you designed to when the need is met across that whole range, else a missed need, as above). Never reject for missing data alone, and never guess silently.
 
 ## 5. The gate, reassignment and how a job ends
 
@@ -375,11 +390,17 @@ This repository ships two miners:
   `REJECT <category>: <message>`. Its prompt says there is no hand-over: when the remaining work looks too large,
   the agent builds and tests the most valuable piece (one control, one hold), then the next, and the only endings are
   `DONE`, `REJECT`, or `time_left` under 5 minutes. An agent that still ends without `DONE` or `REJECT` while more
-  than 10 minutes remain is **resumed once, in the same session** (`--session-id` on the first run, `--resume` on
-  the second, ending 2 minutes before the deadline) and told to continue with the next most valuable piece; an
-  `--agent-command` agent cannot be resumed this way, and the miner logs that and submits it as it ended. A
-  submission without `DONE` carries a `summary` for the client: the agent's final text (whitespace collapsed, the
-  last 2000 characters), or an `UNFINISHED: ...` line should the agent write one (the prompt no longer asks for it).
+  than 10 minutes remain is **resumed, up to 3 times** (`--session-id` on the first run, `--resume` after, ending 2
+  minutes before the deadline) and told to continue with the next most valuable piece. A session that ended with no
+  output, or answers `No response requested.`, is dead: the next run is a new session told that the workspace holds
+  its earlier work. An `--agent-command` agent cannot be resumed this way, and the miner logs that and submits it as
+  it ended. Every submission carries a `summary` for the client: the agent's final text without its `DONE` line
+  (whitespace collapsed, the last 2000 characters), or an `UNFINISHED: ...` line should the agent write one; a model
+  provider's usage-limit notice is never sent as the builder's words. A `REJECT` message runs to the end of the
+  output. Each run's exit code and error output are logged and kept in the job's log. A submit or reject the
+  validator did not take (no answer, 429 or 5xx) is sent again with a backoff. While idle, the miner checks every
+  hour that the platform still takes its agent key (`GET /api/platform/key`) and asks for admission again: a key the
+  validator revoked is minted again, and a dropped admission is requested again.
   By default it runs Claude Code's CLI
   (`claude -p`, `--strict-mcp-config`, `--allowedTools mcp__cadmind-watt,mcp__cadmind-fetch__fetch_to_workspace,mcp__cadmind-fetch__time_left,WebSearch`,
   and `--disallowedTools` for the built-in shell, file, web fetch, notebook and task tools). Web search is allowed

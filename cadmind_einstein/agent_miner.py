@@ -28,15 +28,25 @@ mode 0600), ``{model}``,
 questions and answers: check
 ``client_answers`` after each ``watt`` step, record each answer in its decision -- or, when the
 client asked not to be asked questions, decide every one) and ``{no_questions}`` (``yes``/``no``).
-The agent's last line must be ``DONE <digest>`` or
-``REJECT <not-allowed|not-capable|needs-client>: <message for the client>``.
+The agent's last line must be ``DONE <digest>``, or it ends with
+``REJECT <not-allowed|not-capable|needs-client>: <message for the client>`` (the message runs to the
+end of its output, over several lines if it says more).
 
-There is no hand-over: an agent that ends without either line while more than 10 minutes remain
-is resumed once, in the same session, and told to take the next most valuable piece. Only Claude
-Code's CLI can be resumed (``--session-id`` on the first run, ``--resume`` on the second:
-:class:`ClaudeSession`); an ``--agent-command`` agent is submitted as it ended. Without ``DONE``
-the submission's ``summary`` is the agent's final text (or an ``UNFINISHED:`` line, should it write
-one: the prompt no longer asks for it).
+There is no hand-over: an agent that ends without either while more than 10 minutes remain is
+resumed, up to :data:`MAX_RESUMES` times, and told to take the next most valuable piece. Only
+Claude Code's CLI can be resumed (``--session-id`` on the first run, ``--resume`` after:
+:class:`ClaudeSession`); a session that ended with no output, or answers ``No response
+requested.``, is dead, and the next run starts a new session told that the workspace holds its
+earlier work. An ``--agent-command`` agent is submitted as it ended. The submission's ``summary``
+is the agent's final text without its ``DONE`` line (or an ``UNFINISHED:`` line, should it write
+one), so the client reads the builder's own notes on a delivered project too; a model provider's
+usage-limit notice is never sent as the builder's words. Every run's exit code and error output
+are kept in the job's log.
+
+A submit or a reject the validator did not take (no answer, 429 or 5xx) is sent again with a
+backoff (:func:`send`). While idle, the miner checks every hour that its agent key still works and
+that it is admitted: a key the validator revoked (abuse, deregistration) is minted again, and a
+dropped admission is requested again (:func:`keep_admitted`).
 
 The agent also gets one local tool, ``fetch_to_workspace`` (:mod:`.fetch_mcp`, a stdio MCP server
 named ``cadmind-fetch``): it downloads a public document from the miner's own connection (many sites
@@ -66,6 +76,8 @@ import subprocess
 import sys
 import threading
 import time
+import urllib.error
+import urllib.request
 import uuid
 from collections.abc import Mapping
 from pathlib import Path
@@ -125,8 +137,9 @@ the local tool is not there) and cite it. A spec sheet's overall size is not eno
 that fits around a product. When the maker publishes no drawing, keep looking: to-scale community \
 drawings (Wikimedia Commons diagrams), case and accessory makers' templates, published CAD \
 measurements; cite one with its stated tolerance. If none exists, ask the client for measurements \
-or a photo beside a ruler (a client decision). Never refuse for missing data alone; never guess \
-silently.
+or a photo beside a ruler (a client decision; when the client cannot be asked, design to a bounded \
+estimate only if the need is met across its whole range, else it is a missed need, below). Never \
+refuse for missing data alone; never guess silently.
 
 Start with `watt_guide` (brief, then primer, then scope). The client's photos, when they sent \
 any (the brief names them), are in the workspace's brief/ (brief/photo-*): look at each with \
@@ -153,19 +166,30 @@ delivered only when the whole project passes `watt status`: failures it inherits
 job, and your time is only what `time_left` says. {questions}
 A `watt` run far longer than usual: stop it with `watt_cancel` and change the design.
 
-Deliver what you can: when part of the request cannot be delivered, build the rest and make that \
-part an open client decision whose option leaves it out (misses = ["<need>"]). REJECT only when \
-nothing in the request can be delivered; a client's "you may quit if it is impossible" does not \
-change that.
-If the scope guide says we may not or cannot build it, end with exactly one line:
+Deliver what you can; only the client trades a need away. When part of the request cannot be \
+delivered, build everything that can be delivered without giving up a need, and make the missing \
+part an open client decision whose option leaves it out (misses = ["<need>"]). When the client can \
+be asked, it stays open and you deliver the rest (DONE). When the client asked not to be asked, it \
+ends the job instead, once you have checked that no option you can build keeps the need: `REJECT \
+needs-client`, as the questions rule says, never DONE. A client's \
+"you may quit if it is impossible" does not change that.
+A device too big for one round (more parts, controls and tests than your time builds and guards): \
+decide at the walk-through to split it into sub-projects (`watt describe subproject`). This \
+project \
+designs its own parts and defines each sub-device's interface ([subproject.<id>] with its required \
+contract) and is delivered at that stage (DONE); it never builds a sub-device: the client starts \
+each sub-device's job when they want, and a later round assembles them. A workspace with \
+brief/contract.toml is a sub-device: meet that contract (W0230) and publish spec/contract.toml; \
+brief/parent.md, when there, is the parent's brief, for context.
+If the scope guide says we may not or cannot build any of it, end with:
 REJECT <not-allowed|not-capable>: <message for the client>
-(and, only when the client asked not to be asked questions, `REJECT needs-client:` as the \
-questions rule says)
+(the last thing you write)
 Otherwise work until `watt` status says deliverable and `client_answers` has nothing new (an \
 answer that came is recorded first, and the design made deliverable again), then end with exactly \
 one line:
 DONE <digest>
-(the digest `watt` status reports). You have about {minutes} minutes, until {deadline_utc} \
+(the digest `watt` status reports), after a few lines for the client: what you built, and what you \
+estimated or left open. You have about {minutes} minutes, until {deadline_utc} \
 UTC. You cannot feel time pass: check it with `time_left` (never guess it). There is no \
 hand-over: an unfinished project earns nothing. When the remaining work looks too large, start \
 its most valuable piece (one control, one hold), build it, test it, then take the next. The only \
@@ -188,10 +212,12 @@ QUESTIONS = (
 status = "open"), designed around your best sourced assumption: the client sees it in their chat \
 and may answer while you work. Keep building on the assumption; never wait for an answer. After \
 each `watt` command, call `client_answers` (workspace `{ws}`, `after` = the last `cursor` it \
-gave): each new answer is a file under brief/ (the client's words). Record it in its decision \
-(status = "answered", choice = the option they picked, answer = { from = "client: <their words, \
-quoted from that file> (cadmind.ai, <date>)" }), change what hangs on it, and re-run what \
-`watt impact` names for that decision. A change request (brief/change-*.md) is the client's too: \
+gave; a `watt` answer also says when the client wrote and you have not read it): each new answer \
+is a file under brief/ (the client's words). Record it in its decision (status = "answered", \
+choice = the option they picked, answer = { from = "client: <their words, quoted from that file> \
+(cadmind.ai, <date>)" }; keep its assumption line: an answer that picks the assumption you built \
+on keeps the recorded guard), change what hangs on it, and re-run what `watt impact` names for \
+that decision. A change request (brief/change-*.md) is the client's too: \
 do what it asks; a photo they send (kind photo, brief/photo-*) is theirs: look at it with \
 `view_image`. The validator refuses a delivery that leaves an answer unrecorded. Use \
 `wait_for_answer` only when no useful work can go on under the assumptions (it waits briefly). \
@@ -211,8 +237,10 @@ so does a photo (brief/photo-*: look at it with `view_image`). \
 One exception: a decision whose option you would build on leaves a need of the brief unmet \
 (record it with misses = ["<need>"]; Watt's W0240 refuses it as yours to take). Trading a need \
 away is the client's alone, and this client cannot be asked: do not decide it and do not \
-deliver. End instead with exactly one line: REJECT needs-client: <the decision's question>; \
-options: <id: its consequence>; ... (one line, written for the client). """
+deliver. Every other would-be question is decided and built as usual; a missed need ends the job \
+once you have checked that no option you can build keeps the need. End with: REJECT \
+needs-client: <the decision's question>; options: <id: its \
+consequence>; ... (written for the client). """
     + PARTS
 )
 
@@ -357,7 +385,7 @@ class AgentRun:
 
     def wait(self, timeout: float) -> tuple[str, str, bool]:
         """(stdout, stderr, timed_out): the agent's output once it ends, or at ``timeout`` (it is
-        then stopped)."""
+        then stopped). Its exit code is ``proc.returncode`` after."""
         try:
             out, err = self.proc.communicate(self._stdin, timeout=timeout)
             return out or "", err or "", False
@@ -370,16 +398,29 @@ class AgentRun:
 RESUME = """You stopped with {minutes} minutes left. There is no hand-over: an unfinished project \
 earns nothing. Continue with the next most valuable piece, build it, test it, and keep going until \
 `DONE`, `REJECT`, or `time_left` under 5 minutes."""
+HANDOFF = """ This workspace already holds the work of your earlier run on this job, which stopped \
+({why}); you have about {minutes} minutes left. Read DESIGN-NOTES.md and `watt status` first, \
+then continue it."""
+"""Added to the prompt of a new session that replaces a dead one (see :func:`dead`)."""
+MAX_RESUMES = 3
+"""the most runs after the first: an agent that keeps ending early is resumed again while time is
+left (2026-10-22 audit: builders quit with 21-105 minutes left)"""
 RESUME_MIN_LEFT_S = 600.0
-"""an agent that ends without ``DONE``/``REJECT`` with more than this left is resumed (once)"""
+"""an agent that ends without ``DONE``/``REJECT`` with more than this left is resumed"""
 RESUME_MARGIN_S = 120.0
 """the resumed run ends this long before the deadline, leaving time to submit"""
 SUMMARY_CHARS = 2000
 """the most of the agent's final text sent as ``summary`` (the validator keeps as many)"""
 
 _DONE = re.compile(r"^DONE\s+(\S+)\s*$", re.MULTILINE)
-_REJECT = re.compile(r"^REJECT (not-allowed|not-capable|needs-client):\s*(.+)$", re.MULTILINE)
+_REJECT = re.compile(r"^REJECT (not-allowed|not-capable|needs-client):[ \t]*(\S.*)?$", re.MULTILINE)
 _UNFINISHED = re.compile(r"^UNFINISHED:\s*(.+)$", re.MULTILINE)
+_NO_RESPONSE = "No response requested."
+"""What Claude Code's CLI answers when a resumed session does not call the model at all (2026-10-21:
+a job lost 157 minutes after a run that ended with no output)."""
+LIMIT = re.compile(r"you've hit your [^\n]*limit", re.IGNORECASE)
+"""A model provider's usage-limit notice ("You've hit your weekly limit · resets ..."): the CLI's
+words, never the builder's, so never the client's ``summary``."""
 
 
 class ClaudeSession:
@@ -410,12 +451,29 @@ def ended(text: str) -> bool:
     return bool(_DONE.search(text) or _REJECT.search(text))
 
 
+def dead(text: str) -> str:
+    """Why a run's output says its session is dead ('' when it is not): no output at all, or the
+    CLI's ``No response requested.`` A dead session is not resumed: a new one is started."""
+    said = text.strip()
+    if not said:
+        return "it ended with no output"
+    if said == _NO_RESPONSE:
+        return "its session answered no more"
+    return ""
+
+
 class Build:
-    """One job's agent runs: the final output (the resumed run's, when there was one), the log."""
+    """One job's agent runs: the final output (the last run's that said something), the log."""
 
     def __init__(self, text: str, record: str, *, timed_out: bool, cancelled: bool) -> None:
         self.text, self.record, self.timed_out, self.cancelled = text, record, timed_out, cancelled
         self.resumed = False
+        self.runs = 1
+
+
+def _record(out: str, err: str, code: int | None, timed_out: bool) -> str:
+    end = "TIMEOUT" if timed_out else f"exit {code}"
+    return f"{out}\n--- {end} ---\n--- stderr ---\n{err}"
 
 
 def build(
@@ -430,69 +488,150 @@ def build(
     log: Any,
     job: str,
 ) -> Build:
-    """Run the agent; when it ends without ``DONE`` or ``REJECT`` with more than
-    :data:`RESUME_MIN_LEFT_S` before the deadline, resume the same session once (there is no
-    hand-over: an unfinished project earns nothing). ``watch(run)`` is told the running
-    :class:`AgentRun` (``None`` once it ends), so a cancelled job can stop it."""
+    """Run the agent; while it ends without ``DONE`` or ``REJECT`` with more than
+    :data:`RESUME_MIN_LEFT_S` before the deadline, run it again, up to :data:`MAX_RESUMES` times
+    (there is no hand-over: an unfinished project earns nothing): the same session, or a new one
+    told of its earlier work when the session is dead (:func:`dead`). ``watch(run)`` is told the
+    running :class:`AgentRun` (``None`` once it ends), so a cancelled job can stop it. Each run's
+    exit code and error output are logged and kept in the record."""
 
     def one(argv: list[str], stdin_: str | None, timeout: float) -> tuple[str, str, bool, bool]:
+        nonlocal record
         run = AgentRun(argv, cwd=cwd, stdin=stdin_)
         watch(run)
         try:
             out, err, timed_out = run.wait(timeout)
         finally:
             watch(None)
+        code = getattr(getattr(run, "proc", None), "returncode", None)
+        code = code if isinstance(code, int) else None
+        if (code is not None and code != 0) or dead(out):
+            tail = " ".join(err.split())[-300:]
+            why = f"; {dead(out)}" if dead(out) else ""
+            log(f"{job}: agent run exit {code}{why}; stderr: {tail or '(none)'}")
+        record += _record(out, err, code, timed_out)
         return out, err, timed_out, run.stopped.is_set() and not timed_out
 
-    text, err, timed_out, cancelled = one(session.first(cmd) if session else cmd, stdin, timeout_s)
-    record = text + ("\n--- TIMEOUT ---\n" if timed_out else "\n--- stderr ---\n") + err
-    got = Build(text, record, timed_out=timed_out, cancelled=cancelled)
-    if cancelled or timed_out or ended(text) or not deadline_ms:
-        return got
-    left_s = deadline_ms / 1000 - time.time()
-    if left_s <= RESUME_MIN_LEFT_S:
-        return got
-    left_min = int(left_s // 60)
-    if session is None:
-        log(
-            f"{job}: agent stopped with {left_min} min left and no DONE; this agent CLI "
-            "(--agent-command) cannot resume a session: submitting as it is"
-        )
-        return got
-    log(f"{job}: agent stopped with {left_min} min left and no DONE; resuming it once")
-    again, err2, timed_out2, cancelled2 = one(
-        session.resume(cmd, RESUME.format(minutes=left_min)),
-        None,
-        max(60.0, left_s - RESUME_MARGIN_S),
-    )
-    got.record += (
-        f"\n--- RESUMED with {left_min} min left ---\n"
-        + again
-        + ("\n--- TIMEOUT ---\n" if timed_out2 else "\n--- stderr ---\n")
-        + err2
-    )
-    got.resumed, got.timed_out, got.cancelled = True, timed_out2, cancelled2
-    if again.strip():
-        got.text = again
+    record = ""
+    text, _, timed_out, cancelled = one(session.first(cmd) if session else cmd, stdin, timeout_s)
+    got = Build(text, "", timed_out=timed_out, cancelled=cancelled)
+    last = text
+    for _ in range(MAX_RESUMES):
+        if got.cancelled or got.timed_out or ended(last) or not deadline_ms:
+            break
+        left_s = deadline_ms / 1000 - time.time()
+        if left_s <= RESUME_MIN_LEFT_S:
+            break
+        left_min = int(left_s // 60)
+        if LIMIT.search(last):
+            log(f"{job}: the model provider's usage limit stopped the agent: not resumed")
+            break
+        if session is None:
+            log(
+                f"{job}: agent stopped with {left_min} min left and no DONE; this agent CLI "
+                "(--agent-command) cannot resume a session: submitting as it is"
+            )
+            break
+        why = dead(last)
+        if why:
+            session = ClaudeSession()
+            log(f"{job}: agent stopped with {left_min} min left ({why}); a new session takes over")
+            argv = session.first(
+                [cmd[0], "-p", cmd[2] + HANDOFF.format(why=why, minutes=left_min), *cmd[3:]]
+            )
+            record += f"\n--- NEW SESSION with {left_min} min left ({why}) ---\n"
+        else:
+            log(f"{job}: agent stopped with {left_min} min left and no DONE; resuming it")
+            argv = session.resume(cmd, RESUME.format(minutes=left_min))
+            record += f"\n--- RESUMED with {left_min} min left ---\n"
+        last, _, got.timed_out, got.cancelled = one(argv, None, max(60.0, left_s - RESUME_MARGIN_S))
+        got.resumed, got.runs = True, got.runs + 1
+        if not dead(last):
+            got.text = last  # an empty or dead answer keeps the earlier run's words
+    got.record = record
     return got
 
 
 def outcome(job: str, ws: str, text: str) -> tuple[str, dict[str, Any]]:
     """What to send for the agent's final output: ``("reject", body)`` for a ``REJECT`` line (not
-    on an admission job), else ``("submit", body)``. Without ``DONE`` the body carries a
-    ``summary`` for the client: an ``UNFINISHED:`` line when the agent wrote one anyway, else its
-    final text (whitespace collapsed, the last :data:`SUMMARY_CHARS` characters)."""
+    on an admission job; its message is everything from the line's message to the end, over
+    several lines when it runs on), else ``("submit", body)``. The body carries a ``summary`` for
+    the client: an ``UNFINISHED:`` line when the agent wrote one anyway, else its final text
+    without the ``DONE`` line (whitespace collapsed, the last :data:`SUMMARY_CHARS` characters):
+    on a delivered project too, the builder's notes (what it estimated, what is open) reach the
+    client. A usage-limit notice (:data:`LIMIT`) is never sent as the builder's words."""
     rej, fin = _REJECT.search(text), _DONE.search(text)
     if rej and not job.startswith("admission-"):
-        return "reject", {"job": job, "category": rej.group(1), "message": rej.group(2)}
+        message = " ".join(text[rej.start(2) if rej.group(2) else rej.end() :].split())
+        return "reject", {"job": job, "category": rej.group(1), "message": message}
     digest = fin.group(1) if fin else ""
     body: dict[str, Any] = {"job": job, "workspace": ws, "digest": digest}
-    if not fin:
-        left = _UNFINISHED.search(text)
-        said = " ".join((left.group(1) if left else text).split())
-        if said:
-            body["summary"] = said[:SUMMARY_CHARS] if left else said[-SUMMARY_CHARS:]
+    left = _UNFINISHED.search(text)
+    said = " ".join((left.group(1) if left else _DONE.sub("", text)).split())
+    if said and not LIMIT.search(said):
+        body["summary"] = said[:SUMMARY_CHARS] if left else said[-SUMMARY_CHARS:]
     return "submit", body
+
+
+SEND_DELAYS_S = (5.0, 15.0, 30.0, 60.0, 60.0)
+"""The waits between tries of a submit or a reject the validator did not take."""
+
+
+def send(
+    call: Any, path: str, body: dict[str, Any], *, log: Any, sleep: Any = time.sleep
+) -> tuple[int, Any]:
+    """``call(path, body)`` until the validator takes it or refuses it for good: a lost answer (0),
+    a busy one (429) or a server error (5xx) is tried again after :data:`SEND_DELAYS_S`; any other
+    code (200, 404, 410, a 4xx refusal) is final. A lost submit used to end a delivered project as
+    a timeout (2026-10-22 audit)."""
+    code, out = call(path, body)
+    for wait in SEND_DELAYS_S:
+        if not (code == 0 or code == 429 or code >= 500):
+            break
+        log(f"{path} {body.get('job')}: {code}; trying again in {wait:g} s")
+        sleep(wait)
+        code, out = call(path, body)
+    return code, out
+
+
+KEY_CHECK_S = 3600.0
+"""How often an idle miner checks its agent key and its admission (:func:`keep_admitted`)."""
+
+
+def key_works(platform: str, key: str, *, timeout: float = 20.0) -> bool | None:
+    """Whether the platform still takes the agent key (``GET /api/platform/key``): True on 200,
+    False on 401 (disabled or deleted: the validator revoked it), None when it cannot tell."""
+    req = urllib.request.Request(  # noqa: S310 -- the operator's own platform URL
+        platform.rstrip("/") + "/api/platform/key",
+        headers={
+            "Authorization": f"Bearer {key}",
+            "User-Agent": f"cadmind-einstein-miner/{__version__}",
+        },
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=timeout):  # noqa: S310
+            return True
+    except urllib.error.HTTPError as e:
+        return False if e.code == 401 else None
+    except (OSError, ValueError):
+        return None
+
+
+def keep_admitted(call: Any, mint: Any, works: Any, *, log: Any) -> None:
+    """An idle miner's hourly check: a key the platform no longer takes (``works()`` False: the
+    validator revoked it for abuse or deregistration) is minted again (``mint()``), and the
+    admission is asked for again (one admission test a day at most; an admitted miner is told so).
+    Before 0.4.5 both happened only at startup, so a disabled miner never came back."""
+    if works() is False:
+        log("the agent key is no longer taken by the platform: minting a new one")
+        if not mint():
+            return
+    code, adm = call("/v1/miners/admission", {})
+    if not (code == 200 and isinstance(adm, dict) and adm.get("admitted")):
+        log(
+            f"admission: {code} "
+            f"{adm.get('job') or adm.get('error') if isinstance(adm, dict) else adm}"
+        )
 
 
 def deadline_file(a: argparse.Namespace) -> Path | None:
@@ -602,22 +741,29 @@ def main(argv: list[str] | None = None) -> int:
         return signed(kp, a.validator, path, body, a.validator_hotkey)
 
     key_file, mcp_file = a.state / "agent.key", a.state / "watt-mcp.json"
-    if key_file.exists():
-        key = key_file.read_text().strip()
-        log("agent key loaded from state")
-    else:
+
+    def mint() -> bool:
+        """A new agent key from the validator, stored with the MCP config that carries it."""
         priv, pub = new_keypair()
         code, got = call("/v1/miners/agent_key", {"x25519_public": base64.b64encode(pub).decode()})
         if code != 200:
             log(f"agent_key refused: {code} {got}")
-            return 1
+            return False
         key = open_sealed(got["sealed"], priv, me)
         _write_private(key_file, key + "\n")
+        _write_private(mcp_file, json.dumps(mcp_config(a, key, key_file)))
         log(f"agent key {got['key_id']} opened and stored")
-    _write_private(mcp_file, json.dumps(mcp_config(a, key, key_file)))
+        return True
+
+    if key_file.exists():
+        _write_private(mcp_file, json.dumps(mcp_config(a, key_file.read_text().strip(), key_file)))
+        log("agent key loaded from state")
+    elif not mint():
+        return 1
 
     code, adm = call("/v1/miners/admission", {})
     log(f"admission requested: {code} {adm.get('job') if isinstance(adm, dict) else adm}")
+    checked = time.monotonic()
 
     busy, stop = threading.Event(), threading.Event()
     running: dict[str, Any] = {"job": "", "agent": None}
@@ -640,6 +786,16 @@ def main(argv: list[str] | None = None) -> int:
         if code != 200 or not work.get("job"):
             if code not in (0, 200):
                 log(f"work: {code} {work}")
+            if (
+                time.monotonic() - checked > KEY_CHECK_S
+            ):  # idle: is the key still ours, are we admitted?
+                checked = time.monotonic()
+                keep_admitted(
+                    call,
+                    mint,
+                    lambda: key_works(a.platform, key_file.read_text().strip()),
+                    log=log,
+                )
             time.sleep(5)
             continue
         job, ws, brief = work["job"], work["workspace"], work.get("brief") or ""
@@ -697,7 +853,7 @@ def main(argv: list[str] | None = None) -> int:
             )
         finally:
             busy.clear()
-        out_file.write_text(got.record)
+        _write_private(out_file, got.record)
         if got.timed_out:
             log(f"{job}: agent timed out")
         log(f"{job}: agent finished in {(time.time() - t0) / 60:.1f} min")
@@ -707,10 +863,10 @@ def main(argv: list[str] | None = None) -> int:
             continue
         kind, body = outcome(job, ws, got.text)
         if kind == "reject":
-            code, out = call("/v1/jobs/reject", body)
+            code, out = send(call, "/v1/jobs/reject", body, log=log)
             log(f"rejected {job}: {code} {out}")
         else:
-            code, out = call("/v1/jobs/submit", body)
+            code, out = send(call, "/v1/jobs/submit", body, log=log)
             log(f"submitted {job} digest={body['digest'][:16] or '(none)'}: {code} {out}")
         done += 1
     stop.set()

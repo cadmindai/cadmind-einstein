@@ -14,7 +14,9 @@ server-side fetch would be (the agent may be steered to ask for anything):
 - ``http`` and ``https`` only, no credentials in the url;
 - every address the host resolves to must be public (no loopback, private, link-local, CGNAT,
   multicast or reserved address: the miner's own network stays out of reach), and the connection
-  goes to the address that was checked (no second lookup a rebinding DNS could answer differently);
+  goes to an address that was checked (no second lookup a rebinding DNS could answer differently),
+  each in turn until one answers: a host whose IPv6 address comes first is still reached over IPv4
+  when this machine's IPv6 has no route (``Network is unreachable``, 2026-10-19..21);
 - every redirect (at most 5) is checked again;
 - 5 s to connect, 20 s for the whole download, and the platform's 8 MB document cap.
 
@@ -65,6 +67,11 @@ USER_AGENT = (
 
 Resolver = Callable[[str, int], str]
 
+URL_SAFE = "/%:@!$&'()*+,;=-._~"
+"""What stays as it is when a url's path is percent-encoded: its delimiters and what is already
+encoded. Anything else -- a space, a non-ASCII letter (``/blogs/知識/...``) -- is
+encoded, as a browser sends it (``http.client`` refuses both)."""
+
 
 class FetchError(Exception):
     """A download or upload refused; the message is the agent's to read."""
@@ -84,6 +91,11 @@ class Download:
 
 def public_address(host: str, port: int) -> str:
     """The first address ``host`` resolves to, when every address it resolves to is public."""
+    return public_addresses(host, port)[0]
+
+
+def public_addresses(host: str, port: int) -> list[str]:
+    """Every address ``host`` resolves to, in the resolver's order, when each is public."""
     try:
         infos = socket.getaddrinfo(host, port, type=socket.SOCK_STREAM)
     except socket.gaierror as e:
@@ -95,26 +107,37 @@ def public_address(host: str, port: int) -> str:
         ip = ipaddress.ip_address(a.split("%")[0])
         if not ip.is_global or ip.is_multicast:
             raise FetchError(f"{host} resolves to {a}, which is not a public address")
-    return addrs[0]
+    return list(dict.fromkeys(addrs))
+
+
+def _connect(ips: list[str], port: int, timeout: float) -> socket.socket:
+    """A connection to the first of ``ips`` that takes one; the last refusal when none does."""
+    last: OSError | None = None
+    for ip in ips:
+        try:
+            return socket.create_connection((ip, port), timeout)
+        except OSError as e:  # unreachable, refused, silent: the host's next address
+            last = e
+    raise last or OSError("no address")
 
 
 class _PinnedHTTPS(http.client.HTTPSConnection):
-    def __init__(self, host: str, ip: str, port: int, timeout: float) -> None:
+    def __init__(self, host: str, ips: list[str], port: int, timeout: float) -> None:
         super().__init__(host, port, timeout=timeout, context=ssl.create_default_context())
-        self._ip = ip
+        self._ips = ips
 
     def connect(self) -> None:
-        sock = socket.create_connection((self._ip, self.port), self.timeout)
+        sock = _connect(self._ips, self.port, self.timeout)  # type: ignore[arg-type]
         self.sock = self._context.wrap_socket(sock, server_hostname=self.host)  # type: ignore[attr-defined]
 
 
 class _PinnedHTTP(http.client.HTTPConnection):
-    def __init__(self, host: str, ip: str, port: int, timeout: float) -> None:
+    def __init__(self, host: str, ips: list[str], port: int, timeout: float) -> None:
         super().__init__(host, port, timeout=timeout)
-        self._ip = ip
+        self._ips = ips
 
     def connect(self) -> None:
-        self.sock = socket.create_connection((self._ip, self.port), self.timeout)
+        self.sock = _connect(self._ips, self.port, self.timeout)  # type: ignore[arg-type]
 
 
 def download(
@@ -128,7 +151,10 @@ def download(
 ) -> Download:
     """GET ``url`` within the fences above; ``resolver(host, port) -> ip`` replaces the
     public-address check (tests only)."""
-    check = resolver or public_address
+
+    def check(host: str, port: int) -> list[str]:
+        return [resolver(host, port)] if resolver else public_addresses(host, port)
+
     deadline = time.monotonic() + timeout_s
     current = url.strip()
     for _ in range(MAX_REDIRECTS + 1):
@@ -141,13 +167,15 @@ def download(
             raise FetchError(f"{current[:200]!r}: only http and https urls")
         if parts.username or parts.password:
             raise FetchError("a url with credentials is refused")
-        ip = check(parts.hostname, port)
+        ips = check(parts.hostname, port)
         left = deadline - time.monotonic()
         if left <= 0:
             raise FetchError(f"{url}: not downloaded within {timeout_s:g} s")
         cls = _PinnedHTTPS if parts.scheme == "https" else _PinnedHTTP
-        conn = cls(parts.hostname, ip, port, min(left, connect_s))
-        path = (parts.path or "/") + (f"?{parts.query}" if parts.query else "")
+        conn = cls(parts.hostname, ips, port, min(left, connect_s))
+        path = quote(parts.path or "/", safe=URL_SAFE) + (
+            f"?{quote(parts.query, safe=URL_SAFE + '?')}" if parts.query else ""
+        )
         phase = "did not accept a connection in time"
         try:
             conn.connect()
@@ -305,7 +333,12 @@ def said(out: dict[str, Any]) -> str:
             f"the platform stored {out.get('path')} (sha256 {out.get('sha256')}) but answered no"
             " text (`answer`): it is older than this tool; its operator updates it"
         )
-    return answer + (f"\nasked for {out['asked']} (redirected)" if out.get("asked") else "")
+    return answer + (
+        f"\nREDIRECTED: you asked for {out['asked']}; the stored page is the one above. Check it is"
+        " the product you meant before citing it."
+        if out.get("asked")
+        else ""
+    )
 
 
 class Server:
