@@ -7,6 +7,25 @@ All notable changes to this project are listed here. The format follows
 
 ## [Unreleased]
 
+## [0.4.3] - 2026-10-21
+
+### Changed
+- **A light judge: rubric 3** (`cadmind-einstein-rubric/3`, docs/VALIDATOR.md). The vote is a base rating, allowed
+  to be imprecise, that scores miners when clients do not rate (or rate late); it does not re-do Watt. The review
+  bundle's function evidence (`facts.function`) is context for the model, never read mechanically: rubric 2's caps
+  and bounds from `summary.fails` and `summary.unverified` are removed. The one cap left is the reviewer's own R2 of 0
+  ("it would not work as made"), which caps the sample at 0.35. The weights are unchanged; the rubric digest is now
+  `sha256:48c0f1c63e43d5a883386c1a27b8e164c061b8f5c8bba6faf1cd7662f3bb086f`.
+- **The vote counts at most `u = 0.4`** (was 0.6 with our vote alone, up to 0.9 with three third-party coldkeys):
+  0.4 with our vote, alone or with third parties, so a client's stars clearly dominate it.
+- **Votes are counted** (`--votes counted`, now the default; `live` is accepted as its old name). `--votes shadow`
+  (recorded and published, `u = 0`) is still an option. At start the validator re-applies every recorded vote under
+  its mode, so a switch between shadow and counted takes effect at once.
+- **The calibration bar** (`cadmind_einstein.calibration.go_no_go`): every good item (`expect_min`, or a hand score of
+  at least 0.5) must score above every bad item (`expect_max`, a lower hand score, or a swapped brief), and every bad
+  item under 0.6. It replaces "within 0.15 of the hand score"; each item's distance from its hand score is still
+  reported, and the result carries the `separation` (lowest good, highest bad, margin).
+
 ## [0.4.2] - 2026-10-21
 
 ### Changed
