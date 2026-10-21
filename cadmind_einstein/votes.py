@@ -34,6 +34,7 @@ import time
 from collections.abc import Callable, Iterable, Mapping
 from typing import Any
 
+from .desk import job_event
 from .platform import PlatformError
 from .review import (
     MAX_BUNDLE_BYTES,
@@ -249,6 +250,17 @@ class Reviewer:
         row.update(state="done", why="", done_ms=self.now_ms())
         self.kv.put("review", job, row)
         self.apply(job)
+        self.log(
+            job_event(
+                "vote-recorded",
+                job,
+                hotkey=row["hotkey"],
+                value=vote.value,
+                samples=len(samples),
+                unavailable=len(failed),
+                mode=self.mode,
+            )
+        )
         return "voted"
 
     # -- what a vote does --------------------------------------------------------------------------

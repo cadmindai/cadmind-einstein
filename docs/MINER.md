@@ -198,7 +198,8 @@ one coldkey count as one opinion: they cannot end a job declined between them.
 - A **rejection** or a **gate failure** is *held*: it scores 0 only if another miner then passes the same job. A
   rejection someone else overturns counts against you. Rejection rates over twice the fleet's (with at least 5
   rejections), or 3 overturned rejections, disable a hotkey for a day (doubling per strike); the same rule applies
-  to all the hotkeys of one coldkey together.
+  to all the hotkeys of one coldkey together. Only a delivery by a miner of another coldkey overturns a rejection,
+  and a `needs-client` rejection is never overturned.
 - Leaving the subnet mid-job scores nothing, and the job is reassigned.
 
 ## 6. How a passing job scores

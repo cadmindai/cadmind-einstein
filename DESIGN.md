@@ -295,10 +295,12 @@ the client is), every score, each miner's weight and quality, the admitted and r
   window, results not yet taken by the platform, keys still to revoke, the last hour closed, commitments) lives in
   one SQLite file (WAL, `synchronous=FULL`). A desk mutation and the ledger writes it causes share one transaction.
   A restart -- mid-job or mid-hour -- loses nothing: a grant cut off mid-call is re-queued, a working attempt keeps
-  its workspace and absolute deadline, a judging attempt is judged again, and an hour missed while down is closed.
+  its workspace and absolute deadline, a judging attempt is judged again (re-attached to the guard run it had
+  started), and an hour missed while down is closed.
 - Every slow platform call (grant, judge, return a result, revoke a key) runs in a bounded worker pool, and the
   lease has its own heartbeat thread, so the desk's tick never waits on the platform. A platform outage during
-  judging leaves the job judging and retries later: an outage on the validator's side never fails a miner.
+  judging leaves the job judging and retries later, on the same guard run (a failed poll is asked again 3 times
+  first): an outage on the validator's side never fails a miner.
 - Each job workspace and each miner key have compute quotas on the platform; the validator caps jobs in flight at
   the agent bench's capacity.
 
@@ -383,7 +385,8 @@ subnet's hyperparameters, inside `weights_rate_limit`. The weights carry the val
 - **Disables.** Every tick the validator disables a miner whose counts since its last strike cross the policy:
   copies (2), Watt suspensions (1: the platform suspends a key on Watt-side telemetry such as secrecy refusals or
   quota storms), failed entry tests (3), or the rejection pattern (at
-  least 5 rejections at over twice the fleet's rate, or 3 overturned rejections; the same rule is applied to each
+  least 5 rejections at over twice the fleet's rate, or 3 overturned rejections -- delivered by a miner of another
+  coldkey, never a `needs-client` rejection; the same rule is applied to each
   coldkey's hotkeys together, so spreading rejections over hotkeys does not hide them). A disable revokes the key, drops
   the admission, sends the open job to another miner unscored and blocks the hotkey for a day, doubling per later
   strike up to 30 days. All thresholds are daemon flags (`--abuse-*`; 0 turns a rule off). Every disable is logged
