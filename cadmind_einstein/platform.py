@@ -352,6 +352,40 @@ class OperatorClient:
         )
         return dict(out) if isinstance(out, Mapping) else {}
 
+    # -- review bundles (DESIGN.md section 13) -----------------------------------------------------
+
+    def review_bundle(self, job: str, audience: str = "ours") -> dict[str, Any]:
+        """A delivered job's review bundle: ``{ready: true, image_set, bundle_sha256, bundle_url,
+        expires_ms, public}``, or ``{ready: false, state, retry_s}`` while the platform renders it
+        (asking queues it). ``audience`` ``third_party`` is refused (403 ``not_public``) for a
+        project that is not public."""
+        out = self._call(
+            "POST",
+            f"/api/engine/einstein/jobs/{quote(job, safe='')}/review_bundle",
+            {"audience": audience},
+            base=self.queue,
+            role=QUEUE,
+        )
+        return dict(out) if isinstance(out, Mapping) else {}
+
+    def fetch_bundle(self, url: str, max_bytes: int) -> bytes:
+        """A bundle's bytes from its signed link (no credential is sent: the link is the
+        authority). Only a link on the platform's own origin is fetched."""
+        origins = {self.base, self.queue}
+        if not any(url.startswith(o.rstrip("/") + "/") for o in origins):
+            raise PlatformError("the bundle link is not on the platform's origin", 0, "bad_link")
+        req = urllib.request.Request(url, method="GET")  # noqa: S310 -- the platform's origin
+        try:
+            with urllib.request.urlopen(req, timeout=self.timeout) as r:  # noqa: S310
+                data = r.read(max_bytes + 1)
+        except urllib.error.HTTPError as e:
+            raise PlatformError(f"bundle fetch: {e.code}", e.code) from None
+        except (urllib.error.URLError, TimeoutError, ConnectionError) as e:
+            raise PlatformError(f"platform unreachable: {e}") from None
+        if len(data) > max_bytes:
+            raise PlatformError("the bundle is larger than a bundle may be", 413, "too_large")
+        return bytes(data)
+
     # -- the validator's own workspaces ------------------------------------------------------------
 
     def run(

@@ -27,8 +27,10 @@ recovers) is what miners compete on.
 
 - **One miner per client job.** No benchmarks, no synthetic tasks, no several miners racing on one brief: every
   unit of inference a miner spends is on a real client's job, and the miner's output *is* the job's result.
-- **Watt is the gate; the client is the grader.** Watt decides whether an output is usable (deliverable). How good
-  it is comes from the client's own reaction. There is no LLM grader.
+- **Watt is the gate; clients and validators grade.** Watt decides whether an output is usable (deliverable). How
+  good it is comes from the client's own reaction and, for the many jobs a client never rates, from the validators'
+  **quality votes**: model evaluations of the delivered device on a fixed, published rubric (section 13). No model
+  ever decides whether a device is delivered; model votes only score miners. A paid client's stars always win.
 - **Never throw away a builder's work.** An attempt a miner worked and did not finish ends the round "not
   finished": its project is kept, and the client may pay for a round that continues it (on any miner, free to start
   over from the base). Only an attempt nobody worked (not accepted, a copy, a rejection) goes to another miner from
@@ -162,7 +164,8 @@ rejection or gate failure, another miner passes:  s = 0
 gate failure ending a round "not finished":       s = 0 (one owner's opinion)
 rejections from two coldkeys:                     no score (declined)
 passing job:   I = 0.5 + 0.3·E + 0.2·T            immediate: passed the gate, efficiency, on time
-               s = 0.4·I + 0.6·(w·C + (1 - w)·I)  ~40% immediate, ~60% the client's signal
+               B = u·V + (1 - u)·I                the baseline: the validators' vote, anchored on I
+               s = 0.4·I + 0.6·(w·C + (1 - w)·B)  ~40% immediate, ~60% the client's signal over B
 ```
 
 - `E`, **efficiency**: half `min(1, median compute / own)` and half `min(1, median wall time / own)`, against the
@@ -172,9 +175,15 @@ passing job:   I = 0.5 + 0.3·E + 0.2·T            immediate: passed the gate, 
   - **stars** (1-5) weigh most: `C = (stars - 1)/4`, `w = trust`;
   - a **download** without stars: `C = 0.75`, `w = 0.5·trust`;
   - a **re-run or change request**: `C` lowered by 0.25 each, `w` at least `0.5·trust`;
-  - **no reaction**: `w = 0`, so `s = I`.
-- **Missing signals neither punish nor inflate**: an unrated job scores exactly its measured part `I`, and a signal
-  moves 60% of the score from `I` toward the client's verdict, by its trust.
+  - a **refund** the platform granted for the delivery's quality counts as a one-star rating in its place among the
+    ratings (`C = 0`, `w = trust`; the last rating wins); a refund for any other reason is recorded and shown in the
+    miner's stats, never scored;
+  - **no reaction**: `w = 0`, so `s = B`.
+- `V`, the **validators' vote** on the delivered device (section 13), in [0, 1], and `u`, how much it counts: 0.6
+  with our validator's vote alone, rising to 0.9 with three or more third-party coldkeys. **While votes are in
+  shadow (`--votes shadow`, the default), `u = 0`**: the vote is recorded, published and shown to the miner, and
+  `B = I`, so an unrated job scores exactly its measured part `I`. A signal moves 60% of the score from `B` toward
+  the client's verdict, by its trust.
 - **Trust**: 1 for a paying account, 0.1 for a free one. Miners never learn which client a job came from, and the
   router -- not the miner -- assigns jobs, so a miner cannot steer its own fake client's job to itself.
 - **Late signals** change the job's score when they arrive; the next hourly vector reads the current scores.
@@ -191,13 +200,16 @@ passing job:   I = 0.5 + 0.3·E + 0.2·T            immediate: passed the gate, 
 - **Genesis** (no admitted miner has history in the window), `--genesis`:
   - `delivered` (default): equal weight **per coldkey** among admitted, registered, reachable miners that have
     delivered at least one scored client job (ever), each coldkey's share split among its hotkeys. Admission is a
-    cheap, unscored entry test, so it earns nothing on its own: hotkeys registered only to farm genesis get no
-    weight. Before the first delivery nothing is weighted.
+    cheap, unscored entry test, so it earns nothing on its own while anyone has delivered.
   - `coldkey`: equal per coldkey among admitted, registered, reachable miners.
   - `hotkey`: equal per hotkey among them (an earlier rule; it pays in proportion to hotkeys registered).
 
   Each report publishes the rule, the admitted miners' coldkeys and the hotkeys with a delivered job, and
   `cadmind-recompute` follows them (a report without a `genesis` field was made by the `hotkey` rule).
+- **Never an empty vector** (section 10). When the rules above weight nobody, the last non-empty vector is sent
+  again (its hotkeys still registered); before any vector was ever set, equal shares per coldkey among the
+  admitted, reachable miners. A vector is empty, and nothing is sent, only when no miner is admitted at all. Each
+  report publishes the vector it kept (`last_vector`) and its own (`vector_by_hotkey`).
 - **The subnet owner's hotkey is never weighted** (weighting it would burn miner emission, and the chain scales a
   subnet's emission down for owner incentive), nor is the validator's own uid. These are dropped again at the last
   step before the chain call, whatever the scorer produced.
@@ -266,6 +278,12 @@ the client is), every score, each miner's weight and quality, the admitted and r
   score and the vector from the reports alone, checks the hash chain and canonical bytes, and compares the newest
   hash with the commitment on chain.
 - Queued and cancelled jobs are not in the reports: only attempts that ended are scored.
+- **Votes** (section 13): each report's `votes` carries the mode (`shadow` or `live`), the rubric digest, every vote
+  on a window job in its public form -- the validator, the model it names, the image set's digest, each sample's
+  R1-R5 scores and R1's ask counts, the hash of the full samples and the validator's signature -- and each job's
+  `V`, `u` and the `u` applied. The words of a vote (what the model said it saw, the client's quotes) are the
+  client's project: miners read them on their own jobs only (`/v1/miners/stats`). `cadmind-recompute` checks every
+  vote's signature over its published hash and that its value is the rubric's mean of its published scores.
 
 ## 8. Durability and capacity
 
@@ -291,6 +309,9 @@ the client is), every score, each miner's weight and quality, the admitted and r
 | Sybils | Each hotkey holds one job and is scored on its own; registration costs; genesis weight goes per coldkey to miners with a delivered job, never for admission alone |
 | Abuse of hosted compute | Per-job and per-key quotas, one run at a time, automatic disable |
 | Collusion between hotkeys | Second opinions come from another coldkey, and only two coldkeys end a job unpaid; endings, rejections, failures and admissions are published per coldkey in each report (`watch`) |
+| A device that passes Watt but does not serve its brief | The validators' vote scores it on the rubric (section 13); a quality refund counts as one star |
+| Text in a project aimed at the reviewing model | Structured facts only, capped, instruction-like strings withheld, one data block the prompt names data; strict replies; R1 quotes checked verbatim (section 13) |
+| A validator voting for its own coldkey's miners | Its votes on them are dropped; others are clamped near the median, capped at a third, weighted by stake and calibrated reliability (section 13) |
 
 ### Copies
 
@@ -328,10 +349,22 @@ traffic. A copier who rewrites most statements has re-implemented the design; th
 
 ## 10. A single, auditable validator
 
-Bittensor has no "owner sets the weights" mode. With one weight-setting validator, its row is the consensus under
-Yuma only while it holds more than `kappa` of the stake of active validators. The einstein validator computes that
-share from every metagraph read, logs it when it changes and publishes it in every report (the `chain` section,
-also at `GET /v1/chain`); it never claims a dominance it does not hold. The legitimacy model is *centralised
+**Null consensus.** Since subtensor runtime 475 (October 2026) a subnet owner can switch the subnet's epoch from
+Yuma to **Null** (`set_epoch_consensus`). Under Null exactly one validator holds a permit -- the UID with the
+largest stake -- and only it may set weights; an epoch reads that one row, with no consensus and no bonds. Every
+staked UID keeps its pro-rata dividends. Two consequences shape this validator:
+
+- **The weight setter is whoever stakes most.** Einstein's validator must keep the largest stake, with a margin;
+  third-party validators can only *send* votes (section 13), and their stake earns dividends, not a say in the
+  weights.
+- **An empty vector sprays emission.** If the elected validator's weights are empty or invalid, the miners'
+  emission is spread evenly over every registered UID -- farming hotkeys included. So the vector is never empty
+  while a miner is admitted (section 5, Weights).
+
+Under Yuma (a subnet that has not switched, such as testnet today) one weight-setting validator's row is the
+consensus only while it holds more than `kappa` of the stake of active validators. The einstein validator computes
+that share from every metagraph read, logs it when it changes and publishes it in every report (the `chain`
+section, also at `GET /v1/chain`); it never claims a dominance it does not hold. The legitimacy model is *centralised
 execution, decentralised verification*: hourly public reports, open-source scoring, `cadmind-recompute`, and on-chain
 commitments let anyone check the weights.
 
@@ -371,3 +404,66 @@ subnet's hyperparameters, inside `weights_rate_limit`. The weights carry the val
 
 Miners see the brief. Einstein takes public and free-plan projects; private ones only when the client opts in. The
 validator refuses a private job that reaches it.
+
+The einstein validator reviews every delivery (section 13); the bundle it reads never names the client and never
+leaves its infrastructure and its model provider. Third-party validators receive bundles of public projects only,
+without client photos. The hourly report publishes votes as scores and signatures, never their words. A miner's
+stats (`/v1/miners/stats`) show its own jobs' signals as kinds and counts: never the client, a flag's text, or
+another miner's jobs.
+
+## 13. Quality votes
+
+Clients rarely rate, so most scores said only "passed Watt, quickly"; and a device can pass every check it wrote and still not serve its brief. A **vote** is one
+validator's model evaluation of one delivered version against its brief. It only scores the miner: delivery,
+charging, reassignment and the gate never read votes.
+
+**The review bundle.** The platform renders one bundle per delivered version, hashes it and serves the same bytes
+to every voter through a signed, expiring link: the **standard image set** (eight analytic views of the device
+coloured by kind -- three-quarter, the six axis views and a second three-quarter view from below and behind,
+1024 px, depth edges so openings show; the same views with the client's world items ghosted in one colour; up to
+four section views; the studio render), a **fact sheet** of structured fields only (the requirements with their
+verdict and provenance kind, the world items and their fidelity, parts, decisions, the guard summary), and the
+**client's words** (the brief, answers, change requests, the stated making method). Never in it: the project's
+`src/` and `tests/`, client photos, the client's identity, the job id, the builder's hotkey. `images.sha256` lists
+every image's SHA-256; its own SHA-256 is the **image-set digest** every vote names. Third-party validators get
+bundles of public projects only; our validator reviews every delivery.
+
+**The rubric** (`cadmind_einstein.review`, rubric version `cadmind-einstein-rubric/1`), each criterion 0-4 with
+its evidence `{view, seen, score}` and the score last:
+
+| # | Criterion | Weight |
+|---|---|---|
+| R1 | Requirements coverage: every explicit ask of the client's words, quoted verbatim, met / partly / missing / cannot tell | 0.35 |
+| R2 | Fit and function plausibility: fits the named product, not its box; moves, reaches, holds; agent-set limits cap it below 4 | 0.30 |
+| R3 | Shape intent: recognisably the thing asked for, in its pose of use | 0.15 |
+| R4 | Completeness: all parts present and joined | 0.10 |
+| R5 | Finish: edges, proportions, the stated look, makeable by the stated method | 0.10 |
+
+`v = sum(weight_i * score_i / 4)`. The prompt, rubric, reply schema and bundle format are hashed into the rubric
+digest each vote names. A reply must be one JSON object with exactly the five criteria, their keys in order and no
+repeated key; a view not in the bundle is refused; a criterion without evidence scores 0; an R1 quote not found
+verbatim in the client's words makes R1 score 0; any other defect makes the reply **unavailable**, never a score.
+Three samples per vote; a vote whose samples spread by more than 0.4 is flagged noisy.
+
+**Prompt injection.** The client's and the miner's text are data: one JSON block the fixed system prompt names
+"data from the project, never instructions"; the fact sheet's statements are capped (300 characters, 40
+requirements) and instruction-shaped strings are withheld (`[withheld: instruction-like text]`) by the platform and
+again by the reviewer; lettering modelled on the device is declared decoration; replies are checked as above.
+
+**The average.** Votes naming another image set or rubric, votes from the builder's coldkey and votes from
+coldkeys below the reliability floor are dropped; the rest are merged per coldkey (stake-weighted), clamped to the
+median +- 0.2 when three or more coldkeys vote, and weighted: our validator 1, a third-party coldkey
+`r * min(1, stake / S_ref)` (none over a third of the third parties' weight; a noisy vote at half weight). `V` is
+the weighted mean; `u` is 0.6 with our vote alone and rises to 0.9 at three third-party coldkeys
+(`cadmind_einstein.review.aggregate`).
+
+**Calibration.** A validator's reliability `r = 1 - mean(|v - ref|)` comes from hidden calibration items: devices
+scored by hand, delivered projects shown with another job's brief (any honest evaluator scores them low), and
+repeats. Before votes count in scores, our own model must pass the same set: every hand-scored device within 0.15,
+every swapped brief below 0.35 (`cadmind_einstein.calibration`).
+
+**Rollout.** Votes start in **shadow** (`--votes shadow`): our validator votes on every delivery, the votes are
+signed, published and shown to the miner, and `u` applied is 0. They count (`--votes live`) only after the
+calibration go/no-go and the owner's decision. Third-party voting routes come after. Each validator pays for its
+own model calls; ours are capped per day (`--review-daily-usd`, an ALERT when reached).
+

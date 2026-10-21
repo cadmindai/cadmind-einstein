@@ -5,7 +5,8 @@ A failed attempt scores 0 (timeouts and copies at once; rejections and gate fail
 another miner passes the same job -- the desk decides that). A **passing** job scores::
 
     I = 0.5 + 0.3·E + 0.2·T                     immediate: passed the Watt gate, efficiency, on time
-    s = 0.4·I + 0.6·(w·C + (1 - w)·I)
+    B = u·V + (1 - u)·I                         the baseline: the validators' vote, anchored on I
+    s = 0.4·I + 0.6·(w·C + (1 - w)·B)
 
 - ``E``, efficiency: half ``min(1, median compute / own)`` and half ``min(1, median wall time /
   own)``, the medians over the passing jobs of the same bucket (effort, brief size class) in the
@@ -15,9 +16,14 @@ another miner passes the same job -- the desk decides that). A **passing** job s
   - a download, without stars: ``C = 0.75``, ``w = 0.5·trust``;
   - a re-run or a change request for the same problem: ``C`` lowered by 0.25 (each), and ``w`` at
     least ``0.5·trust``;
-  - no signal: ``w = 0``, so ``s = I``. **An unrated job neither punishes nor inflates**: it counts
-    on its immediate part, and a client signal moves 60% of the score from that baseline toward the
-    client's opinion.
+  - a refund the platform granted because of the delivery's quality counts as one star (``C = 0``,
+    ``w = trust``), in its place among the ratings (the last rating wins); any other refund is
+    recorded, not scored;
+  - no signal: ``w = 0``, so ``s = B``. A client signal moves 60% of the score from that baseline
+    toward the client's opinion.
+- ``V``, the validators' quality vote on the delivered device (:mod:`.review`, DESIGN.md section
+  13), in [0, 1], and ``u``, how much it counts: 0 while votes are in shadow (recorded and
+  published, never scored), so ``B = I`` and an unrated job counts on its immediate part alone.
 - ``trust``: 1 for a paid account (a card on file), 0.1 for a free one (the platform says which; a
   separate anti-abuse system guards free accounts). Miners never learn which client a job came from,
   and the router -- not the miner -- picks who gets a job, so a miner cannot steer its own fake
@@ -41,8 +47,11 @@ window -- follows ``genesis``:
 - ``hotkey``: equal per hotkey among them (an earlier rule; a report without ``genesis`` was made
   by it).
 
-**The subnet owner's hotkey is never weighted**: weighting it burns miner emission. Nothing is
-emitted when no miner qualifies.
+**The subnet owner's hotkey is never weighted**: weighting it burns miner emission. **The vector
+is never empty while an admitted miner exists**: an hour whose rules weight nobody sends the last
+non-empty vector again, or, before any, equal shares per coldkey among the admitted, reachable
+miners (under Null consensus an empty vector would spread the miners' emission over every
+registered UID). Nothing is emitted only when no miner is admitted at all.
 
 Every hour a report holds the window's jobs with their facts and signals, and the vector;
 :func:`recompute` rebuilds the scores and the vector from a report alone (``python -m
@@ -93,8 +102,11 @@ class JobOutcome:
     kind: str = ""
     """pass | reject | gate | timeout | copy"""
     signals: list[dict[str, Any]] = field(default_factory=list)
-    """the client's: {"kind": download | stars | rerun | change, "stars": 1-5, "trust": paid |
-    free, "at_ms"}"""
+    """the client's: {"kind": download | stars | rerun | change | refund, "stars": 1-5, "quality":
+    a refund for the delivery's quality, "trust": paid | free, "at_ms"}"""
+    vote: dict[str, float] = field(default_factory=dict)
+    """the validators' vote on a passing job, as scored: {"V": value in [0, 1], "u": the weight it
+    is applied with (0 in shadow)}; empty when there is none"""
     s: float = 0.0
     parts: dict[str, float] = field(default_factory=dict)
 
@@ -112,7 +124,13 @@ def client_signal(signals: Iterable[Mapping[str, Any]]) -> tuple[float | None, f
     c: float | None = None
     w = 0.0
     sig = list(signals)
-    stars = [x for x in sig if x.get("kind") == "stars" and 1 <= int(x.get("stars") or 0) <= 5]
+    # A refund granted for the delivery's quality is a rating of one star, in its place in order.
+    stars = [
+        {**x, "stars": 1} if x.get("kind") == "refund" else x
+        for x in sig
+        if (x.get("kind") == "stars" and 1 <= int(x.get("stars") or 0) <= 5)
+        or (x.get("kind") == "refund" and x.get("quality") is True)
+    ]
     if stars:
         last = stars[-1]
         c, w = (int(last["stars"]) - 1) / 4, TRUST.get(str(last.get("trust")), 0.0)
@@ -127,6 +145,15 @@ def client_signal(signals: Iterable[Mapping[str, Any]]) -> tuple[float | None, f
         c = max(0.0, (0.75 if c is None else c) - 0.25 * len(redo))
         w = max(w, 0.5 * max(redo))
     return c, w
+
+
+def vote_of(vote: Mapping[str, Any] | None) -> tuple[float | None, float]:
+    """(V, u) of a job's recorded vote: (None, 0) without one; both clamped to [0, 1]."""
+    if not vote or vote.get("V") is None:
+        return None, 0.0
+    v = min(1.0, max(0.0, float(vote["V"])))
+    u = min(1.0, max(0.0, float(vote.get("u") or 0.0)))
+    return v, u
 
 
 def score_all(jobs: Iterable[JobOutcome]) -> list[JobOutcome]:
@@ -149,15 +176,22 @@ def score_all(jobs: Iterable[JobOutcome]) -> list[JobOutcome]:
             ec = min(1.0, mc / o.compute_s) if o.compute_s > 0 else 1.0
             ew = min(1.0, mw / o.wall_s) if o.wall_s > 0 else 1.0
             e = 0.5 * ec + 0.5 * ew
-        i = 0.5 + 0.3 * e + 0.2 * (1.0 if o.on_time else 0.0)
+        t = 1.0 if o.on_time else 0.0
+        i = 0.5 + 0.3 * e + 0.2 * t
+        v, u = vote_of(o.vote)
+        b = u * v + (1 - u) * i if v is not None else i
         c, w = client_signal(o.signals)
-        client = w * c + (1 - w) * i if c is not None else i
+        client = w * c + (1 - w) * b if c is not None else b
         o.s = round(W_IMMEDIATE * i + W_CLIENT * client, 6)
         o.parts = {
             "I": round(i, 4),
             "E": round(e, 4),
+            "T": t,
             "C": round(c, 4) if c is not None else -1.0,
             "w": round(w, 4),
+            "V": round(v, 4) if v is not None else -1.0,
+            "u": round(u, 4) if v is not None else 0.0,
+            "B": round(b, 4),
         }
     return jobs
 
@@ -191,10 +225,17 @@ def vector(
     genesis: str = "delivered",
     coldkeys: Mapping[str, str] | None = None,
     proven: Iterable[str] = (),
+    last: Mapping[str, float] | None = None,
 ) -> tuple[list[tuple[int, int]], str]:
     """The weights and the rule that made them. Never the subnet owner's hotkey; never burned.
     ``coldkeys`` (hotkey -> coldkey; a hotkey with none stands alone) and ``proven`` (hotkeys with
-    a delivered client job) serve the genesis rule only."""
+    a delivered client job) serve the genesis rule only.
+
+    **Never empty while anyone could be weighted** (DESIGN.md section 10): an empty vector under
+    Null consensus spreads the miners' emission evenly over every registered UID. So when the
+    rules above weight nobody, ``last`` -- the last non-empty vector, hotkey -> weight -- is sent
+    again (its hotkeys still registered); before any vector was ever set, equal shares per coldkey
+    among the admitted, reachable miners. Empty only with no admitted miner at all."""
     if genesis not in GENESIS:
         raise ValueError(f"genesis is one of {GENESIS}")
     adm = {h for h in admitted if h in uid_by_hotkey and h != owner_hotkey}
@@ -222,8 +263,23 @@ def vector(
     earned = {h: v for h, v in weight.items() if v > 0 and h in adm}
     if earned:
         return scaled(earned), "history (no admitted miner reachable)"
-    if genesis == "delivered" and live:
-        return [], "genesis: no admitted miner has delivered a client job yet: nothing to weight"
+    kept = {
+        h: float(v)
+        for h, v in (last or {}).items()
+        if float(v) > 0 and h in uid_by_hotkey and h != owner_hotkey
+    }
+    if kept:
+        return scaled(kept), "kept: the last non-empty vector, sent again (never empty)"
+    if live:
+        owner_of = {h: str((coldkeys or {}).get(h) or "") or f"hotkey:{h}" for h in live}
+        per = {ck: sum(1 for x in owner_of.values() if x == ck) for ck in owner_of.values()}
+        return (
+            sorted((uid_by_hotkey[h], max(1, round(65_535 / per[owner_of[h]]))) for h in live),
+            (
+                "genesis: equal per coldkey among admitted, reachable miners"
+                " (no delivery yet; never empty)"
+            ),
+        )
     return [], "no admitted miner: nothing to weight"
 
 
@@ -263,6 +319,9 @@ class Ledger:
     store: Any = None
     jobs: dict[str, JobOutcome] = field(default_factory=dict)
     _lock: Any = field(default_factory=threading.RLock)
+    _last_vector: dict[str, float] = field(default_factory=dict)
+    current: dict[str, Any] = field(default_factory=dict)
+    """the newest report's vector by hotkey, its rule and hour (the stats' shares)"""
 
     def __post_init__(self) -> None:
         if self.store is not None:
@@ -276,10 +335,12 @@ class Ledger:
             return
         reports = sorted(self.report_dir.glob("hour-*.json"), key=report_order)
         if reports:
-            for row in json.loads(reports[-1].read_text(encoding="utf-8"))["jobs"]:
+            newest = json.loads(reports[-1].read_text(encoding="utf-8"))
+            for row in newest["jobs"]:
                 o = _job(row)
                 self.jobs[_key(o)] = o
                 self._save(o)
+            self._last_vector = dict(newest.get("vector_by_hotkey") or {})
 
     def _save(self, o: JobOutcome) -> None:
         if self.store is not None:
@@ -306,6 +367,18 @@ class Ledger:
                     o.signals.append(dict(sig))
                     self._save(o)
                     score_all(self._window(sig.get("at_ms") or o.ended_ms))
+                    return o.s
+        return None
+
+    def vote(self, job: str, value: float | None, u: float) -> float | None:
+        """The validators' vote on a delivered job's passing attempt, as it is scored (``u`` is 0
+        in shadow); ``value`` None removes it. None when the job is unknown."""
+        with self._lock:
+            for o in self.jobs.values():
+                if o.job == job and o.passed:
+                    o.vote = {} if value is None else {"V": float(value), "u": float(u)}
+                    self._save(o)
+                    score_all(self._window(o.ended_ms))
                     return o.s
         return None
 
@@ -339,6 +412,13 @@ class Ledger:
     def quality(self, now_ms: int) -> dict[str, float]:
         return self.snapshot(now_ms)[2]
 
+    def last_vector(self) -> dict[str, float]:
+        """The last non-empty vector, hotkey -> weight ({} before the first): what an hour that
+        would weight nobody sends again (:func:`vector`)."""
+        if self.store is not None:
+            return dict(self.store.get("meta", "last_vector") or {})
+        return dict(self._last_vector)
+
     def last_sha256(self) -> str:
         """The newest published report's SHA-256 ('' before the first)."""
         if self.store is not None:
@@ -361,6 +441,7 @@ class Ledger:
         genesis: str = "delivered",
         coldkeys: Mapping[str, str] | None = None,
         proven: Iterable[str] = (),
+        votes: Mapping[str, Any] | None = None,
     ) -> dict[str, Any]:
         """The hour's report, written as its canonical bytes (``hour-N.json``) beside its SHA-256
         (``hour-N.sha256``), both atomically. ``chain`` (the block, our stake share, the weights
@@ -372,6 +453,7 @@ class Ledger:
         adm, reach = sorted(admitted), sorted(reachable)
         cold = {h: str((coldkeys or {}).get(h) or "") for h in adm}
         prov = sorted(set(proven) & set(adm))
+        last = self.last_vector()
         vec, rule = vector(
             weight,
             uid_by_hotkey,
@@ -381,7 +463,10 @@ class Ledger:
             genesis=genesis,
             coldkeys=cold,
             proven=prov,
+            last=last,
         )
+        hotkey_of = {u: h for h, u in uid_by_hotkey.items()}
+        by_hotkey = {hotkey_of[u]: w for u, w in vec if u in hotkey_of}
         rep = {
             "hour": now_ms // self.hour_ms,
             "at_ms": now_ms,
@@ -397,9 +482,12 @@ class Ledger:
             "coldkeys": cold,
             "proven": prov,
             "vector": [list(x) for x in vec],
+            "vector_by_hotkey": by_hotkey,
+            "last_vector": last,
             "rule": rule,
             "chain": dict(chain or {}),
             "watch": dict(watch or {}),
+            "votes": dict(votes or {}),
             "constants": {
                 "half_life_h": HALF_LIFE_H,
                 "window_h": WINDOW_H,
@@ -420,6 +508,13 @@ class Ledger:
             _atomic_write(self.report_dir / f"{name}.sha256", f"{sha}  {name}.json\n".encode())
         if self.store is not None:
             self.store.put("meta", "report_sha256", sha)
+        self.current = {"by_hotkey": by_hotkey, "rule": rule, "hour": rep["hour"]}
+        if self.store is not None:
+            self.store.put("meta", "current_vector", self.current)
+        if by_hotkey:
+            self._last_vector = dict(by_hotkey)
+            if self.store is not None:
+                self.store.put("meta", "last_vector", by_hotkey)
         rep["sha256"] = sha  # not part of the hashed bytes: the caller's handle on them
         return rep
 
@@ -456,6 +551,7 @@ def recompute(report: Mapping[str, Any]) -> dict[str, Any]:
         genesis=str(report.get("genesis") or "hotkey"),
         coldkeys=report.get("coldkeys") or {},
         proven=report.get("proven") or (),
+        last=report.get("last_vector") or {},
     )
     same = [list(x) for x in vec] == [list(x) for x in report["vector"]]
     return {"vector": vec, "rule": rule, "matches_published": same, "mismatches": mismatches}
@@ -474,6 +570,27 @@ def onchain_sha256(network: str, netuid: int, hotkey: str, block: int | None = N
     return ""
 
 
+def check_votes(votes: Mapping[str, Any]) -> list[dict[str, Any]]:
+    """The published votes that do not hold: a signature that is not its validator's (over the
+    published samples' hash), or a value that is not the rubric's weighted mean of its published
+    scores. An unsigned vote (a local stack) is not checked."""
+    from .review import WEIGHTS, verify_vote  # noqa: PLC0415 -- the auditor's vote check
+
+    out: list[dict[str, Any]] = []
+    for item in votes.get("items") or []:
+        why = ""
+        if item.get("sig") and not verify_vote(item):
+            why = "signature"
+        scores = item.get("scores") or []
+        if scores and item.get("value") is not None:
+            values = [sum(WEIGHTS[c] * int(s[c]) / 4 for c in WEIGHTS) for s in scores]
+            if abs(statistics.fmean(values) - float(item["value"])) > 1e-6:
+                why = why or "value"
+        if why:
+            out.append({"job": item.get("job"), "validator": item.get("validator"), "why": why})
+    return out
+
+
 def audit(paths: list[Path], *, expect_sha256: str = "") -> dict[str, Any]:
     """Recompute every report and check the hash chain: each report's ``prev_sha256`` is the SHA-256
     of the report before it, and the newest one's SHA-256 is ``expect_sha256`` (what is on chain)
@@ -486,6 +603,10 @@ def audit(paths: list[Path], *, expect_sha256: str = "") -> dict[str, Any]:
         sha = hashlib.sha256(raw).hexdigest()
         row: dict[str, Any] = {"report": str(path), "sha256": sha, **recompute(rep)}
         row["canonical"] = report_bytes(rep) == raw
+        bad_votes = check_votes(rep.get("votes") or {})
+        if bad_votes:
+            row["bad_votes"] = bad_votes
+            ok = False
         if i and rep.get("prev_sha256") != prev:
             row["chain_break"] = {"prev_sha256": rep.get("prev_sha256"), "expected": prev}
             ok = False

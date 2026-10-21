@@ -332,8 +332,32 @@ class TestGenesisSybils(unittest.TestCase):
         self.assertEqual(vec, [(0, 65_535)])
         self.assertIn("per coldkey among delivered", rule)
 
-    def test_delivered_genesis_before_any_delivery_weights_nobody(self) -> None:
-        vec, rule = vector({}, self.uids, owner_hotkey="", admitted=self.adm, reachable=self.adm)
+    def test_delivered_genesis_before_any_delivery_is_never_empty(self) -> None:
+        """An empty vector under Null consensus sprays emission over every registered UID (owner
+        decision Q7, 2026-10-21): before the first delivery, equal shares PER COLDKEY among the
+        admitted, reachable miners -- so the nine sybils of one owner still share one share."""
+        cold = {self.HONEST: "owner-h", **dict.fromkeys(self.SYBILS, "owner-s")}
+        vec, rule = vector(
+            {}, self.uids, owner_hotkey="", admitted=self.adm, reachable=self.adm, coldkeys=cold
+        )
+        self.assertTrue(vec)
+        self.assertIn("never empty", rule)
+        self.assertAlmostEqual(self.share(vec), 0.5, places=3)
+
+    def test_the_last_vector_is_sent_again_before_equal_shares(self) -> None:
+        vec, rule = vector(
+            {},
+            self.uids,
+            owner_hotkey="",
+            admitted=self.adm,
+            reachable=self.adm,
+            last={self.HONEST: 65_535, "gone-hotkey": 100},
+        )
+        self.assertEqual(vec, [(0, 65_535)])  # a deregistered hotkey of it is dropped
+        self.assertIn("last non-empty vector", rule)
+
+    def test_no_admitted_miner_is_the_only_empty_vector(self) -> None:
+        vec, rule = vector({}, self.uids, owner_hotkey="", admitted=[], reachable=self.adm)
         self.assertEqual(vec, [])
         self.assertIn("nothing to weight", rule)
 

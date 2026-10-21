@@ -11,19 +11,24 @@ the metagraph):
   (410 for a job its client cancelled; ``summary``: the builder's words on what blocks delivery);
 - ``POST /v1/miners/admission`` -- its entry test, a job assigned to it alone;
 - ``POST /v1/miners/receipt`` -- its jobs, their scores, its weight and quality, and its recent
-  attempts that did not pass with why (``failures``: a gate failure says what the gate found).
+  attempts that did not pass with why (``failures``: a gate failure says what the gate found);
+- ``POST /v1/miners/stats`` -- everything that affects its weight (:mod:`.stats`): standing and
+  share, counters over 24 hours, 7 days and its lifetime (and its coldkey's), its last 100 jobs
+  with their score parts, the client's signals and the validators' votes with their evidence, and
+  the weight formula.
 
 The platform and the operator (Bearer): ``GET /v1/capacity`` (active and free admitted miners, the
 median job time: the platform's single queue computes positions and ETAs), ``POST /v1/cancel {job}``
 (a claimed job: not charged), ``POST /v1/signals {job, kind, stars?, trust}`` (the client's
 download, stars or change request), ``GET /v1/jobs/{job}``, ``GET /v1/scores``,
 ``POST /v1/weights/close`` (the hour's report now: dry runs), ``GET /v1/chain`` (our stake
-share, kappa, the weights path). Jobs are not posted here: the validator CLAIMS them from the
-platform's queue when it has a free admitted miner (``platform.claim``).
+share, kappa, the weights path), ``GET /v1/stats/miners?hotkeys=a,b`` (the stats of up to 20
+hotkeys: the platform's miner dashboard). Jobs are not posted here: the validator CLAIMS them
+from the platform's queue when it has a free admitted miner (``platform.claim``).
 
 Public (no auth): ``GET /v1/reports`` (every hourly report's name and SHA-256, and the block its
-hash was committed at) and ``GET /v1/reports/hour-N.json`` (the report's exact bytes), for
-``cadmind-recompute``.
+hash was committed at), ``GET /v1/reports/hour-N.json`` (the report's exact bytes), for
+``cadmind-recompute``, and ``GET /v1/stats/network`` (the leaderboard by hotkey).
 
 **Exposure.** The server refuses before it reads a body: a missing, negative, non-numeric,
 duplicated or oversized ``Content-Length`` (and any ``Transfer-Encoding``), an unsigned request on
@@ -63,6 +68,7 @@ from dataclasses import asdict
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
+from urllib.parse import parse_qsl
 
 from .desk import Desk, DeskError
 from .scoring import report_order
@@ -74,6 +80,7 @@ SIGNED = ("/v1/miners/", "/v1/jobs/")
 """routes a miner signs (``btauth/1``)"""
 BEARER = ("/v1/cancel", "/v1/signals", "/v1/weights/close")
 """POST routes for the platform and the operator"""
+MAX_STATS_HOTKEYS = 20
 SIGNATURE_HEADERS = ("X-Bittensor-Hotkey", "X-Bittensor-Nonce", "X-Bittensor-Signature")
 TIMEOUT_S = 20.0
 """one read or write on a connection (a request line, a header line, a body chunk)"""
@@ -309,6 +316,7 @@ def serve(
     agent_key_per_ip: tuple[int, float] = AGENT_KEY_PER_IP,
     clock: Callable[[], float] = time.monotonic,
     signer: Any = None,
+    stats: Any = None,
 ) -> Server:
     """``signer``: the validator's hotkey (a wallet or a keypair), which signs every answer on a
     miner's route; without one, answers are unsigned (tests, a local stack)."""
@@ -426,7 +434,13 @@ def serve(
             return False
 
         def _public(self) -> bool:
-            """The published reports: anyone may read them."""
+            """The published reports and the leaderboard: anyone may read them."""
+            if self.path == "/v1/stats/network":
+                if stats is None:
+                    self._send(404, {"error": "no stats here"})
+                else:
+                    self._send(200, stats.network())
+                return True
             if reports_dir is None or not self.path.startswith("/v1/reports"):
                 return False
             if self.path.rstrip("/") == "/v1/reports":
@@ -460,6 +474,16 @@ def serve(
                     self._send(200, desk.capacity())
                 elif self.path.startswith("/v1/jobs/"):
                     self._send(200, desk.status(self.path.split("/", 3)[3]))
+                elif self.path.startswith("/v1/stats/miners") and stats is not None:
+                    _, _, query = self.path.partition("?")
+                    params = dict(parse_qsl(query))
+                    hotkeys = [h.strip() for h in params.get("hotkeys", "").split(",") if h.strip()]
+                    if not hotkeys or len(hotkeys) > MAX_STATS_HOTKEYS:
+                        self._send(
+                            400, {"error": f"hotkeys is 1 to {MAX_STATS_HOTKEYS} comma-separated"}
+                        )
+                    else:
+                        self._send(200, stats.docs(hotkeys))
                 elif self.path == "/v1/scores":
                     jobs, weight, quality = desk.ledger.snapshot(desk.now_ms())
                     self._send(
@@ -578,6 +602,11 @@ def serve(
                         )
                     elif self.path == "/v1/miners/admission":
                         self._send(200, desk.admission(hk))
+                    elif self.path == "/v1/miners/stats":
+                        if stats is None:
+                            self._send(404, {"error": "no stats here"})
+                        else:
+                            self._send(200, stats.docs([hk])["miners"][hk])
                     elif self.path == "/v1/miners/receipt":
                         jobs, weight, quality = desk.ledger.snapshot(desk.now_ms())
                         mine = [asdict(o) for o in jobs if o.hotkey == hk][-100:]

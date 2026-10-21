@@ -99,12 +99,15 @@ from .desk import (
     Desk,
     SecondOpinion,
 )
+from .models import Prices, Spend, model_from
 from .platform import OperatorClient, PlatformError
-from .scoring import GENESIS, Ledger
+from .scoring import GENESIS, HOUR_MS, WINDOW_H, Ledger
 from .service import serve
 from .similarity import CopyPolicy, load_corpus
+from .stats import MinerStats
 from .store import Store
 from .version import check_latest
+from .votes import Reviewer
 
 log = logging.getLogger("cadmind_einstein.daemon")
 
@@ -272,6 +275,31 @@ def parser() -> argparse.ArgumentParser:
         help="agent keys minted per hour in all (keep it below the platform's ceiling); 0: off",
     )
     ap.add_argument(
+        "--votes",
+        choices=("off", "shadow", "live"),
+        default="shadow",
+        help="our validator's quality votes (DESIGN.md section 13): shadow records and publishes"
+        " them without scoring them; live scores them (only on the owner's OK)",
+    )
+    ap.add_argument(
+        "--review-model",
+        default="",
+        help="the vision model that votes: anthropic:<model> or openai:<model> (none: no votes)",
+    )
+    ap.add_argument("--review-key-file", type=Path, help="the review model's API key (0600)")
+    ap.add_argument("--review-base-url", default="", help="the provider's base URL (optional)")
+    ap.add_argument("--review-effort", default="medium", help="the model's reasoning effort")
+    ap.add_argument("--review-samples", type=int, default=3, help="samples per vote")
+    ap.add_argument(
+        "--review-daily-usd",
+        type=float,
+        default=10.0,
+        help="the review model's daily spend cap in US dollars (0: none); past it, an ALERT",
+    )
+    ap.add_argument("--review-usd-per-mtok-in", type=float, default=0.0)
+    ap.add_argument("--review-usd-per-mtok-out", type=float, default=0.0)
+    ap.add_argument("--review-usd-per-mtok-cached", type=float, default=0.0)
+    ap.add_argument(
         "--mint-per-coldkey-hour",
         type=int,
         default=MINT_PER_COLDKEY_HOUR,
@@ -397,6 +425,58 @@ def main(argv: list[str] | None = None) -> int:
         **extra,
     )
 
+    reviewer = None
+    if a.votes != "off":
+        from bittensor.signing import resolve_signer  # noqa: PLC0415
+
+        model = None
+        if a.review_model:
+            if a.review_key_file is None:
+                raise SystemExit("--review-model needs --review-key-file")
+            model = model_from(
+                a.review_model,
+                read_key(a.review_key_file),
+                base_url=a.review_base_url,
+                effort=a.review_effort,
+            )
+        spend = Spend(
+            a.review_daily_usd,
+            Prices(
+                a.review_usd_per_mtok_in, a.review_usd_per_mtok_out, a.review_usd_per_mtok_cached
+            ),
+            store=store,
+            alert=_log,
+        )
+        reviewer = Reviewer(
+            ledger,
+            platform,
+            model,
+            me=me,
+            signer=resolve_signer(wallet, role="hotkey"),
+            mode=a.votes,
+            samples=a.review_samples,
+            spend=spend,
+            store=store,
+            log=_log,
+        )
+        desk.on_delivered = reviewer.enqueue
+        _log(
+            f"votes {a.votes}: "
+            + (
+                f"model {a.review_model}, {a.review_samples} samples, "
+                f"cap ${a.review_daily_usd:g}/day"
+                if model is not None
+                else "no --review-model: deliveries are queued, not reviewed"
+            )
+        )
+    stats = MinerStats(
+        desk,
+        reviewer=reviewer,
+        uids=lambda: chain.state.uid_by_hotkey,
+        coldkeys=lambda: chain.state.coldkey_by_hotkey,
+        votes_mode=a.votes,
+    )
+
     def committed(sha: str, block: int) -> None:
         store.put("commit", sha, {"block": block, "at_ms": desk.now_ms()})
 
@@ -432,6 +512,7 @@ def main(argv: list[str] | None = None) -> int:
 
     def close() -> dict[str, Any]:
         watch = desk.watch(chain.state.coldkey_by_hotkey)
+        votes = reviewer.report(o.job for o in ledger.outcomes) if reviewer is not None else {}
         rep = ledger.report(
             desk.now_ms(),
             chain.state.uid_by_hotkey,
@@ -443,8 +524,15 @@ def main(argv: list[str] | None = None) -> int:
             genesis=a.genesis,
             coldkeys=chain.state.coldkey_by_hotkey,
             proven=desk.proven(),
+            votes=votes,
         )
         desk.clear_watch(len(watch["copy_pairs"]))
+        try:
+            stats.roll()
+            if reviewer is not None:
+                reviewer.forget_before(desk.now_ms() - 2 * WINDOW_H * HOUR_MS)
+        except Exception as e:  # noqa: BLE001 -- stats never stop an hour's weights
+            _log(f"stats rollup: {type(e).__name__}: {e}")
         pairs = watch["copy_pairs"]
         conts = [float(p.get("containment") or 0.0) for p in pairs]
         _log(
@@ -459,6 +547,9 @@ def main(argv: list[str] | None = None) -> int:
         )
         if rep["vector"]:
             weights.submit(rep["vector"], hour=rep["hour"])
+        else:
+            # never an empty vector (under Null it spreads emission over every UID): none sent
+            _log(f"ALERT: hour {rep['hour']}: {rep['rule']}; no weights sent")
         commits.submit(rep["sha256"], hour=rep["hour"])
         store.put("meta", "last_hour", rep["hour"])
         _log(f"hour {rep['hour']}: {rep['rule']}; weights {rep['vector']}; sha256 {rep['sha256']}")
@@ -504,6 +595,18 @@ def main(argv: list[str] | None = None) -> int:
         _log(f"reconcile failed: {type(e).__name__}: {e}")
     desk.start()
     threading.Thread(target=loop, daemon=True).start()
+    if reviewer is not None and reviewer.active:
+
+        def review_loop() -> None:
+            while True:
+                try:
+                    done = reviewer.pass_once()
+                except Exception as e:  # noqa: BLE001 -- the reviews outlive a hiccup
+                    _log(f"review: {type(e).__name__}: {e}")
+                    done = "error"
+                time.sleep(2 if done == "voted" else 10)
+
+        threading.Thread(target=review_loop, name="review", daemon=True).start()
     server = serve(
         desk,
         a.host,
@@ -518,6 +621,7 @@ def main(argv: list[str] | None = None) -> int:
         signer=wallet,
         max_connections=a.max_connections,
         max_per_ip=a.max_connections_per_ip,
+        stats=stats,
     )
     _log(
         f"validator {me[:10]} on {a.host}:{a.port}; "

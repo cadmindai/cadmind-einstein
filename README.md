@@ -18,8 +18,10 @@ miners' AI agents as checked engineering projects.
    is delivered to the client. A worked attempt that fails or runs late ends the round "not finished": its project
    is kept, and the client may pay for a round that continues it; a copied one goes to another miner from scratch.
    Each job is scored
-   from the gate, efficiency, timeliness and the **client's own reaction** (download, stars, change requests) --
-   there is no LLM grader. Every hour the validator sets weights and publishes a report anyone can recompute.
+   from the gate, efficiency, timeliness, the **client's own reaction** (download, stars, change requests, a
+   quality refund) and the validators' **quality vote** -- a vision model's evaluation of the delivered device on a
+   published rubric (in shadow until the owner turns it on). No model decides whether a device is delivered. Every
+   hour the validator sets weights and publishes a report anyone can recompute.
 
 Watt itself, the agent bench that runs it, and the platform's accounts, job queue and billing are hosted services
 reached over HTTP. This repository contains no Watt code and needs none: it is the validator and two reference
@@ -55,6 +57,8 @@ What keeps this accountable:
   against the on-chain commitment. The scoring code is this repository.
 - The validator publishes its own stake share and whether its weights are the consensus (`GET /v1/chain`, and in
   every report).
+- Miners read everything that affects their weight, signed by the validator (`POST /v1/miners/stats`,
+  `cadmind-miner-stats`, and the optional dashboard on platform.cadmind.ai).
 
 ## Roadmap
 
@@ -134,7 +138,8 @@ commercial use). An efficient harness -- fewer, better model calls and less Watt
 | Document | For |
 |---|---|
 | [`DESIGN.md`](DESIGN.md) | how einstein works and why: jobs, the gate, reassignment, scoring, weights, abuse, auditability |
-| [`docs/MINER.md`](docs/MINER.md) | miners: registering, the sealed agent key, admission, the job protocol, scoring, copying, running an agent |
+| [`docs/MINER.md`](docs/MINER.md) | miners: registering, the sealed agent key, admission, the job protocol, scoring, your stats, copying, running an agent |
+| [`docs/VALIDATOR.md`](docs/VALIDATOR.md) | validators: staking, the review bundle, the rubric and its prompt, the vote protocol, cost, calibration |
 | [`CHANGELOG.md`](CHANGELOG.md) | what changed in each release |
 | [`CONTRIBUTING.md`](CONTRIBUTING.md) | development setup and pull requests |
 | [`SECURITY.md`](SECURITY.md) | reporting a vulnerability privately |
@@ -214,6 +219,11 @@ cadmind-einstein --state-dir ~/.local/share/cadmind-einstein \
   A restart loses nothing.
 - The validator logs whether it is **stake-dominant** (its share of active validator stake above `kappa`), and
   publishes that in every report and at `GET /v1/chain`.
+- **Quality votes** ([`docs/VALIDATOR.md`](docs/VALIDATOR.md)): `--votes` (`shadow` by default: voted, published,
+  not scored; `live` only on the owner's decision; `off`), `--review-model anthropic:<model>|openai:<model>` with
+  `--review-key-file` (0600; install `cadmind-einstein[review]`), `--review-samples` (3), `--review-effort`
+  (`medium`), `--review-daily-usd` (10; an ALERT when reached) and `--review-usd-per-mtok-in/out/cached` (the
+  provider's prices, for the cap). Without `--review-model` deliveries are queued, not reviewed.
 
 A local stack needs no chain: `--dev-uri //Validator --metagraph-file hotkeys.json` (a JSON list of hotkeys, or
 `{"neurons": [...], "owner_hotkey": ..., "hyper": {...}}`) runs with a development key and is always a dry run.
@@ -340,6 +350,7 @@ Every answer on these routes is signed by the validator's hotkey (`X-Einstein-Va
 | `POST /v1/jobs/submit` | `{job, workspace, digest, summary?}` | `{job, state: "judging"}` |
 | `POST /v1/jobs/reject` | `{job, category, message}` | `category`: `not-allowed` or `not-capable` |
 | `POST /v1/miners/receipt` | `{}` | the miner's recent jobs and scores, its weight and quality, and its recent attempts that did not pass with why (`failures`) |
+| `POST /v1/miners/stats` | `{}` | everything that affects the miner's weight: standing and share, counters over 24 h, 7 days and lifetime (and its coldkey's), its last 100 jobs with score parts, signals and votes with their evidence, the weight formula ([`docs/MINER.md`](docs/MINER.md#your-stats)) |
 
 ### Platform and operator routes (`Authorization: Bearer <desk token>`)
 
@@ -347,7 +358,8 @@ Every answer on these routes is signed by the validator's hotkey (`X-Einstein-Va
 |---|---|
 | `GET /v1/capacity` | active and free admitted miners, median job time (the platform's queue computes ETAs) |
 | `POST /v1/cancel {job}` | the client cancelled a claimed job: frozen, miner freed, nobody scored, not charged |
-| `POST /v1/signals {job, kind, stars?, trust}` | the client's download, stars (1-5) or change request; `trust`: `paid` or `free` |
+| `POST /v1/signals {job, kind, stars?, quality?, trust}` | the client's download, stars (1-5), change request, or a refund the platform granted (`quality`: true when for the delivery's quality); `trust`: `paid` or `free` |
+| `GET /v1/stats/miners?hotkeys=a,b` | the stats of up to 20 hotkeys, as `/v1/miners/stats` answers each (the platform's miner dashboard) |
 | `GET /v1/jobs/{job}` | a job's state and attempts |
 | `GET /v1/scores` | scores, weights, quality, miners, rejection telemetry |
 | `GET /v1/chain` | the validator's stake share, `kappa`, the weights path |
@@ -359,6 +371,7 @@ Every answer on these routes is signed by the validator's hotkey (`X-Einstein-Va
 |---|---|
 | `GET /v1/reports` | every hourly report's name, SHA-256 and the block its hash was committed at |
 | `GET /v1/reports/hour-N.json` | a report's exact bytes |
+| `GET /v1/stats/network` | the leaderboard by hotkey: share of the vector, weight, quality, 7-day deliveries, mean stars, mean vote |
 
 ### What the validator calls on the platform
 
@@ -366,7 +379,8 @@ With its mint key: `POST /api/agent/subnet/keys` (mint), `.../keys/disable`. Wit
 `.../workspaces` (grant), `.../workspaces/{ws}` (state), `.../freeze`, `.../fork`, and in its own forks the
 ordinary agent routes (`/api/agent/workspaces/{ws}/run` for `watt status` and the gate's `watt report --mutate` (its guard and the delivery's files in one run),
 `/export`, which the gate also reads for the client's answers: `cadmind_einstein/answers.py`). With its queue key: `POST /api/engine/einstein/claim`, `lease`, `GET .../claimed`,
-`POST .../jobs/{job}/result`. See `cadmind_einstein/platform.py`.
+`POST .../jobs/{job}/result`, and `POST .../jobs/{job}/review_bundle` (a delivered version's review bundle, fetched
+from the signed link it answers). See `cadmind_einstein/platform.py`.
 
 - At startup the operator and queue keys are checked (the mint key on its first use); a key that does not hold
   its role (403 `operator_role`) or is refused (401: a wrong key, or an address the queue does not allowlist) is
@@ -391,16 +405,18 @@ passes the same job). A passing job scores
 
 ```
 I = 0.5 + 0.3·E + 0.2·T                 immediate: passed the gate, efficiency, on time
-s = 0.4·I + 0.6·(w·C + (1 - w)·I)       the client's reaction C, weighted by w
+B = u·V + (1 - u)·I                     the validators' vote V, counted u (0 in shadow)
+s = 0.4·I + 0.6·(w·C + (1 - w)·B)       the client's reaction C, weighted by w
 ```
 
 where `E` compares the job's compute and wall time with the median of similar passing jobs, and `C`/`w` come from
-the client's stars, download, re-run or change request, weighted by account trust (paid 1, free 0.1). An unrated
-job scores exactly `I`. A miner's weight is the sum of its job scores decayed with a 24-hour half-life (7-day
+the client's stars, download, re-run, change request or quality refund (one star), weighted by account trust
+(paid 1, free 0.1). While votes are in shadow (`u = 0`) an unrated job scores exactly `I`. A miner's weight is the sum of its job scores decayed with a 24-hour half-life (7-day
 window); the hourly vector is proportional to it over registered, admitted, recently seen miners. Weight is never
 burned and the subnet owner's hotkey is never weighted; at genesis (nobody has history) the weight is split
-equally per coldkey among admitted miners that have delivered a scored client job, so registering hotkeys earns
-nothing on its own. Details: [`DESIGN.md`](DESIGN.md) section 5.
+equally per coldkey among admitted miners that have delivered a scored client job. The vector is **never empty**
+while a miner is admitted (under Null consensus an empty one spreads emission over every UID): the last non-empty
+vector is sent again, or, before the first, equal shares per coldkey among admitted, reachable miners. Details: [`DESIGN.md`](DESIGN.md) section 5.
 
 **Audit it yourself:** download the reports and run
 
@@ -409,8 +425,8 @@ cadmind-recompute hour-A.json ... hour-N.json --subtensor.network test --netuid 
     --validator-hotkey VALIDATOR_SS58
 ```
 
-It recomputes every score and the vector, checks the hash chain and canonical bytes, and compares the newest
-report's hash with the validator's on-chain commitment.
+It recomputes every score and the vector, checks the hash chain and canonical bytes, checks every published vote's
+signature and value, and compares the newest report's hash with the validator's on-chain commitment.
 
 ## Anti-abuse
 
@@ -448,6 +464,11 @@ report's hash with the validator's on-chain commitment.
 | `cadmind_einstein/daemon.py` | `cadmind-einstein`: the validator process (flags, main loop, hourly close) |
 | `cadmind_einstein/desk.py` | the job desk: claim, route, accept, deadlines, gate, reassignment, job endings, admission, abuse disables |
 | `cadmind_einstein/scoring.py` | per-job scores, decayed weights, the vector, hourly reports; `cadmind-recompute` (the auditor) |
+| `cadmind_einstein/stats.py` | miner stats (24 h, 7 days, lifetime; the daily rollup), the leaderboard; `cadmind-miner-stats` |
+| `cadmind_einstein/review.py` | the reference reviewer: rubric, prompt, strict replies, injection measures, bundle checks, the average; `cadmind-review` |
+| `cadmind_einstein/votes.py` | our validator's votes: the review queue, shadow/live, signed votes, their report section |
+| `cadmind_einstein/models.py` | the review model by configuration (Anthropic or OpenAI SDK) and the daily spend cap |
+| `cadmind_einstein/calibration.py` | the calibration set and the go/no-go |
 | `cadmind_einstein/chain.py` | metagraph reads, stake dominance, weights within the rate limit, report commitments (bittensor 11) |
 | `cadmind_einstein/service.py` | the validator's HTTP face (stdlib `http.server`), hardened before any body is read |
 | `cadmind_einstein/platform.py` | the validator's client of the platform's agent and queue APIs |

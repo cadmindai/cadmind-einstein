@@ -435,8 +435,12 @@ class Desk:
         mint_per_hour: int = MINT_PER_HOUR,
         mint_per_coldkey_hour: int = MINT_PER_COLDKEY_HOUR,
         mint_fresh_s: float = MINT_FRESH_S,
+        on_delivered: Callable[[str, str], None] | None = None,
     ) -> None:
         self.platform, self.ledger, self.registered = platform, ledger, registered
+        self.on_delivered = on_delivered
+        """told (job, builder's hotkey) once the platform took a delivered, charged result: the
+        reviewer's queue (:mod:`.votes`)"""
         self.cancel_cooloff_s, self.gate_run_s = cancel_cooloff_s, gate_run_s
         self.judge_max_retries, self.judge_give_up_s = judge_max_retries, judge_give_up_s
         self.mint_per_hour, self.mint_per_coldkey_hour = mint_per_hour, mint_per_coldkey_hour
@@ -472,6 +476,8 @@ class Desk:
         """gate failures per hotkey (held or counted), for the per-coldkey watch"""
         self.delivered: dict[str, int] = {}
         """delivered (scored, passing) client jobs per hotkey, ever: what genesis weights"""
+        self.not_finished: dict[str, int] = {}
+        """rounds a hotkey worked that ended not finished, ever (the miners' stats)"""
         self.suspensions: dict[str, int] = {}
         self.admission_failed: dict[str, int] = {}
         self.strikes: dict[str, int] = {}
@@ -537,6 +543,7 @@ class Desk:
                 "copied": self.copied,
                 "failed": self.failed,
                 "delivered": self.delivered,
+                "not_finished": self.not_finished,
                 "suspensions": self.suspensions,
                 "admission_failed": self.admission_failed,
                 "strikes": self.strikes,
@@ -585,6 +592,7 @@ class Desk:
         self.copied = dict(meta.get("copied") or {})
         self.failed = dict(meta.get("failed") or {})
         self.delivered = dict(meta.get("delivered") or {})
+        self.not_finished = dict(meta.get("not_finished") or {})
         self.suspensions = dict(meta.get("suspensions") or {})
         self.admission_failed = dict(meta.get("admission_failed") or {})
         self.strikes = dict(meta.get("strikes") or {})
@@ -1293,12 +1301,13 @@ class Desk:
 
     def signal(self, job_id: str, body: Mapping[str, Any]) -> dict[str, Any]:
         """The client's reaction to a delivered job, from the platform: download, stars (1-5),
-        change. Late
+        change, or a refund the platform granted (``quality``: true when it was granted for the
+        delivery's quality -- scored as one star -- false otherwise: recorded, not scored). Late
         signals change the job's score when they arrive."""
         kind = str(body.get("kind") or "")
-        if kind not in ("download", "stars", "change"):
+        if kind not in ("download", "stars", "change", "refund"):
             raise DeskError(
-                "kind is download, stars or change (a re-run is a new job with rerun_of)"
+                "kind is download, stars, change or refund (a re-run is a new job with rerun_of)"
             )
         trust = str(body.get("trust") or "free")
         if trust not in ("paid", "free"):
@@ -1309,6 +1318,10 @@ class Desk:
             if not 1 <= stars <= 5:
                 raise DeskError("stars are 1 to 5")
             sig["stars"] = stars
+        if kind == "refund":
+            if not isinstance(body.get("quality"), bool):
+                raise DeskError("a refund says quality: true or false")
+            sig["quality"] = body["quality"]
         with self._mut():
             s = self.ledger.signal(job_id, sig)
         if s is None:
@@ -1643,6 +1656,15 @@ class Desk:
                         and answer.get("charged") is False
                     ):
                         self._uncharged(job_id, answer)
+                    elif (
+                        result.get("label") == "delivered"
+                        and result.get("charge")
+                        and self.on_delivered is not None
+                    ):
+                        try:
+                            self.on_delivered(job_id, str(result.get("hotkey") or ""))
+                        except Exception as e:  # noqa: BLE001 -- a review never blocks a delivery
+                            self.log(f"review queue: {type(e).__name__}: {e}")
                 with self._mut():
                     if job_id in self._outbox:
                         self._outbox.remove(job_id)
@@ -1837,6 +1859,7 @@ class Desk:
             return
         if worked:
             label = "not finished"
+            self.not_finished[a.hotkey] = self.not_finished.get(a.hotkey, 0) + 1
         elif ends:
             label = "declined" if all(x.kind == "reject" for x in substantive) else "out of reach"
         else:

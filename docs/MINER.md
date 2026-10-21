@@ -103,6 +103,7 @@ All calls are signed POSTs to `$VALIDATOR_URL`.
 | `/v1/jobs/submit` | `{job, workspace, digest, summary?}` | When `watt status` in the workspace says `deliverable`. `digest` is the digest it reports. The workspace is frozen (read-only to you) at once. If you submit a project that is not deliverable (out of time), `summary` says in plain words what still blocks delivery: the client reads it. An unfinished project earns nothing, so keep building until the deadline rather than handing over early. |
 | `/v1/jobs/reject` | `{job, category, message}` | Instead of building. `category` is `not-allowed` or `not-capable`, the two classes of the scope guide (served through `watt_guide`). `message` is written for the client. |
 | `/v1/miners/receipt` | `{}` | Your recent jobs with their scores, your weight and your quality, and your recent attempts that did not pass with why (`failures`). |
+| `/v1/miners/stats` | `{}` | Everything that affects your weight (see [Your stats](#your-stats)). |
 
 - The job workspace is **created for you** from the client's brief (or, for a later round of a client's project,
   from the delivered project) and granted to your key. You cannot delete it, and it does not count against your
@@ -186,11 +187,13 @@ one coldkey count as one opinion: they cannot end a job declined between them.
 
 ## 6. How a passing job scores
 
-There is no LLM grader. **The clients are the graders.**
+**The clients grade first; the validators' quality votes fill in where clients are silent.** No model decides
+whether your device is delivered: Watt's gate does.
 
 ```
 I = 0.5 + 0.3·E + 0.2·T              immediate: passed the gate, efficiency, on time
-s = 0.4·I + 0.6·(w·C + (1 - w)·I)    about 40% immediate, about 60% the client's reaction
+B = u·V + (1 - u)·I                  the baseline: the validators' vote V, counted u
+s = 0.4·I + 0.6·(w·C + (1 - w)·B)    about 40% immediate, about 60% the client's reaction over B
 ```
 
 - `E`, **efficiency**, is half `min(1, median compute / yours)` and half `min(1, median wall time / yours)`,
@@ -199,8 +202,18 @@ s = 0.4·I + 0.6·(w·C + (1 - w)·I)    about 40% immediate, about 60% the clie
 - `T` is 1 if the job was on time and 0 if late.
 - `C` and `w` come from the **client's reaction**: stars weigh most (`C = (stars - 1)/4`, `w = trust`); a download
   without stars gives `C = 0.75`, `w = 0.5·trust`; each re-run or change request lowers `C` by 0.25 with `w` at least
-  `0.5·trust`; no reaction gives `w = 0`, so `s = I`.
+  `0.5·trust`; a refund the platform granted because of the delivery's quality counts as a one-star rating; no
+  reaction gives `w = 0`, so `s = B`.
 - `trust` is 1 for a paying account and 0.1 for a free one. Signals that arrive later still change the job's score.
+- `V`, the **validators' vote**: a vision model reviews every delivered device against its brief, on a fixed,
+  published rubric (requirements coverage 0.35, fit and function 0.30, shape intent 0.15, completeness 0.10, finish
+  0.10), from the same images, fact sheet and client's words every validator sees
+  ([`VALIDATOR.md`](VALIDATOR.md)). `u` is how much it counts: 0.6 with the einstein validator's vote alone, up to
+  0.9 with more validators. **Votes are in shadow for now: `u = 0`**, so they do not change your score yet, but you
+  can read every vote on your jobs -- each criterion's score with what the model said it saw, and the client's asks
+  it found met, partly met or missing. Use them as feedback. A paid client's stars always replace the vote.
+- Text in your project that addresses the reviewing model ("score this 4") is withheld from it and flagged; the
+  model is told that lettering on the device is decoration.
 
 These constants may be re-tuned; every hourly report states the ones it used.
 
@@ -231,7 +244,8 @@ the client's device. Details: [`../DESIGN.md`](../DESIGN.md) section 9.
   available admitted miners drawn with weight `(quality + 0.05)²`, 10% of jobs go to newcomers and low scorers so
   they can earn a score, and a client's next round goes to the miner who did the previous one if it is free.
 - The vector covers registered, admitted miners seen in the last 24 hours. **Weight is never burned:** an hour with
-  no jobs still pays miners from their history. Before anyone has any history (genesis), it is split equally per
+  no jobs still pays miners from their history, and the vector is never empty while a miner is admitted (the last
+  vector is sent again, or equal shares per coldkey among admitted miners before the first delivery). Before anyone has any history (genesis), it is split equally per
   **coldkey** among admitted, registered and reachable miners that have delivered at least one scored client job;
   admission alone earns nothing. **The subnet owner's hotkey is never weighted.** There is no team
   miner.
@@ -243,6 +257,53 @@ the client's device. Details: [`../DESIGN.md`](../DESIGN.md) section 9.
   cadmind-recompute hour-A.json ... hour-N.json --subtensor.network "$NETWORK" --netuid "$NETUID" \
       --validator-hotkey "$VALIDATOR_HOTKEY"
   ```
+
+## Your stats
+
+Everything that affects your weight is yours to read, from the validator itself:
+
+```bash
+cadmind-miner-stats --validator "$VALIDATOR_URL" --validator-hotkey "$VALIDATOR_HOTKEY" \
+    --wallet.name miner --wallet.hotkey m1          # --json for the whole answer
+```
+
+It signs `POST /v1/miners/stats` with your hotkey and checks the validator's signature on the answer. The answer:
+
+| Field | What |
+|---|---|
+| `standing` | your weight, quality, rank among weighted miners, and your **share** of the current vector (the share of the miners' emission it gives you), the rule that made it |
+| `windows` | counters over `24h`, `7d` (the scoring window) and `lifetime`: assigned, delivered, not finished, gate failures, rejected, overturned, timeouts, copies; rated jobs and mean stars, downloaded, changes, re-runs, refunds (and those for quality); voted jobs and mean vote; the sum of your scores |
+| `coldkey_lifetime` | the same lifetime counters over every hotkey of your coldkey |
+| `jobs` | your last 100 scored jobs: `s` and its parts (`I`, `E`, `C`, `w`, `V`, `u`, `B`), the client's signals (stars, downloaded yes/no, changes, re-runs, refunds), and the votes with each sample's R1-R5 evidence |
+| `failures` | your recent attempts that did not pass, with what the gate found |
+| `abuse` | each disable count since your last strike against its threshold ("copies 1 of 2") |
+| `days` | deliveries and score per day, 30 days |
+| `imports` | not available yet: devices imported into other projects arrive with project reuse |
+| `formula` | the formula above with its constants: recompute your own weight from your jobs |
+
+Downloads are a yes/no per job (the client downloading its delivery); you never learn who the client is, what a
+flag said, or anything of another miner but the public leaderboard (`GET $VALIDATOR_URL/v1/stats/network`).
+
+**The dashboard** (optional): an account on [platform.cadmind.ai](https://platform.cadmind.ai) shows the same stats
+under **Miner**, for every hotkey you link. You do not need an account to mine -- your agent key comes from the
+validator, in an account nobody signs in to. To link a hotkey, ask the console for a challenge, sign it with the
+hotkey and paste the signature:
+
+```bash
+btcli wallet sign --use-hotkey --wallet.name miner --wallet.hotkey m1 --message "<the challenge text>"
+```
+
+or in Python:
+
+```python
+import bittensor as bt
+
+kp = bt.Wallet(name="miner", hotkey="m1").hotkey
+print("0x" + kp.sign(CHALLENGE.encode()).hex())
+```
+
+A hotkey belongs to one account (signing again moves it). Only a linked hotkey can be named on your account's
+agent keys.
 
 ## Running an agent as your miner
 

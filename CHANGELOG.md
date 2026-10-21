@@ -7,6 +7,44 @@ All notable changes to this project are listed here. The format follows
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-10-21
+
+### Added
+- **Miner stats** (`cadmind_einstein/stats.py`): `POST /v1/miners/stats` (signed by the miner, answer signed by the
+  validator) answers everything that affects a hotkey's weight: standing and its share of the current vector,
+  counters over 24 hours, 7 days and lifetime (and over its coldkey's hotkeys), its last 100 jobs with every score
+  part, the client's signals (downloaded yes/no, stars, changes, re-runs, refunds), the validators' votes with their
+  evidence, disable counts against their thresholds, 30 days of deliveries, and the weight formula with its
+  constants. Lifetime counts outlive the 7-day window through a daily rollup written at each hour's close.
+  `GET /v1/stats/miners?hotkeys=` (Bearer, up to 20 hotkeys) serves the platform's miner dashboard;
+  `GET /v1/stats/network` is the public leaderboard. `cadmind-miner-stats` prints your stats and checks the
+  validator's signature. Imports are not counted yet (they arrive with project reuse); the answer says so.
+- **Refunds as signals**: `POST /v1/signals {kind: "refund", quality, trust}`. A refund granted for the delivery's
+  quality counts as a one-star rating in its place among the ratings; any other refund is recorded, not scored.
+- **Quality votes, in shadow** (`cadmind_einstein/review.py`, `votes.py`, `models.py`, `calibration.py`;
+  `DESIGN.md` section 13, new `docs/VALIDATOR.md`): the reference reviewer -- the rubric `cadmind-einstein-rubric/1`
+  (R1 0.35, R2 0.30, R3 0.15, R4 0.10, R5 0.10), its prompt and digest, strict replies with verbatim R1 quotes,
+  prompt-injection measures, review bundle checks, signed votes and the average across validators. The validator
+  reviews every delivery the platform took (`--votes shadow`, the default; `--review-model`, `--review-key-file`,
+  `--review-samples`, `--review-effort`, `--review-daily-usd` with an ALERT at the cap, `--review-usd-per-mtok-*`),
+  publishes the votes in the hourly report (scores and signatures, never the words) and shows them to miners; in
+  shadow they change no score. `cadmind-review` runs the reviewer on a bundle with your own model and key.
+  `cadmind-recompute` checks every published vote's signature and value. The calibration set's structure and the
+  go/no-go a model must pass before votes count.
+- Optional dependencies `review` (the Anthropic and OpenAI SDKs), only for a validator that votes.
+
+### Changed
+- The score has a baseline `B = u*V + (1 - u)*I` between the immediate part and the client's signal:
+  `s = 0.4*I + 0.6*(w*C + (1 - w)*B)`. In shadow `u = 0`, so `B = I` and every score is what it was. Job parts gain
+  `T`, `V`, `u` and `B`.
+- **The weight vector is never empty while a miner is admitted** (under Null consensus an empty vector spreads the
+  miners' emission over every registered UID): an hour whose rules weight nobody sends the last non-empty vector
+  again, or, before any, equal shares per coldkey among the admitted, reachable miners. With the default genesis
+  this replaces "before the first delivery nothing is weighted". Reports publish `last_vector` and
+  `vector_by_hotkey`; an hour with nothing to weight logs an ALERT.
+- `DESIGN.md` section 10 describes Null consensus (one weight setter: the largest stake); the principle "there is no
+  LLM grader" is restated: no model decides delivery, model votes score miners.
+
 ## [0.3.12] - 2026-10-21
 
 ### Changed
