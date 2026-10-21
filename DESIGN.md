@@ -420,8 +420,8 @@ charging, reassignment and the gate never read votes.
 **The review bundle.** The platform renders one bundle per delivered version, hashes it and serves the same bytes
 to every voter through a signed, expiring link: the **standard image set** (eight analytic views of the device
 coloured by kind -- three-quarter, the six axis views and a second three-quarter view from below and behind,
-1024 px, depth edges so openings show; the same views with the client's world items ghosted in one colour; up to
-four section views; the studio render), a **fact sheet** of structured fields only (the requirements with their
+1024 px, depth edges so openings show; the same views with the client's world items ghosted in one colour; three
+section views; the studio render), a **fact sheet** of structured fields only (the requirements with their
 verdict and provenance kind, the world items and their fidelity, parts, decisions, the guard summary), and the
 **client's words** (the brief, answers, change requests, the stated making method). Never in it: the project's
 `src/` and `tests/`, client photos, the client's identity, the job id, the builder's hotkey. `images.sha256` lists

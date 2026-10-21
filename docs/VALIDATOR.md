@@ -28,9 +28,9 @@ signed link that expires. It is a zip:
 
 | Entry | What |
 |---|---|
-| `bundle.json` | `format: "cadmind-review-bundle/1"`, the image list (`name`, `path`, `sha256`, `kind`: `analytic`, `world`, `section` or `studio`, `view`, and for a section `why`), `image_set`, `facts_sha256`, `client_sha256`, `flags` |
-| `images/` | **8 analytic views** of the device, coloured by kind (three-quarter, the six axis views, a second three-quarter view from below and behind; 1024 px on the longest side; depth edges so openings show); **the same 8 views with the client's world items** (the product it fits, a wall, a hand) ghosted in one colour; **up to 4 section views** through the device's declared fits or its centre planes; **the studio render** when made. No text is drawn on any image. |
-| `images.sha256` | every image's SHA-256 (`sha256sum` format, sorted by name). Its own SHA-256, `sha256:<hex>`, is the **image-set digest** every vote names. |
+| `bundle.json` | `format: "cadmind-review-bundle/1"`, an opaque `version` id, the image list (`name`, `sha256`, `kind`: `analytic`, `world`, `section` or `studio`, `view`, `width`, `height`, and for a section `why`), `image_set`, `facts_sha256`, `client_sha256`, `flags`, `notes`, `made_ms` |
+| `images/` | **8 analytic views** of the device, coloured by kind (`view-iso`, the six axis views `view-+x` ... `view--z`, and `view-iso-below`, from below and behind; 1024 px on the longest side; depth edges so openings show); **the same 8 views with the client's world items** (the product it fits, a wall, a hand) ghosted in one colour (`world-*`, when the delivery has world items); **3 section views** (`section-x/y/z`, each through the plane on its axis that cuts the most of the device); **the studio render** (`studio.jpg`) when one was made. No text is drawn on any image. |
+| `images.sha256` | every image's SHA-256 (`sha256sum` format: `<hex>  images/<name>`, sorted). Its own SHA-256, `sha256:<hex>`, is the **image-set digest** every vote names. |
 | `facts.json` | structured fields only: the requirements (id, level, statement, verdict, provenance kind: client, cite, standard, convention, decision, estimate, assumed), world items (name, kind, fidelity `box` or `shaped`, cited), parts (counts, overall size, materials), decisions (counts by who decided and status), the guard summary, `flags.injection_suspect` |
 | `client.json` | the client's words: the brief, the answers, the change requests, the stated making method |
 
