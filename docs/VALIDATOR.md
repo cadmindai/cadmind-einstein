@@ -45,7 +45,8 @@ product (world item), each with the findings that name it; the delivered project
 runs now, read-only (`today`: deliverable or not, its first blocking code); counts of assumed holds, estimated and
 guessed positions; every finding as `{source, code, severity, class, reason, subject}` (Watt's code and the item it
 names, never Watt's prose). The platform classes each finding by its Watt code alone, and sums them up in
-`function.summary`:
+`function.summary` (`status`: `fails`, `unverified` or `no_finding` -- never "verified": Watt judges the client's
+products as modelled, so no finding is not proof of a fit with the real product):
 
 - `fails` -- it does not work as built: `must_failed` (a must's test fails), `control_unwired` (a control a must
   relies on is not wired, W0801), `control_unworked` (a control no operator works, W0724), `control_no_travel` (a
@@ -69,7 +70,7 @@ score **last**.
 | # | Criterion | Weight | The question |
 |---|---|---|---|
 | R1 | Requirements coverage | 0.35 | Every explicit ask in the client's words, each with a **verbatim quote** and a status (met, partly, missing, cannot_tell); the score follows from that list |
-| R2 | Fit and function plausibility | 0.30 | Would it work as made? It fits the named product, not a spec-sheet box of it; moving parts move; ports and buttons can be reached; it holds what it must. A world item at box fidelity, or a limit set by an agent's estimate against a third-party product, cannot score 4. `facts.function` is read first; 0 when it would not work as made |
+| R2 | Fit and function plausibility | 0.30 | Would it work as made? It fits the named product, not a spec-sheet box of it; moving parts move; ports and buttons can be reached; it holds what it must. A world item at box fidelity, or a limit set by an agent's estimate against a third-party product, cannot score 4. `facts.function` is read first (Watt judges the products as modelled: no finding is not proof of a fit with the real product); 0 when it would not work as made |
 | R3 | Shape intent | 0.15 | Recognisably the thing asked for, in its pose of use |
 | R4 | Completeness | 0.10 | All named parts present and joined, with fasteners or retention |
 | R5 | Finish | 0.10 | Edges, proportions, the stated look, makeable by the stated method |
@@ -93,7 +94,7 @@ A reason a rubric does not list bounds nothing (a new reason needs a new rubric)
 
 The system prompt, the rubric, the anchors, the reply schema, the bundle format and the cap rules are hashed together
 into the **rubric digest** (`cadmind_einstein.review.rubric_digest()`; rubric 2 in einstein 0.4.2 is
-`sha256:8b6399dc642540a16168ae61c76a830186dbfc1922c5ef6ba2f493410f71c566`); a vote names it, and a vote naming another digest or another image set is not counted.
+`sha256:294ea60c6a2f66147a8940f5eefbcf351595e079512cf3f763bbb35f164af822`); a vote names it, and a vote naming another digest or another image set is not counted.
 
 ### The reply
 
