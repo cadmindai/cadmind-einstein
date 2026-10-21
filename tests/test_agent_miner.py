@@ -118,6 +118,24 @@ class TestAgentArgv(unittest.TestCase):
             self.assertIn("brief/photo-*", text)
             self.assertIn("view_image", text)
 
+    def test_the_builder_is_told_to_read_the_parts_block_from_the_change_file(self) -> None:
+        """The platform writes the parts the client selected in the 3D view after the client's
+        words in the change file; `client_answers` gives only the words, so the builder must read
+        the file itself."""
+        from cadmind_einstein.agent_miner import questions_rule
+
+        for work in ({}, {"no_questions": True}):
+            said = " ".join(questions_rule(work, "ag-1").split())
+            self.assertIn(
+                "listing the parts the client selected in the 3D view, by their view key", said
+            )
+            self.assertIn("read the change file itself (`read_file` its `path`)", said)
+            self.assertIn("`watt inspect` with `show: [<their keys>]` shows them", said)
+        guide = " ".join(
+            (Path(__file__).resolve().parents[1] / "docs" / "MINER.md").read_text().split()
+        )
+        self.assertIn("read the change file itself (`read_file` its `path`) for that block", guide)
+
     def test_a_continuation_says_its_base_and_an_unfinished_round_says_what_blocks(self) -> None:
         from cadmind_einstein.agent_miner import questions_rule
 

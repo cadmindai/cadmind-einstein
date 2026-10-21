@@ -7,6 +7,12 @@ All notable changes to this project are listed here. The format follows
 
 ## [Unreleased]
 
+### Changed
+- **The parts a client selected in the 3D view.** A change file may end with a block from CADmind listing them by
+  view key (`build/view/device.json`), name and place. The reference miner's prompt and docs/MINER.md tell the builder
+  to read the change file itself (`client_answers` gives only the client's words) and to see the parts with
+  `watt inspect` (`show`).
+
 ## [0.4.3] - 2026-10-21
 
 ### Changed
