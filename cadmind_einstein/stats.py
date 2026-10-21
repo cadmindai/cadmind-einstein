@@ -87,7 +87,7 @@ FORMULA = {
         " a quality refund counts as one star",
         "w": "how much C counts: the client's trust (paid 1, free 0.1), half for a download",
         "V": "the validators' quality vote on the rubric (0..1)",
-        "u": "how much V counts (0 while votes are in shadow)",
+        "u": "how much V counts (0.4 when votes are counted, 0 in shadow)",
         "B": "the baseline the client's signal moves from",
     },
 }
@@ -177,7 +177,7 @@ class MinerStats:
         uids: Callable[[], Mapping[str, int]] = dict,
         coldkeys: Callable[[], Mapping[str, str]] = dict,
         current: Callable[[], Mapping[str, Any]] | None = None,
-        votes_mode: str = "shadow",
+        votes_mode: str = "counted",
     ) -> None:
         self.desk, self.reviewer = desk, reviewer
         self.uids, self.coldkeys = uids, coldkeys

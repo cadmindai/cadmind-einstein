@@ -33,16 +33,14 @@ from cadmind_einstein.review import (
     FUNCTION_CAP,
     REPLY_SCHEMA,
     RUBRIC_VERSION,
-    UNVERIFIED_R2_MAX,
+    U_MAX,
     WITHHELD,
-    Bounds,
     BundleError,
     Unavailable,
     Vote,
     Voter,
     aggregate,
     ask_samples,
-    function_bounds,
     instruction_like,
     parse_sample,
     read_bundle,
@@ -275,51 +273,28 @@ class TestRubricAndReplies(unittest.TestCase):
         s = parse_sample(reply((2, 0, 4, 4, 4)), **self.kw)
         self.assertAlmostEqual(s.raw_value, 0.35 * 0.5 + 0 + 0.15 + 0.10 + 0.10)
         self.assertEqual((s.cap, s.value), (FUNCTION_CAP, FUNCTION_CAP))
-        # an unverified bound does not name the cap's reason: the reviewer's R2 of 0 does
-        b = function_bounds({"function": {"summary": {"unverified": ["fact_guessed"]}}})
-        s = parse_sample(reply((2, 0, 4, 4, 4)), **self.kw, bounds=b)
         self.assertIn("value capped at 0.35 (the reviewer's R2 of 0)", s.notes)
         self.assertEqual(s.as_json()["value"], FUNCTION_CAP)
 
-    def test_the_function_evidence_caps_mechanically(self) -> None:
-        def facts(fails=(), unverified=(), musts=()) -> dict:
-            return {
-                "function": {
-                    "summary": {"fails": list(fails), "unverified": list(unverified)},
-                    "musts": list(musts),
-                }
+    def test_the_function_evidence_is_context_never_a_cap(self) -> None:
+        # a light judge (rubric 3): Watt's function evidence goes to the model as data, and
+        # nothing is read from it mechanically -- only the reviewer's own R2 of 0 caps
+        facts = {
+            "function": {
+                "summary": {"fails": ["control_unworked"], "unverified": ["fact_guessed"]},
+                "musts": [{"id": "m", "verdict": "failed"}],
             }
-
-        self.assertEqual(function_bounds({}), Bounds())
-        self.assertEqual(function_bounds(facts()), Bounds())
-        b = function_bounds(facts(["control_unworked"], ["inventory_undeclared"]))
-        self.assertEqual(b, Bounds(FUNCTION_CAP, 0, ("control_unworked",)))
-        # a perfect-looking device that does not work: R2 0 and at most the cap
-        s = parse_sample(reply((4, 4, 4, 4, 4)), **self.kw, bounds=b)
-        self.assertEqual(s.scores["R2"]["score"], 0)
-        self.assertEqual(s.value, FUNCTION_CAP)
-        self.assertTrue(any("control_unworked" in n for n in s.notes))
-        # an undeclared control on a part a must relies on is a failure too
-        self.assertEqual(function_bounds(facts(["control_undeclared"])).cap, FUNCTION_CAP)
-        # a must whose verdict is failed caps without a listed reason
-        b = function_bounds(facts(musts=[{"id": "m", "verdict": "failed"}]))
-        self.assertEqual(b.reasons, ("must_failed",))
-        # unverified: R2 at most 2, no cap
-        b = function_bounds(facts(unverified=["inventory_undeclared", "something_new"]))
-        self.assertEqual(b, Bounds(None, UNVERIFIED_R2_MAX, ("inventory_undeclared",)))
-        s = parse_sample(reply((4, 4, 4, 4, 4)), **self.kw, bounds=b)
-        self.assertEqual(s.scores["R2"]["score"], UNVERIFIED_R2_MAX)
-        self.assertIsNone(s.cap)
-        self.assertAlmostEqual(s.value, 0.35 + 0.30 * 0.5 + 0.15 + 0.10 + 0.10)
-        # a reason this rubric does not know bounds nothing (a newer platform needs a new rubric)
-        self.assertEqual(function_bounds(facts(["a_new_reason"])), Bounds())
-        # the bounds reach the model's samples through the bundle's facts
-        bundle = read_bundle(make_bundle(facts=facts(["product_unfit"])))
-        model = _Fixed(reply((4, 4, 4, 4, 4)))
-        got, failed = ask_samples(model, bundle, samples=2)
-        self.assertEqual((failed, [x.value for x in got]), ([], [FUNCTION_CAP, FUNCTION_CAP]))
+        }
+        bundle = read_bundle(make_bundle(facts=facts))
+        self.assertIn("control_unworked", user_text(bundle))
+        got, failed = ask_samples(_Fixed(reply((4, 4, 4, 4, 4))), bundle, samples=2)
+        self.assertEqual((failed, [x.value for x in got]), ([], [1.0, 1.0]))
+        self.assertEqual([x.cap for x in got], [None, None])
+        got, _ = ask_samples(_Fixed(reply((4, 0, 4, 4, 4))), bundle, samples=1)
+        self.assertEqual(got[0].value, FUNCTION_CAP)
         self.assertIn("facts.function", system_prompt())
-        self.assertTrue(RUBRIC_VERSION.endswith("/2"))
+        self.assertNotIn("mechanically", system_prompt())
+        self.assertTrue(RUBRIC_VERSION.endswith("/3"))
 
     def test_strict_replies(self) -> None:
         good = reply()
@@ -425,8 +400,7 @@ class TestVoteAndAverage(unittest.TestCase):
 
     def test_a_capped_vote_publishes_its_caps_and_recomputes(self) -> None:
         b = read_bundle(make_bundle())
-        bounds = function_bounds({"function": {"summary": {"fails": ["control_unwired"]}}})
-        capped = parse_sample(reply((4, 4, 4, 4, 4)), views=VIEWS, client_text=BRIEF, bounds=bounds)
+        capped = parse_sample(reply((4, 0, 4, 4, 4)), views=VIEWS, client_text=BRIEF)
         free = parse_sample(reply(), views=VIEWS, client_text=BRIEF)
         v = Vote(
             review="job-2",
@@ -448,10 +422,13 @@ class TestVoteAndAverage(unittest.TestCase):
     def test_the_average_merges_coldkeys_clamps_and_caps(self) -> None:
         self.assertEqual(aggregate([]), (None, 0.0))
         v, u = aggregate([Voter("ours", "o", 0.4, ours=True)])
-        self.assertEqual((v, u), (0.4, 0.6))
+        self.assertEqual((v, u), (0.4, U_MAX))
+        self.assertEqual(U_MAX, 0.4)  # a client's stars clearly dominate the vote
         third = [Voter(f"ck{i}", f"h{i}", 0.5, stake=10, reliability=1.0) for i in range(3)]
         v, u = aggregate([Voter("ours", "o", 0.5, ours=True), *third], s_ref=10)
-        self.assertEqual((v, u), (0.5, 0.9))
+        self.assertEqual((v, u), (0.5, U_MAX))  # third parties never raise u past 0.4
+        self.assertEqual(aggregate(third[:1], s_ref=10)[1], round(U_MAX / 3, 6))
+        self.assertEqual(aggregate(third, s_ref=10)[1], U_MAX)
         # one extreme coldkey moves the result by at most the clamp times its share
         liar = Voter("liar", "x", 1.0, stake=10)
         v, _ = aggregate([Voter("ours", "o", 0.5, ours=True), *third, liar], s_ref=10)
@@ -554,7 +531,7 @@ class TestReviewerShadow(ReviewRig):
         self.assertAlmostEqual(o.s, 1.0)  # shadow: the score is what it was
         rep = self.reviewer.report(["j1"])
         self.assertEqual(rep["mode"], "shadow")
-        self.assertEqual(rep["per_job"]["j1"]["u"], 0.6)
+        self.assertEqual(rep["per_job"]["j1"]["u"], U_MAX)
         self.assertEqual(rep["per_job"]["j1"]["u_applied"], 0.0)
         self.assertNotIn("screw holes", json.dumps(rep))
         self.assertEqual(check_votes(rep), [])
@@ -586,15 +563,34 @@ class TestReviewerShadow(ReviewRig):
         self.assertTrue(any("spend cap" in s for s in self.said))
 
 
-class TestReviewerLive(ReviewRig):
-    mode = "live"
+class TestReviewerCounted(ReviewRig):
+    mode = "counted"
 
-    def test_a_live_vote_moves_the_score(self) -> None:
+    def test_a_counted_vote_moves_the_score(self) -> None:
         self.deliver()
         self.assertEqual(self.reviewer.pass_once(), "voted")
         o = self.ledger.outcomes[-1]
-        self.assertEqual(o.parts["u"], 0.6)
-        self.assertAlmostEqual(o.s, 0.4 + 0.6 * (0.6 * 0.75 + 0.4 * 1.0))
+        self.assertEqual(o.parts["u"], 0.4)
+        self.assertAlmostEqual(o.s, 0.4 + 0.6 * (0.4 * 0.75 + 0.6 * 1.0))
+        self.assertFalse(self.reviewer.standing_of("j1")["shadow"])
+        # a paid client's stars replace it
+        self.ledger.signal("j1", {"kind": "stars", "stars": 5, "trust": "paid", "at_ms": 1})
+        self.assertAlmostEqual(self.ledger.outcomes[-1].s, 1.0)
+
+    def test_live_is_counted_and_a_mode_switch_reapplies_the_recorded_votes(self) -> None:
+        self.assertEqual(Reviewer(self.ledger, self.p, None, me="v", mode="live").mode, "counted")
+        self.deliver()
+        self.assertEqual(self.reviewer.pass_once(), "voted")
+        counted = self.ledger.outcomes[-1].s
+        self.assertLess(counted, 1.0)
+        # restarted in shadow: the same recorded vote stops counting
+        shadow = Reviewer(self.ledger, self.p, None, me=self.reviewer.me, mode="shadow")
+        shadow.kv = self.reviewer.kv
+        self.assertEqual(shadow.apply_all(), 1)
+        self.assertAlmostEqual(self.ledger.outcomes[-1].s, 1.0)
+        # and back to counted
+        self.assertEqual(self.reviewer.apply_all(), 1)
+        self.assertAlmostEqual(self.ledger.outcomes[-1].s, counted)
 
 
 class TestStats(ReviewRig):
@@ -603,7 +599,9 @@ class TestStats(ReviewRig):
         self.reviewer.pass_once()
         self.desk.signal("j1", {"kind": "download", "trust": "paid"})
         self.desk.signal("j1", {"kind": "refund", "trust": "paid", "quality": False})
-        stats = MinerStats(self.desk, reviewer=self.reviewer, uids=lambda: {A: 1, B: 2, C: 3})
+        stats = MinerStats(
+            self.desk, reviewer=self.reviewer, uids=lambda: {A: 1, B: 2, C: 3}, votes_mode=self.mode
+        )
         self.ledger.report(
             self.desk.now_ms(),
             {A: 1, B: 2, C: 3},
@@ -662,7 +660,9 @@ class TestStats(ReviewRig):
 class TestStatsRoutes(ReviewRig):
     def test_signed_miner_stats_the_platform_route_and_the_public_board(self) -> None:
         hk = self.deliver()
-        stats = MinerStats(self.desk, reviewer=self.reviewer, uids=lambda: {A: 1, B: 2, C: 3})
+        stats = MinerStats(
+            self.desk, reviewer=self.reviewer, uids=lambda: {A: 1, B: 2, C: 3}, votes_mode=self.mode
+        )
         token = "t" * 32
         server = serve(
             self.desk,
@@ -715,22 +715,33 @@ class TestCalibration(unittest.TestCase):
             [
                 Item("pixel", "reference", "j1", hand_score=0.2, expect_max=0.35),
                 Item("hand", "reference", "j2", hand_score=0.3),
+                Item("rocket", "reference", "j6", hand_score=0.75, expect_min=0.6),
+                Item("brush", "reference", "j7", hand_score=0.8),
                 Item("verdict-only", "reference", "j3"),
                 Item("swap", "brief_swap", "j4", brief_of="j5"),
             ]
         )
-        good = go_no_go(cset, {"pixel": 0.25, "hand": 0.4, "swap": 0.1, "verdict-only": 0.9})
-        self.assertTrue(good["go"])
-        bad = go_no_go(cset, {"pixel": 0.4, "hand": 0.3, "swap": 0.5})
-        self.assertFalse(bad["go"])
-        self.assertEqual(set(bad["failed"]), {"pixel", "swap", "verdict-only"})  # no vote: no-go
-        self.assertFalse(go_no_go(cset, {"pixel": 0.2, "hand": 0.3})["go"])  # a missing vote
+        self.assertEqual([i.side() for i in cset.items], ["bad", "bad", "good", "good", "", "bad"])
+        # a light judge: far from the hand scores is fine while good > bad and bad < 0.6
+        values = {"pixel": 0.55, "hand": 0.5, "rocket": 0.7, "brush": 0.95, "swap": 0.1}
+        good = go_no_go(cset, {**values, "verdict-only": 0.9})
+        self.assertTrue(good["go"], good)
+        self.assertAlmostEqual(good["separation"]["margin"], 0.15)
+        self.assertIn("+0.350 from the hand score 0.2", good["items"][0]["why"])  # reported
+        # a bad item at 0.6 or more fails, even below every good one
+        out = go_no_go(cset, {**values, "pixel": 0.6, "rocket": 0.9, "verdict-only": 0.9})
+        self.assertEqual(out["failed"], ["pixel"])
+        # a good item not above every bad one fails, and so do the bad ones it meets
+        out = go_no_go(cset, {**values, "rocket": 0.5, "verdict-only": 0.9})
+        self.assertEqual(set(out["failed"]), {"rocket", "pixel", "hand"})
+        # no vote: no-go
+        self.assertEqual(go_no_go(cset, values)["failed"], ["verdict-only"])
         with self.assertRaises(ValueError):
             Item("x", "reference", "j", hand_score=2.0)
         with tempfile.TemporaryDirectory() as d:
             path = Path(d) / "set.json"
             path.write_text(cset.dump())
-            self.assertEqual(len(CalibrationSet.load(path).items), 4)
+            self.assertEqual(len(CalibrationSet.load(path).items), 6)
         self.assertEqual(reliability([(0.2, 0.2)] * 3), 0.5)  # new: fewer than ten
         self.assertAlmostEqual(reliability([(0.3, 0.2)] * 10), 0.9)
 

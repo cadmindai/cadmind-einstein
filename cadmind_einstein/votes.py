@@ -4,12 +4,15 @@ bundle.
 
 **Modes** (``--votes``):
 
-- ``shadow`` (the default): votes are made, recorded, published in the hourly report and shown
-  to miners, and enter the score with ``u = 0`` -- so they change no score and no weight;
-- ``live``: the vote enters the score as the baseline ``B = u*V + (1 - u)*I`` with ``u`` from
-  :func:`.review.aggregate` (0.6 with our vote alone). Turned on only with the owner's OK, after
-  the calibration go/no-go;
+- ``counted`` (the default): the vote enters the score as the baseline ``B = u*V + (1 - u)*I``
+  with ``u`` from :func:`.review.aggregate` (0.4, our vote alone or with third parties), so it
+  moves the weights; a client's stars still outweigh it. ``live`` is the same mode's old name;
+- ``shadow``: votes are made, recorded, published in the hourly report and shown to miners, and
+  enter the score with ``u = 0`` -- so they change no score and no weight;
 - ``off``: nothing is reviewed.
+
+A switch of mode (a restart with another ``--votes``) re-applies every recorded vote
+(:meth:`Reviewer.apply_all`), so the window's scores follow the mode at once.
 
 **The queue.** The desk tells the reviewer each delivery the platform took and charged
 (:attr:`.desk.Desk.on_delivered`). One review runs at a time (:meth:`Reviewer.pass_once`, called
@@ -47,7 +50,9 @@ from .review import (
 )
 from .scoring import HOUR_MS, WINDOW_H
 
-MODES = ("off", "shadow", "live")
+MODES = ("off", "shadow", "counted")
+ALIASES = {"live": "counted"}
+"""older names of a mode, still accepted"""
 MIN_SAMPLES = 2
 """valid samples a vote needs (of :data:`.review.SAMPLES` asked)"""
 MAX_TRIES = 8
@@ -101,13 +106,14 @@ class Reviewer:
         *,
         me: str,
         signer: Any = None,
-        mode: str = "shadow",
+        mode: str = "counted",
         samples: int = SAMPLES,
         spend: Any = None,
         store: Any = None,
         clock: Callable[[], float] = time.time,
         log: Callable[[str], None] | None = None,
     ) -> None:
+        mode = ALIASES.get(mode, mode)
         if mode not in MODES:
             raise ValueError(f"votes mode is one of {MODES}")
         self.ledger, self.platform, self.model = ledger, platform, model
@@ -251,7 +257,7 @@ class Reviewer:
         return [v for k, v in self.kv.items("vote").items() if k.split("|", 1)[0] == job]
 
     def standing_of(self, job: str) -> dict[str, Any]:
-        """``{V, u, u_applied, count, shadow}`` of a job's votes (u_applied: 0 unless live)."""
+        """``{V, u, u_applied, count, shadow}`` of a job's votes (u_applied: 0 unless counted)."""
         rows = self.votes_of(job)
         voters = [
             Voter(
@@ -265,19 +271,28 @@ class Reviewer:
             if r.get("value") is not None and not r.get("abstain")
         ]
         v, u = aggregate(voters)
-        applied = u if self.mode == "live" and v is not None else 0.0
+        applied = u if self.mode == "counted" and v is not None else 0.0
         return {
             "V": v,
             "u": u,
             "u_applied": applied,
             "count": len(voters),
-            "shadow": self.mode != "live",
+            "shadow": self.mode != "counted",
         }
 
     def apply(self, job: str) -> None:
         st = self.standing_of(job)
         with contextlib.suppress(Exception):
             self.ledger.vote(job, st["V"], st["u_applied"])
+
+    def apply_all(self) -> int:
+        """Apply every recorded vote again under the current mode (at start: a vote recorded in
+        shadow counts once the mode is ``counted``, and the other way round). Answers how many
+        jobs were applied."""
+        jobs = sorted({str(v.get("job") or "") for v in self.kv.items("vote").values()} - {""})
+        for job in jobs:
+            self.apply(job)
+        return len(jobs)
 
     # -- publication -------------------------------------------------------------------------------
 

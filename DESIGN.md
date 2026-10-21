@@ -179,11 +179,12 @@ passing job:   I = 0.5 + 0.3·E + 0.2·T            immediate: passed the gate, 
     ratings (`C = 0`, `w = trust`; the last rating wins); a refund for any other reason is recorded and shown in the
     miner's stats, never scored;
   - **no reaction**: `w = 0`, so `s = B`.
-- `V`, the **validators' vote** on the delivered device (section 13), in [0, 1], and `u`, how much it counts: 0.6
-  with our validator's vote alone, rising to 0.9 with three or more third-party coldkeys. **While votes are in
-  shadow (`--votes shadow`, the default), `u = 0`**: the vote is recorded, published and shown to the miner, and
-  `B = I`, so an unrated job scores exactly its measured part `I`. A signal moves 60% of the score from `B` toward
-  the client's verdict, by its trust.
+- `V`, the **validators' vote** on the delivered device (section 13), in [0, 1], and `u`, how much it counts:
+  **0.4**, with our validator's vote alone and at most that with third-party coldkeys too. The vote is a light base
+  rating for jobs clients do not rate (or rate late), so a client's stars clearly dominate it. Votes are counted
+  (`--votes counted`, the default). In shadow (`--votes shadow`) `u = 0`: the vote is recorded, published and shown
+  to the miner, and `B = I`, so an unrated job scores exactly its measured part `I`. A signal moves 60% of the score
+  from `B` toward the client's verdict, by its trust.
 - **Trust**: 1 for a paying account, 0.1 for a free one. Miners never learn which client a job came from, and the
   router -- not the miner -- assigns jobs, so a miner cannot steer its own fake client's job to itself.
 - **Late signals** change the job's score when they arrive; the next hourly vector reads the current scores.
@@ -278,7 +279,7 @@ the client is), every score, each miner's weight and quality, the admitted and r
   score and the vector from the reports alone, checks the hash chain and canonical bytes, and compares the newest
   hash with the commitment on chain.
 - Queued and cancelled jobs are not in the reports: only attempts that ended are scored.
-- **Votes** (section 13): each report's `votes` carries the mode (`shadow` or `live`), the rubric digest, every vote
+- **Votes** (section 13): each report's `votes` carries the mode (`counted` or `shadow`), the rubric digest, every vote
   on a window job in its public form -- the validator, the model it names, the image set's digest, each sample's
   R1-R5 scores and R1's ask counts, the hash of the full samples and the validator's signature -- and each job's
   `V`, `u` and the `u` applied. The words of a vote (what the model said it saw, the client's quotes) are the
@@ -428,7 +429,7 @@ verdict and provenance kind, the world items and their fidelity, parts, decision
 every image's SHA-256; its own SHA-256 is the **image-set digest** every vote names. Third-party validators get
 bundles of public projects only; our validator reviews every delivery.
 
-**The rubric** (`cadmind_einstein.review`, rubric version `cadmind-einstein-rubric/2`), each criterion 0-4 with
+**The rubric** (`cadmind_einstein.review`, rubric version `cadmind-einstein-rubric/3`), each criterion 0-4 with
 its evidence `{view, seen, score}` and the score last:
 
 | # | Criterion | Weight |
@@ -439,12 +440,12 @@ its evidence `{view, seen, score}` and the score last:
 | R4 | Completeness: all parts present and joined | 0.10 |
 | R5 | Finish: edges, proportions, the stated look, makeable by the stated method | 0.10 |
 
-`v = min(sum(weight_i * score_i / 4), cap)`. **The function cap** (rubric 2): a device that does not work scores at
-most 0.35 whatever it looks like, read mechanically from the fact sheet's `function` section (Watt's own verdicts:
-a must failing, a relied control unwired, unworked or without travel, the client's product unreachable or not
-fitting set R2 to 0 and cap the value; "unverified" bounds R2 at 2) and from the reviewer's own R2 of 0
-(docs/VALIDATOR.md). The prompt, rubric, reply schema, bundle format and cap rules are hashed into the rubric
-digest each vote names. A reply must be one JSON object with exactly the five criteria, their keys in order and no
+`v = min(sum(weight_i * score_i / 4), cap)`. **A light judge** (rubric 3): the vote is a base rating, cheap and
+allowed to be imprecise; it does not re-do Watt. The fact sheet's `function` section (Watt's own evidence) is
+context the model weighs, never read mechanically. The one cap is the reviewer's own verdict: an R2 of 0 ("it would
+not work as made") caps the sample at 0.35 whatever it looks like (docs/VALIDATOR.md). Rubric 2's mechanical caps
+from the function evidence (einstein 0.4.2) are gone. The prompt, rubric, reply schema, bundle format and cap rule
+are hashed into the rubric digest each vote names. A reply must be one JSON object with exactly the five criteria, their keys in order and no
 repeated key; a view not in the bundle is refused; a criterion without evidence scores 0; an R1 quote not found
 verbatim in the client's words makes R1 score 0; any other defect makes the reply **unavailable**, never a score.
 Three samples per vote; a vote whose samples spread by more than 0.4 is flagged noisy.
@@ -458,16 +459,18 @@ again by the reviewer; lettering modelled on the device is declared decoration; 
 coldkeys below the reliability floor are dropped; the rest are merged per coldkey (stake-weighted), clamped to the
 median +- 0.2 when three or more coldkeys vote, and weighted: our validator 1, a third-party coldkey
 `r * min(1, stake / S_ref)` (none over a third of the third parties' weight; a noisy vote at half weight). `V` is
-the weighted mean; `u` is 0.6 with our vote alone and rises to 0.9 at three third-party coldkeys
-(`cadmind_einstein.review.aggregate`).
+the weighted mean; `u` is 0.4 with our vote, alone or with third parties (third parties alone reach 0.4 at three
+coldkeys), never more, so a client's stars clearly dominate (`cadmind_einstein.review.aggregate`).
 
 **Calibration.** A validator's reliability `r = 1 - mean(|v - ref|)` comes from hidden calibration items: devices
 scored by hand, delivered projects shown with another job's brief (any honest evaluator scores them low), and
-repeats. Before votes count in scores, our own model must pass the same set: every hand-scored device within 0.15,
-every swapped brief below 0.35 (`cadmind_einstein.calibration`).
+repeats. Our own model passes a light bar on the same set (`cadmind_einstein.calibration`): every good item
+(`expect_min`, or a hand score of at least 0.5) scores above every bad item (`expect_max`, a lower hand score, a
+swapped brief), and every bad item scores under 0.6; the distance from each hand score is reported, not judged.
 
-**Rollout.** Votes start in **shadow** (`--votes shadow`): our validator votes on every delivery, the votes are
-signed, published and shown to the miner, and `u` applied is 0. They count (`--votes live`) only after the
-calibration go/no-go and the owner's decision. Third-party voting routes come after. Each validator pays for its
+**Rollout.** On testnet votes are **counted** at once (`--votes counted`, the default from 0.4.3; `live` is its
+old name): our validator votes on every delivery, the votes are signed, published and shown to the miner, and enter
+the score with `u = 0.4`. `--votes shadow` keeps them out of the score (`u` applied 0); a restart with another mode
+re-applies the recorded votes under it. Third-party voting routes come after. Each validator pays for its
 own model calls; ours are capped per day (`--review-daily-usd`, an ALERT when reached).
 

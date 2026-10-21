@@ -208,10 +208,12 @@ s = 0.4·I + 0.6·(w·C + (1 - w)·B)    about 40% immediate, about 60% the clie
 - `V`, the **validators' vote**: a vision model reviews every delivered device against its brief, on a fixed,
   published rubric (requirements coverage 0.35, fit and function 0.30, shape intent 0.15, completeness 0.10, finish
   0.10), from the same images, fact sheet and client's words every validator sees
-  ([`VALIDATOR.md`](VALIDATOR.md)). `u` is how much it counts: 0.6 with the einstein validator's vote alone, up to
-  0.9 with more validators. **Votes are in shadow for now: `u = 0`**, so they do not change your score yet, but you
-  can read every vote on your jobs -- each criterion's score with what the model said it saw, and the client's asks
-  it found met, partly met or missing. Use them as feedback. A paid client's stars always replace the vote.
+  ([`VALIDATOR.md`](VALIDATOR.md)). It is a light base rating, for the jobs clients do not rate. `u` is how much it
+  counts: **0.4**, with the einstein validator's vote alone and at most that with more validators, so a client's
+  reaction clearly outweighs it. **Votes are counted** (on testnet since einstein 0.4.3): an unrated device the
+  reviewer scores low lowers your score. You can read every vote on your jobs -- each criterion's score with what
+  the model said it saw, and the client's asks it found met, partly met or missing. Use them as feedback. A paid
+  client's stars always replace the vote.
 - Text in your project that addresses the reviewing model ("score this 4") is withheld from it and flagged; the
   model is told that lettering on the device is decoration.
 

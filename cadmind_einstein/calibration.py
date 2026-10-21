@@ -13,10 +13,15 @@
 The operator's set is private (a file the validator reads, ``--calibration-file``): a validator
 that knew which items are calibration items could answer them differently.
 
-**Go/no-go** (:func:`go_no_go`). Before votes enter scores, our model must score every reference
-device with a hand score within :data:`TOLERANCE` of it, every bound reference within its bound,
-and every brief swap below :data:`SWAP_MAX`. An item without a value (the model gave no vote) is a
-no-go. The same check picks our model and accepts a rubric change.
+**Go/no-go** (:func:`go_no_go`). The judge is light (DESIGN.md section 13): it has to tell good
+from bad, not land on a hand score. Each reference and brief swap is GOOD or BAD
+(:meth:`Item.side`: a brief swap is bad; a reference is good with ``expect_min`` or a hand score of
+at least :data:`GOOD_FROM`, bad with ``expect_max`` or a lower hand score). The model passes when
+**every good item scores above every bad item** and **every bad item scores under**
+:data:`BAD_MAX`; a repeat must land within :data:`REPEAT_NOISE` of its first value. An item
+without a value (the model gave no vote) is a no-go. Each item's distance from its hand score and
+its own bounds are reported, for information only. The same check picks our model and accepts a
+rubric change.
 
 **Reliability** (:func:`reliability`): a validator's ``r = 1 - mean(|v - ref|)`` over its last
 scored calibration items, the measure third-party votes will be weighted by.
@@ -33,7 +38,10 @@ from pathlib import Path
 from typing import Any
 
 KINDS = ("reference", "brief_swap", "repeat")
-TOLERANCE = 0.15
+GOOD_FROM = 0.5
+"""a hand score from which a reference is a good item"""
+BAD_MAX = 0.6
+"""every bad item scores under this"""
 SWAP_MAX = 0.35
 SWAP_REF = 0.15
 REPEAT_NOISE = 0.15
@@ -79,31 +87,57 @@ class Item:
             return SWAP_REF
         return self.first_value
 
+    def side(self) -> str:
+        """``good``, ``bad`` or ``""`` (a repeat, or a reference that states nothing)."""
+        if self.kind == "brief_swap":
+            return "bad"
+        if self.kind != "reference":
+            return ""
+        if self.expect_min is not None:
+            return "good"
+        if self.expect_max is not None:
+            return "bad"
+        if self.hand_score is not None:
+            return "good" if self.hand_score >= GOOD_FROM else "bad"
+        return ""
+
+    def info(self, value: float) -> str:
+        """The item's distance from its own known answer, for information (never judged)."""
+        out: list[str] = []
+        if self.kind == "brief_swap":
+            out.append(f"swap reference {SWAP_REF}")
+        if self.hand_score is not None:
+            out.append(f"{value - self.hand_score:+.3f} from the hand score {self.hand_score}")
+        if self.expect_max is not None:
+            word = "within" if value <= self.expect_max else "over"
+            out.append(f"{word} at most {self.expect_max}")
+        if self.expect_min is not None:
+            word = "within" if value >= self.expect_min else "under"
+            out.append(f"{word} at least {self.expect_min}")
+        return "; ".join(out)
+
     def check(self, value: float | None) -> tuple[bool | None, str]:
-        """(passed, why) for one model value; passed None when the item states nothing checkable
-        (a reference with neither a score nor a bound: reported, not judged)."""
+        """(passed, why) for one model value on the item's own: a bad item under :data:`BAD_MAX`,
+        a repeat within :data:`REPEAT_NOISE`; a good item passes here (it is judged against the
+        bad ones, :func:`go_no_go`); passed None when the item states nothing checkable."""
         if value is None:
             return False, "no vote"
-        if self.kind == "brief_swap":
-            return value < SWAP_MAX, f"{value:.3f} {'<' if value < SWAP_MAX else '>='} {SWAP_MAX}"
         if self.kind == "repeat":
             if self.first_value is None:
                 return None, "no first value"
             gap = abs(value - self.first_value)
             return gap <= REPEAT_NOISE, f"{gap:.3f} from the first value (noise {REPEAT_NOISE})"
-        checks: list[tuple[bool, str]] = []
-        if self.hand_score is not None:
-            gap = abs(value - self.hand_score)
-            checks.append(
-                (gap <= TOLERANCE, f"{gap:.3f} from the hand score {self.hand_score} ({TOLERANCE})")
+        side = self.side()
+        info = self.info(value)
+        if side == "bad":
+            ok = value < BAD_MAX
+            return ok, "; ".join(
+                x for x in (f"bad: {value:.3f} {'<' if ok else '>='} {BAD_MAX}", info) if x
             )
-        if self.expect_max is not None:
-            checks.append((value <= self.expect_max, f"{value:.3f} vs at most {self.expect_max}"))
-        if self.expect_min is not None:
-            checks.append((value >= self.expect_min, f"{value:.3f} vs at least {self.expect_min}"))
-        if not checks:
-            return None, "no hand score or bound stated: reported only"
-        return all(ok for ok, _ in checks), "; ".join(why for _, why in checks)
+        if side == "good":
+            return True, "; ".join(x for x in (f"good: {value:.3f}", info) if x)
+        why = "no hand score or bound stated: reported only"
+        return None, "; ".join(x for x in (why, info) if x)
 
 
 @dataclass
@@ -133,15 +167,45 @@ class CalibrationSet:
 
 def go_no_go(cset: CalibrationSet, values: Mapping[str, float | None]) -> dict[str, Any]:
     """The verdict on one model's values (item id -> its vote's value): ``go`` only when every
-    checkable item passes."""
+    checkable item passes (:meth:`Item.check`) and every good item scores above every bad one
+    (``separation``: the lowest good, the highest bad, and the margin between them)."""
     rows = []
     for item in cset.items:
         v = values.get(item.id)
         ok, why = item.check(None if v is None else float(v))
-        rows.append({"id": item.id, "kind": item.kind, "value": v, "passed": ok, "why": why})
+        rows.append(
+            {
+                "id": item.id,
+                "kind": item.kind,
+                "side": item.side(),
+                "value": v,
+                "passed": ok,
+                "why": why,
+            }
+        )
+    goods = [r for r in rows if r["side"] == "good" and r["value"] is not None]
+    bads = [r for r in rows if r["side"] == "bad" and r["value"] is not None]
+    separation: dict[str, Any] = {}
+    if goods and bads:
+        low = min(float(r["value"]) for r in goods)
+        high = max(float(r["value"]) for r in bads)
+        separation = {"lowest_good": low, "highest_bad": high, "margin": round(low - high, 6)}
+        for r in goods:
+            if float(r["value"]) <= high:
+                r["passed"] = False
+                r["why"] += f"; not above the highest bad item ({high:.3f})"
+        for r in bads:
+            if float(r["value"]) >= low:
+                r["passed"] = False
+                r["why"] += f"; not below the lowest good item ({low:.3f})"
     judged = [r for r in rows if r["passed"] is not None]
     failed = [r["id"] for r in judged if not r["passed"]]
-    return {"go": bool(judged) and not failed, "failed": failed, "items": rows}
+    return {
+        "go": bool(judged) and not failed,
+        "failed": failed,
+        "separation": separation,
+        "items": rows,
+    }
 
 
 def reliability(pairs: Iterable[tuple[float, float]], *, scored: int = 0) -> float:
@@ -290,7 +354,7 @@ def calibrate_main(argv: list[str] | None = None) -> int:
     )
     a.out.parent.mkdir(parents=True, exist_ok=True)
     a.out.write_text(json.dumps(out, indent=1), encoding="utf-8")
-    summary = {k: out[k] for k in ("go", "failed", "skipped", "spend")}
+    summary = {k: out[k] for k in ("go", "failed", "separation", "skipped", "spend")}
     summary["items"] = [{k: r[k] for k in ("id", "value", "passed", "why")} for r in out["items"]]
     print(json.dumps(summary, indent=1))  # noqa: T201 -- a CLI
     return 0 if out["go"] else 1

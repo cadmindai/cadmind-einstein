@@ -22,8 +22,9 @@ another miner passes the same job -- the desk decides that). A **passing** job s
   - no signal: ``w = 0``, so ``s = B``. A client signal moves 60% of the score from that baseline
     toward the client's opinion.
 - ``V``, the validators' quality vote on the delivered device (:mod:`.review`, DESIGN.md section
-  13), in [0, 1], and ``u``, how much it counts: 0 while votes are in shadow (recorded and
-  published, never scored), so ``B = I`` and an unrated job counts on its immediate part alone.
+  13), in [0, 1], and ``u``, how much it counts: 0.4 when votes are counted (a client's stars
+  clearly dominate it); 0 in shadow (recorded and published, never scored), so ``B = I`` and an
+  unrated job counts on its immediate part alone.
 - ``trust``: 1 for a paid account (a card on file), 0.1 for a free one (the platform says which; a
   separate anti-abuse system guards free accounts). Miners never learn which client a job came from,
   and the router -- not the miner -- picks who gets a job, so a miner cannot steer its own fake
@@ -106,7 +107,7 @@ class JobOutcome:
     a refund for the delivery's quality, "trust": paid | free, "at_ms"}"""
     vote: dict[str, float] = field(default_factory=dict)
     """the validators' vote on a passing job, as scored: {"V": value in [0, 1], "u": the weight it
-    is applied with (0 in shadow)}; empty when there is none"""
+    is applied with (0.4 counted, 0 in shadow)}; empty when there is none"""
     s: float = 0.0
     parts: dict[str, float] = field(default_factory=dict)
 

@@ -8,10 +8,12 @@ the rubric and its prompt, the vote, how votes are averaged, what they cost and 
 measured. The code is [`cadmind_einstein/review.py`](../cadmind_einstein/review.py); the design is
 [`../DESIGN.md`](../DESIGN.md) section 13.
 
-**Status.** The einstein validator votes on every delivery today, in **shadow**: its votes are signed, published
-in the hourly reports and shown to the miners, but they do not enter scores (`u = 0`). Votes enter scores only
-after a calibration go/no-go and the owner's decision. The routes for third-party validators to receive
-assignments and send votes come after that; until then `cadmind-review` runs the reviewer on a bundle locally.
+**Status.** The einstein validator's votes are **counted** (`--votes counted`, from einstein 0.4.3 on testnet): its
+votes are signed, published in the hourly reports, shown to the miners and enter the scores with `u = 0.4`. The
+vote is a **light judge**: a base rating, allowed to be imprecise, that scores miners when clients do not rate their
+devices (or rate them late); a client's stars clearly outweigh it. `--votes shadow` (recorded and published, never
+scored: `u = 0`) is still there. The routes for third-party validators to receive assignments and send votes come
+later; until then `cadmind-review` runs the reviewer on a bundle locally.
 
 ## Staking and consensus
 
@@ -60,10 +62,13 @@ products as modelled, so no finding is not proof of a fit with the real product)
   `not_deliverable_today` (today's Watt refuses it for an error or a failing test; a guard record missing only under
   new guard rules does not count, nor does a check the platform could not run).
 
+Rubric 3 reads none of this mechanically: the function evidence is **context** the model weighs with the images and
+the client's words. The judge does not re-do Watt.
+
 `cadmind_einstein.review.read_bundle` checks a bundle before anything is sent to a model: every image against
 `images.sha256`, the image-set digest, and the fact sheet and client's words against the manifest.
 
-## The rubric (`cadmind-einstein-rubric/2`)
+## The rubric (`cadmind-einstein-rubric/3`)
 
 Every criterion is scored 0-4 (0 absent or broken, 1 poor, 2 partial, 3 good, 4 fully meets), with its evidence:
 the view it looked at (an image name, `facts` or `brief`), what it saw there (at most 200 characters), and the
@@ -72,31 +77,22 @@ score **last**.
 | # | Criterion | Weight | The question |
 |---|---|---|---|
 | R1 | Requirements coverage | 0.35 | Every explicit ask in the client's words, each with a **verbatim quote** and a status (met, partly, missing, cannot_tell); the score follows from that list |
-| R2 | Fit and function plausibility | 0.30 | Would it work as made? It fits the named product, not a spec-sheet box of it; moving parts move; ports and buttons can be reached; it holds what it must. A world item at box fidelity, or a limit set by an agent's estimate against a third-party product, cannot score 4. `facts.function` is read first (Watt judges the products as modelled: no finding is not proof of a fit with the real product); 0 when it would not work as made |
+| R2 | Fit and function plausibility | 0.30 | Would it work as made? It fits the named product, not a spec-sheet box of it; moving parts move; ports and buttons can be reached; it holds what it must. A world item at box fidelity, or a limit set by an agent's estimate against a third-party product, cannot score 4. `facts.function` is context, not a verdict (Watt judges the products as modelled: no finding is not proof of a fit with the real product); 0 when the reviewer judges it would not work as made |
 | R3 | Shape intent | 0.15 | Recognisably the thing asked for, in its pose of use |
 | R4 | Completeness | 0.10 | All named parts present and joined, with fasteners or retention |
 | R5 | Finish | 0.10 | Edges, proportions, the stated look, makeable by the stated method |
 
 A sample's value is `v = min(sum(weight_i * score_i / 4), cap)`, in [0, 1].
 
-**The function cap** (rubric 2: `function_bounds`, `sample_cap`). A device that does not work scores at most
-**0.35**, whatever it looks like. It is applied mechanically, after the reply is parsed, never by asking the model
-to be harsher:
+**The one cap** (`sample_cap`). The reviewer's own R2 of 0 -- "it would not work as made" -- caps the sample at
+**0.35**, whatever it looks like. Nothing else caps or bounds a sample: rubric 2's mechanical caps and bounds read
+from `facts.function` (einstein 0.4.2) are gone in rubric 3. Each sample records `raw_value`, `cap` and `value`, and
+its `notes` say when the cap applied.
 
-1. `facts.function.summary.fails` names a reason of `FAIL_REASONS`, or a must's `verdict` is `failed`: R2 is set to
-   0 and the cap is 0.35.
-2. Otherwise `facts.function.summary.unverified` names a reason of `UNVERIFIED_REASONS`: R2 is at most 2 (Watt could
-   not show it works, so it is not "good"); no cap.
-3. The reviewer's own R2 of 0 ("it would not work as made": for what Watt cannot see, such as a third-party product
-   modelled as a box) caps the sample at 0.35 too.
-
-A reason a rubric does not list bounds nothing (a new reason needs a new rubric). A fact sheet of format 1 (no
-`function`) bounds nothing; rule 3 still applies. Each sample records `raw_value`, `cap` and `value`, and its
-`notes` say which bound applied.
-
-The system prompt, the rubric, the anchors, the reply schema, the bundle format and the cap rules are hashed together
-into the **rubric digest** (`cadmind_einstein.review.rubric_digest()`; rubric 2 in einstein 0.4.2 is
-`sha256:6ff1181e60f1aad47c0b30087014c08ff5e81e34662fd4560c3c9e31eaaa6cd2`); a vote names it, and a vote naming another digest or another image set is not counted.
+The system prompt, the rubric, the anchors, the reply schema, the bundle format and the cap rule are hashed together
+into the **rubric digest** (`cadmind_einstein.review.rubric_digest()`; rubric 3 in einstein 0.4.3 is
+`sha256:48c0f1c63e43d5a883386c1a27b8e164c061b8f5c8bba6faf1cd7662f3bb086f`); a vote names it, and a vote naming another
+digest or another image set is not counted.
 
 ### The reply
 
@@ -142,7 +138,7 @@ cadmind-einstein-vote/1
 ```
 
 (`Vote.payload`, `verify_vote`). The hourly report publishes every vote in its **public form** -- the scores of
-each sample, each sample's cap (`caps`, rubric 2), R1's ask counts, the samples' hash and the signature, never the
+each sample, each sample's cap (`caps`), R1's ask counts, the samples' hash and the signature, never the
 words, which are the client's project -- and `cadmind-recompute` checks each signature and that each value is the
 mean of the published scores' rubric values, each capped by its published cap.
 The miner whose device it is reads the whole vote, evidence included, on its own job.
@@ -158,11 +154,13 @@ The miner whose device it is reads the whole vote, evidence included, on its own
 3. **Clamped near the median**: with three or more coldkeys, each coldkey's value is clamped to the median +- 0.2.
 4. **Weighted**: the einstein validator 1; a third-party coldkey `r * min(1, stake / S_ref)`, `r` its reliability,
    no coldkey over a third of the third parties' total weight.
-5. `V` is the weighted mean. `u` (how much `V` counts in the score) is 0.6 with the einstein validator's vote alone
-   and rises linearly to 0.9 with three or more third-party coldkeys.
+5. `V` is the weighted mean. `u` (how much `V` counts in the score) is **0.4** with the einstein validator's vote,
+   alone or with third parties; third-party votes alone reach 0.4 at three coldkeys. It is never more: the vote is
+   a base rating, and a client's stars clearly dominate it.
 
 The score: `B = u*V + (1 - u)*I`, `s = 0.4*I + 0.6*(w*C + (1 - w)*B)` -- a paid client's stars (`w = 1`) replace
-the vote entirely ([`../DESIGN.md`](../DESIGN.md) section 5).
+the vote entirely ([`../DESIGN.md`](../DESIGN.md) section 5). With `u = 0.4` the vote moves at most
+`0.6 * 0.4 = 24%` of an unrated job's score.
 
 ## Calibration and reliability
 
@@ -173,8 +171,10 @@ starts at 0.5 and counts for nothing until it has answered ten; below 0.6 its vo
 nothing. Published per coldkey: identical scores on every device, no variance between samples, replies faster
 than a model could produce, disagreement only on one coldkey's miners, more than half abstentions.
 
-The einstein validator's own model passes the same bar before votes count: every hand-scored reference within
-0.15, every swapped brief below 0.35 (`cadmind_einstein.calibration.go_no_go`).
+The einstein validator's own model passes a light bar before votes count (`cadmind_einstein.calibration.go_no_go`):
+every item is GOOD (`expect_min`, or a hand score of at least 0.5) or BAD (`expect_max`, a lower hand score, or a
+swapped brief), and the model passes when **every good item scores above every bad item** and **every bad item
+scores under 0.6**. Each item's distance from its hand score is reported for information, not judged.
 
 `cadmind-calibrate SET.json --platform URL --queue-key-file K --model PROVIDER:MODEL --key-file M --daily-usd D
 --usd-per-mtok-in X --usd-per-mtok-out Y --out RESULTS.json` is that run (it costs one vote per item): it asks the
@@ -194,7 +194,8 @@ minimum capability is enforced by calibration, not by a list. It must take 17 to
 strict JSON and hold a 64k context. The model a vote names is what the validator says it used: it is observed, not
 verified.
 
-On the einstein validator the same code runs from the daemon: `--votes shadow|live|off`, `--review-model`,
+On the einstein validator the same code runs from the daemon: `--votes counted|shadow|off` (`counted` is the
+default; `live` is its old name), `--review-model`,
 `--review-key-file`, `--review-samples`, `--review-effort` and a daily spend cap, `--review-daily-usd`, with
 `--review-usd-per-mtok-in/out/cached` (the provider's prices); past the cap no call is made that day and an ALERT
 is logged.

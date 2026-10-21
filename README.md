@@ -20,7 +20,7 @@ miners' AI agents as checked engineering projects.
    Each job is scored
    from the gate, efficiency, timeliness, the **client's own reaction** (download, stars, change requests, a
    quality refund) and the validators' **quality vote** -- a vision model's evaluation of the delivered device on a
-   published rubric (in shadow until the owner turns it on). No model decides whether a device is delivered. Every
+   published rubric (a light base rating, counted with `u = 0.4`). No model decides whether a device is delivered. Every
    hour the validator sets weights and publishes a report anyone can recompute.
 
 Watt itself, the agent bench that runs it, and the platform's accounts, job queue and billing are hosted services
@@ -219,8 +219,8 @@ cadmind-einstein --state-dir ~/.local/share/cadmind-einstein \
   A restart loses nothing.
 - The validator logs whether it is **stake-dominant** (its share of active validator stake above `kappa`), and
   publishes that in every report and at `GET /v1/chain`.
-- **Quality votes** ([`docs/VALIDATOR.md`](docs/VALIDATOR.md)): `--votes` (`shadow` by default: voted, published,
-  not scored; `live` only on the owner's decision; `off`), `--review-model anthropic:<model>|openai:<model>` with
+- **Quality votes** ([`docs/VALIDATOR.md`](docs/VALIDATOR.md)): `--votes` (`counted` by default: voted, published
+  and scored with `u = 0.4`; `live` is its old name; `shadow`: voted and published, not scored; `off`), `--review-model anthropic:<model>|openai:<model>` with
   `--review-key-file` (0600; install `cadmind-einstein[review]`), `--review-samples` (3), `--review-effort`
   (`medium`), `--review-daily-usd` (10; an ALERT when reached) and `--review-usd-per-mtok-in/out/cached` (the
   provider's prices, for the cap). Without `--review-model` deliveries are queued, not reviewed.
@@ -405,13 +405,13 @@ passes the same job). A passing job scores
 
 ```
 I = 0.5 + 0.3·E + 0.2·T                 immediate: passed the gate, efficiency, on time
-B = u·V + (1 - u)·I                     the validators' vote V, counted u (0 in shadow)
+B = u·V + (1 - u)·I                     the validators' vote V, counted u (0.4; 0 in shadow)
 s = 0.4·I + 0.6·(w·C + (1 - w)·B)       the client's reaction C, weighted by w
 ```
 
 where `E` compares the job's compute and wall time with the median of similar passing jobs, and `C`/`w` come from
 the client's stars, download, re-run, change request or quality refund (one star), weighted by account trust
-(paid 1, free 0.1). While votes are in shadow (`u = 0`) an unrated job scores exactly `I`. A miner's weight is the sum of its job scores decayed with a 24-hour half-life (7-day
+(paid 1, free 0.1). The vote counts with `u = 0.4`, so a client's stars clearly dominate it; in shadow (`u = 0`) an unrated job scores exactly `I`. A miner's weight is the sum of its job scores decayed with a 24-hour half-life (7-day
 window); the hourly vector is proportional to it over registered, admitted, recently seen miners. Weight is never
 burned and the subnet owner's hotkey is never weighted; at genesis (nobody has history) the weight is split
 equally per coldkey among admitted miners that have delivered a scored client job. The vector is **never empty**
@@ -466,7 +466,7 @@ signature and value, and compares the newest report's hash with the validator's 
 | `cadmind_einstein/scoring.py` | per-job scores, decayed weights, the vector, hourly reports; `cadmind-recompute` (the auditor) |
 | `cadmind_einstein/stats.py` | miner stats (24 h, 7 days, lifetime; the daily rollup), the leaderboard; `cadmind-miner-stats` |
 | `cadmind_einstein/review.py` | the reference reviewer: rubric, prompt, strict replies, injection measures, bundle checks, the average; `cadmind-review` |
-| `cadmind_einstein/votes.py` | our validator's votes: the review queue, shadow/live, signed votes, their report section |
+| `cadmind_einstein/votes.py` | our validator's votes: the review queue, counted/shadow, signed votes, their report section |
 | `cadmind_einstein/models.py` | the review model by configuration (Anthropic or OpenAI SDK) and the daily spend cap |
 | `cadmind_einstein/calibration.py` | the calibration set and the go/no-go |
 | `cadmind_einstein/chain.py` | metagraph reads, stake dominance, weights within the rate limit, report commitments (bittensor 11) |

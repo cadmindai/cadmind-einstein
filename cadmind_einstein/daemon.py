@@ -107,6 +107,7 @@ from .similarity import CopyPolicy, load_corpus
 from .stats import MinerStats
 from .store import Store
 from .version import check_latest
+from .votes import ALIASES as VOTE_ALIASES
 from .votes import Reviewer
 
 log = logging.getLogger("cadmind_einstein.daemon")
@@ -276,10 +277,11 @@ def parser() -> argparse.ArgumentParser:
     )
     ap.add_argument(
         "--votes",
-        choices=("off", "shadow", "live"),
-        default="shadow",
-        help="our validator's quality votes (DESIGN.md section 13): shadow records and publishes"
-        " them without scoring them; live scores them (only on the owner's OK)",
+        choices=("off", "shadow", "counted", "live"),
+        default="counted",
+        help="our validator's quality votes (DESIGN.md section 13): counted scores them (u 0.4,"
+        " the default; 'live' is its old name); shadow records and publishes them without"
+        " scoring them",
     )
     ap.add_argument(
         "--review-model",
@@ -426,6 +428,7 @@ def main(argv: list[str] | None = None) -> int:
     )
 
     reviewer = None
+    a.votes = VOTE_ALIASES.get(a.votes, a.votes)
     if a.votes != "off":
         from bittensor.signing import resolve_signer  # noqa: PLC0415
 
@@ -460,6 +463,7 @@ def main(argv: list[str] | None = None) -> int:
             log=_log,
         )
         desk.on_delivered = reviewer.enqueue
+        reviewer.apply_all()  # the recorded votes, under this mode (a switch counts at once)
         _log(
             f"votes {a.votes}: "
             + (
