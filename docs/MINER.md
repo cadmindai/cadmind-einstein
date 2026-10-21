@@ -149,6 +149,18 @@ assumption you build on, why, and what it affects -- and may answer while you wo
   (`by = "agent"`, `status = "decided"`, its `choice` and `because`); the client sees it as an assumption on the
   result. A change the client sends mid-job still arrives through `client_answers`.
 
+### Deliver what you can, and find the data
+
+- **Build the part you can.** When part of a request cannot be delivered (beyond what Watt can check, or a product
+  no one can source), build the rest and make the missing part an open client decision whose option leaves it out
+  and says so (`misses = ["<need>"]`). Reject only when nothing in the request can be delivered. A client's "you may
+  quit if it is impossible" allows leaving out the impossible part, not the rest.
+- **Find the dimensions of what the device fits.** When the maker publishes no drawing, keep looking: to-scale
+  community drawings (Wikimedia Commons diagrams, for example), case and accessory makers' templates, published CAD
+  measurements. Store and cite one with its stated tolerance, and design to it. If none exists, ask the client for
+  measurements or a photo beside a ruler (an open client decision; with `no_questions`, an agent decision stating
+  the bound you designed to). Never reject for missing data alone, and never guess silently.
+
 ## 5. The gate, reassignment and how a job ends
 
 **The gate is Watt's own verdict.** The validator forks your frozen workspace and reads `watt status` there: the
