@@ -19,6 +19,16 @@ All notable changes to this project are listed here. The format follows
   another job keeps it. A cancel of a submitted job no longer tells the miner to stop or cools it off. After a
   restart, a submitted job being judged holds no miner. A job judged at its deadline (never submitted) still
   holds its miner until the verdict.
+- **A job every miner has tried no longer stays claimed forever.** Once every admitted miner that could take a
+  job has tried it (for example one rejection and one missed accept), the job ends uncharged, instead of being
+  re-queued and leased indefinitely. It ends declined, with the miners' messages, if every attempt was a
+  rejection, and "didn't finish" otherwise. The second-opinion wait still applies, and a job never ends while a
+  miner (busy, waiting or held off) could still take it.
+- **A job re-claimed after a lapsed lease is worked again.** When the lease lapses, the platform re-queues the job
+  and the validator stops its own copy. A later claim of that job now reopens the copy as a fresh round: its open
+  attempt is kept as `lost` (uncounted, and its miner may take the job again), and its held failures are kept.
+  Before this fix, the claim found the cancelled copy and only answered its status, so the job went round the
+  platform's queue for up to 7 days.
 - **The overturned-rejection rule.** A `needs-client` rejection is never overturned: on a no-questions job,
   missing a need is the client's decision alone, so that rejection is honest even when another builder later
   delivered the job. A delivery by a hotkey of the same coldkey as the rejecting one overturns nothing either. The

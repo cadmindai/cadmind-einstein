@@ -608,8 +608,10 @@ class TestDesk(unittest.TestCase):
         self.assertEqual(self.ledger.outcomes, [])
 
     def test_a_reassignment_with_no_free_miner_holds_the_claim_and_renews_its_lease(self) -> None:
+        # B and C could take it later (admitted, held off for now): the job waits for them; with
+        # no such miner left it would end (TestAllTried)
         for hk in (B, C):
-            self.desk.miners[hk].admitted = False
+            self.desk.miners[hk].blocked_until_ms = self.desk.now_ms() + 10**9
         self.poll(A, B, C)
         self.enqueue({"job": "h1", "brief": "A wall hook."})
         self.enqueue({"job": "h2", "brief": "A wall hook."})
@@ -622,7 +624,7 @@ class TestDesk(unittest.TestCase):
         self.tick()
         self.assertEqual([j["job"] for j in self.p.queue], ["h2"])  # nothing claimed while held
         self.assertIn("h1", self.p.leased)
-        self.desk.miners[B].admitted = True
+        self.desk.miners[B].blocked_until_ms = 0
         self.poll(A, B, C)
         self.tick()
         self.assertEqual(self.desk.work(B)["job"], "h1")  # the held job takes the free miner first

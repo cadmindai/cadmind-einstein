@@ -136,6 +136,7 @@ validator: freeze on submit, fork, read Watt's verdict (the gate), copy check, s
   | a worked attempt does not pass (gate failure, or late and failing) | **not finished**: its project kept, the builder's summary for the client | no | a timeout already scored 0; held rejections and the gate failure count (0) unless two coldkeys gave them |
   | two rejections, from two coldkeys | **declined**: the client reads both messages; the brief is flagged for review | no | nobody penalised |
   | four attempts without either of the above (timeouts before accepting, copies) | **didn't finish** | no | each timeout and copy already scored 0; held rejections count (0) unless two coldkeys gave them |
+  | every admitted miner that could take it has tried it (the second-opinion wait still applies) | **declined** if every attempt was a rejection, else **didn't finish** | no | as above |
 
   Earlier releases also ended a job **out of reach** (two substantive failures from two coldkeys); a worked failure
   now ends the round at once, so that ending is no longer reached.
@@ -261,8 +262,9 @@ scratch, throwing the first builder's work away; after two or four tries the job
 - **No miner free:** nothing is claimed and jobs wait in the platform's queue, which shows the client a position
   and an ETA (from the validator's `GET /v1/capacity`). A job is never refused for lack of miners.
 - **Lease.** The validator renews a lease on every job it holds every 30 s; a job whose lease lapses goes back to
-  the platform's queue, and one the platform reports lost (cancelled, re-queued) is dropped. After a restart the
-  validator reconciles with the platform's list of jobs it holds.
+  the platform's queue, and one the platform reports lost (cancelled, re-queued) is dropped. A lost job that the
+  validator claims again is worked again: a new attempt, with the earlier ones kept and the lost one uncounted.
+  After a restart the validator reconciles with the platform's list of jobs it holds.
 - **Reassignment stays inside the validator.** A failed attempt keeps the claim; the held job takes the next free
   miner before anything new is claimed. This keeps a job's attempts together (a held failure is scored only once
   the job's outcome is known) and keeps the next miner away from the ones that already failed it.

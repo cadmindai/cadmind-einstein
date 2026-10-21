@@ -108,11 +108,13 @@ CATEGORIES = ("not-allowed", "not-capable", "needs-client")
 """What an agent may reject a job as (:meth:`Desk.reject`)."""
 SUBSTANTIVE = ("reject", "gate")
 """attempt kinds that are an opinion on the job (it cannot or should not be done)"""
-UNCOUNTED = ("dereg", "disabled", "stale", "ours")
+UNCOUNTED = ("dereg", "disabled", "stale", "ours", "lost")
 """attempt kinds that do not count toward a job's attempt cap and score nobody: the miner left the
 subnet, or was disabled for abuse while it held the job (``dereg``, ``disabled``); the first
 assignment after a cancel was not accepted in time because the miner was still stopping the
-cancelled job (``stale``); the validator could not judge it, on its own side (``ours``)"""
+cancelled job (``stale``); the validator could not judge it, on its own side (``ours``); the
+platform took the job back when the validator's lease lapsed (``lost``: its miner may take it
+again when it is claimed again)"""
 REFUSED_DELIVERY = ("delivery_not_of_job", "delivery_digest_mismatch")
 """the platform's refusals of a delivered result whose provenance it cannot accept (the workspace
 does not descend from the job's own grant, or is not at the digest the validator gated): a
@@ -1284,7 +1286,22 @@ class Desk:
         exclude = [str(x) for x in body.get("exclude") or []]
         rerun_of = str(body.get("rerun_of") or "")
         with self._mut():
-            if job_id in self.jobs:
+            old = self.jobs.get(job_id)
+            if old is not None and old.state == "done" and old.result.get("lost"):
+                # claimed again after the platform took it back (a lapsed lease): a fresh round of
+                # the same job -- its earlier attempts kept as history (the lost one uncounted)
+                old.brief, old.seed, old.effort = brief, seed, effort
+                old.no_questions = body.get("no_questions") is True
+                old.style = _style_of(body.get("style"))
+                old.continuation = _continuation_of(body.get("continuation"))
+                old.state, old.result = "queued", {}
+                old.queued_ms = self.now_ms()
+                if job_id in self._outbox:
+                    self._outbox.remove(job_id)
+                self._final.discard(job_id)
+                self._event("reclaimed", job_id, attempts=len(old.attempts))
+                return self.status(job_id)
+            if old is not None:
                 return self.status(job_id)
             if rerun_of:
                 # A re-run is a new job at the normal price, sent to a different miner; for the
@@ -1379,12 +1396,17 @@ class Desk:
             raise DeskError("no delivered job by that id", 404)
         return {"job": job_id, "score": s}
 
-    def cancel(self, job_id: str) -> dict[str, Any]:
+    def cancel(self, job_id: str, *, lost: bool = False) -> dict[str, Any]:
         """The client cancels (what it is charged is the platform's). A job in progress is frozen
         and its miner freed; nobody is scored on it. The miner is told on its next ``work``
         (``cancelled``), gets no new job for ``cancel_cooloff_s`` (time to stop its agent), and its
         first assignment after this one is not scored if it is not accepted in time. A job being
-        judged has the validator's guard run stopped and its fork deleted."""
+        judged has the validator's guard run stopped and its fork deleted.
+
+        ``lost``: the platform no longer holds the job for this validator (its lease lapsed, and the
+        platform queued the job again). The copy here stops the same way, but its open attempt is
+        ``lost`` (uncounted; its miner may take the job again), its held failures are kept, and a
+        later claim of the job reopens it (:meth:`create`)."""
         with self._mut():
             job = self.jobs.get(job_id)
             if job is None:
@@ -1397,7 +1419,11 @@ class Desk:
                 a = job.attempts[-1]
             if a is not None:
                 self._spawn(self._freeze_quietly, a.workspace)
-                a.outcome, a.kind = "cancelled by the client", "cancelled"
+                a.outcome, a.kind = (
+                    ("the validator's lease lapsed: the platform took the job back", "lost")
+                    if lost
+                    else ("cancelled by the client", "cancelled")
+                )
                 m = self.miners.get(a.hotkey)
                 if m is not None and m.job == job_id:
                     # still working on it (a submitted attempt freed its miner, which may hold
@@ -1406,10 +1432,17 @@ class Desk:
                 self._release(a.hotkey, job_id)
                 if judging:
                     self._drop_gate(job.job, a)
-            self._event("cancelled", job_id, state="judging" if judging else None)
-            job.pending.clear()
+            self._event(
+                "lease-lost" if lost else "cancelled",
+                job_id,
+                state="judging" if judging else job.state,
+            )
+            if not lost:
+                job.pending.clear()
             job.state = "done"
             job.result = {"label": "cancelled", "charge": False, "attempts": len(job.attempts)}
+            if lost:
+                job.result["lost"] = True
             return self.status(job_id)
 
     def capacity(self) -> dict[str, Any]:
@@ -1464,7 +1497,7 @@ class Desk:
     def _available(self, job: Job) -> list[Miner]:
         now = self.now_ms()
         reg = set(self.registered())
-        tried = {a.hotkey for a in job.attempts} | set(job.exclude)
+        tried = self._tried(job)
         cmap = self._cmap()
         # A second opinion comes from another owner: the coldkeys that rejected or failed this job
         # do not get it again until it has waited ``second_opinion.wait_s``.
@@ -1483,6 +1516,59 @@ class Desk:
             and m.hotkey not in tried
             and self.coldkey(m.hotkey, cmap) not in opinions
         ]
+
+    @staticmethod
+    def _tried(job: Job) -> set[str]:
+        """The hotkeys that may not take ``job``: those that tried it (a ``lost`` attempt aside: the
+        platform took the job back from the validator, not from the miner) and its excluded ones."""
+        return {a.hotkey for a in job.attempts if a.kind != "lost"} | set(job.exclude)
+
+    def _exhausted(self, job: Job, reg: set[str]) -> bool:
+        """Whether no miner that could ever take ``job`` is left: none registered, admitted, keyed,
+        not excluded and not yet tried. A busy, idle, cooling-off or second-opinion-waiting miner
+        still counts (it may take the job later), so a job never ends while a miner of another
+        coldkey -- or, after the wait, of the same one -- could still take it."""
+        tried = self._tried(job)
+        return not any(
+            m.admitted and m.key_id and m.hotkey in reg and m.hotkey not in tried
+            for m in self.miners.values()
+            if m.hotkey not in self.excluded
+        )
+
+    def _end_exhausted(self, job: Job) -> None:
+        """Inside a mutation: every miner that could take ``job`` has tried it. It ends declined
+        (every counted attempt a rejection: the miners' messages shown) or "didn't finish";
+        uncharged either way. The held failures count (0) unless they came from
+        ``second_opinion.coldkeys`` coldkeys, as at any undelivered ending."""
+        counted = [x for x in job.attempts if x.kind not in UNCOUNTED]
+        substantive = [x for x in job.attempts if x.kind in SUBSTANTIVE]
+        cmap = self._cmap()
+        owners = {self.coldkey(x.hotkey, cmap) for x in substantive}
+        independent = len(owners) >= max(1, self.second_opinion.coldkeys)
+        label = "declined" if all(x.kind == "reject" for x in counted) else "didn't finish"
+        if not independent:
+            for held in job.pending:
+                held.ended_ms = self.now_ms()
+                self.ledger.add(held)
+        job.pending.clear()
+        job.state = "done"
+        last = job.attempts[-1]
+        job.result = {
+            "label": label,
+            "charge": False,
+            "review": label == "declined",
+            "why": "every miner that could take the job has tried it",
+            "messages": [
+                {"category": x.category, "message": x.message}
+                for x in job.attempts
+                if x.kind == "reject"
+            ],
+            "hotkey": last.hotkey,
+            "workspace": "",
+            "attempts": len(job.attempts),
+        }
+        self._outbox.append(job.job)
+        self._event("ended", job.job, label=label, attempts=len(job.attempts), exhausted=True)
 
     def route(self, job: Job) -> Miner | None:
         """One miner. An admission job: its own miner. A client job: an ADMITTED miner -- the job's
@@ -1579,6 +1665,16 @@ class Desk:
                 for j in self.jobs.values()
                 if j.state in ("assigning", "assigned", "working", "judging")
             )
+            reg = set(self.registered())
+            for job in [
+                j
+                for j in self.jobs.values()
+                if j.state == "queued"
+                and j.kind == "client"
+                and any(x.kind not in UNCOUNTED for x in j.attempts)
+            ]:
+                if self._exhausted(job, reg):
+                    self._end_exhausted(job)
             queued = sorted(
                 (j for j in self.jobs.values() if j.state == "queued"), key=lambda j: j.created_ms
             )
@@ -1663,7 +1759,7 @@ class Desk:
                         job.result = {**job.result, "released": True}
                     continue
                 with contextlib.suppress(DeskError):
-                    self.cancel(str(job_id))
+                    self.cancel(str(job_id), lost=True)
         finally:
             self._lease_lock.release()
 
@@ -1830,6 +1926,8 @@ class Desk:
                     job.state = "queued"
                 return
             self.assigned[m.hotkey] = self.assigned.get(m.hotkey, 0) + 1
+            if m.cancelled_job == job.job:  # its job again, after a lapsed lease: not "cancelled"
+                m.cancelled_job = ""
             job.attempts.append(
                 Attempt(
                     hotkey=m.hotkey,
