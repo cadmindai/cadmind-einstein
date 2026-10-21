@@ -22,7 +22,7 @@ from typing import Any
 import bittensor.http_auth as btauth
 from bittensor.sp_core import Keypair
 
-from cadmind_einstein.calibration import CalibrationSet, Item, go_no_go, reliability
+from cadmind_einstein.calibration import CalibrationSet, Item, go_no_go, reliability, run
 from cadmind_einstein.desk import Desk, DeskError
 from cadmind_einstein.fake_miner import signed
 from cadmind_einstein.models import Prices, Reply, Spend
@@ -640,6 +640,28 @@ class TestCalibration(unittest.TestCase):
             self.assertEqual(len(CalibrationSet.load(path).items), 4)
         self.assertEqual(reliability([(0.2, 0.2)] * 3), 0.5)  # new: fewer than ten
         self.assertAlmostEqual(reliability([(0.3, 0.2)] * 10), 0.9)
+
+    def test_the_calibration_run_waits_for_bundles_and_judges_the_values(self) -> None:
+        platform = BundlePlatform()
+        platform.not_ready = 2
+        cset = CalibrationSet(
+            [
+                Item("pixel", "reference", "j1", hand_score=0.2, expect_max=0.35),
+                Item("good", "reference", "j2", expect_min=0.6),
+                Item("swap", "brief_swap", "j3", brief_of="j4"),
+            ]
+        )
+        model = FakeModel([reply((1, 1, 1, 0, 1))] * 3 + [reply((4, 4, 3, 3, 3))] * 3)
+        clock = Clock()
+        spend = Spend(10.0, Prices(input=4.0, output=20.0), clock=clock)
+        out = run(cset, platform, model, spend=spend, sleep=lambda s: None, clock=clock)
+        self.assertEqual(model.calls, 6)
+        self.assertEqual(out["skipped"].keys(), {"swap"})
+        values = {r["id"]: r["value"] for r in out["items"]}
+        self.assertAlmostEqual(values["pixel"], 0.35 * 0.25 + 0.30 * 0.25 + 0.15 * 0.25 + 0.025)
+        self.assertTrue(out["go"], out)
+        self.assertGreater(out["spend"]["usd"], 0)
+        self.assertEqual(len(out["votes"]["pixel"]["samples"]), 3)
 
 
 if __name__ == "__main__":

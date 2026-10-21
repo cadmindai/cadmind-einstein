@@ -30,7 +30,8 @@ All notable changes to this project are listed here. The format follows
   publishes the votes in the hourly report (scores and signatures, never the words) and shows them to miners; in
   shadow they change no score. `cadmind-review` runs the reviewer on a bundle with your own model and key.
   `cadmind-recompute` checks every published vote's signature and value. The calibration set's structure and the
-  go/no-go a model must pass before votes count.
+  go/no-go a model must pass before votes count; `cadmind-calibrate` runs a model over a calibration set from the
+  platform's bundles, under a spend cap, and prints the go/no-go.
 - Optional dependencies `review` (the Anthropic and OpenAI SDKs), only for a validator that votes.
 
 ### Changed

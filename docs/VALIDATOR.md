@@ -137,6 +137,11 @@ than a model could produce, disagreement only on one coldkey's miners, more than
 The einstein validator's own model passes the same bar before votes count: every hand-scored reference within
 0.15, every swapped brief below 0.35 (`cadmind_einstein.calibration.go_no_go`).
 
+`cadmind-calibrate SET.json --platform URL --queue-key-file K --model PROVIDER:MODEL --key-file M --daily-usd D
+--usd-per-mtok-in X --usd-per-mtok-out Y --out RESULTS.json` is that run (it costs one vote per item): it asks the
+platform for each item's bundle with the validator's queue key, waits while it is rendered, votes with the given
+model under the spend cap, prints the go/no-go and writes every vote to `--out`.
+
 ## Running the reviewer
 
 ```bash

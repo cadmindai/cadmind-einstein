@@ -35,6 +35,7 @@ cadmind-einstein-fake-miner = "cadmind_einstein.fake_miner:main"
 cadmind-einstein-fetch-mcp = "cadmind_einstein.fetch_mcp:main"
 cadmind-miner-stats = "cadmind_einstein.stats:main"
 cadmind-review = "cadmind_einstein.review:main"
+cadmind-calibrate = "cadmind_einstein.calibration:calibrate_main"
 
 [tool.setuptools.dynamic]
 version = { attr = "cadmind_einstein.__version__" }

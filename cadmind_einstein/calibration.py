@@ -26,7 +26,8 @@ from __future__ import annotations
 
 import json
 import statistics
-from collections.abc import Iterable, Mapping
+import time
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
@@ -143,6 +144,138 @@ def reliability(pairs: Iterable[tuple[float, float]], *, scored: int = 0) -> flo
     if len(gaps) < 10 and scored < 10:
         return R_NEW
     return round(max(0.0, 1.0 - statistics.fmean(gaps)), 6) if gaps else R_NEW
+
+
+def run(
+    cset: CalibrationSet,
+    platform: Any,
+    model: Any,
+    *,
+    samples: int = 3,
+    spend: Any = None,
+    wait_s: float = 1800.0,
+    sleep: Callable[[float], None] = time.sleep,
+    clock: Callable[[], float] = time.monotonic,
+    log: Callable[[str], None] = lambda _line: None,
+) -> dict[str, Any]:
+    """Review every reference and repeat item of ``cset`` with ``model`` from the platform's own
+    bundles (``platform``: an :class:`~.platform.OperatorClient` with the queue key; asking for a
+    bundle that is not made yet queues it, and it is waited for up to ``wait_s``), then judge the
+    values. Brief swaps need a bundle made with another job's brief (not served yet): skipped and
+    said. Answers ``{go, failed, items, votes, skipped, spend}``."""
+    from .review import (  # noqa: PLC0415
+        MAX_BUNDLE_BYTES,
+        Vote,
+        ask_samples,
+        read_bundle,
+        rubric_digest,
+    )
+
+    values: dict[str, float | None] = {}
+    votes: dict[str, Any] = {}
+    skipped: dict[str, str] = {}
+    for item in cset.items:
+        if item.kind == "brief_swap":
+            skipped[item.id] = (
+                "a brief swap needs a swapped bundle, which the platform does not make yet"
+            )
+            continue
+        end = clock() + wait_s
+        got: dict[str, Any] = {}
+        while True:
+            got = platform.review_bundle(item.job, "ours")
+            if got.get("ready") or got.get("state") in ("failed", "off") or clock() >= end:
+                break
+            log(f"{item.id}: bundle {got.get('state') or 'not ready'}; waiting")
+            sleep(min(120.0, max(10.0, float(got.get("retry_s") or 30))))
+        if not got.get("ready"):
+            values[item.id] = None
+            votes[item.id] = {"error": f"no bundle: {got.get('state') or 'not ready'}"}
+            continue
+        bundle = read_bundle(platform.fetch_bundle(str(got["bundle_url"]), MAX_BUNDLE_BYTES))
+        if got.get("image_set") and got["image_set"] != bundle.image_set:
+            raise ValueError(f"{item.id}: the bundle is not the image set the platform named")
+        got_samples, failed = ask_samples(model, bundle, samples=samples, spend=spend)
+        vote = Vote(
+            review=item.job,
+            image_set=bundle.image_set,
+            rubric=rubric_digest(),
+            model=str(getattr(model, "name", "")),
+            validator="",
+            samples=[x.as_json() for x in got_samples],
+            at_ms=int(time.time() * 1000),
+        )
+        values[item.id] = vote.value if len(got_samples) >= min(2, samples) else None
+        votes[item.id] = {**vote.as_json(), "unavailable": failed}
+        n = len(got_samples)
+        log(f"{item.id}: {values[item.id]} ({n} sample(s); {len(failed)} unavailable)")
+    judged = CalibrationSet([i for i in cset.items if i.id not in skipped], cset.version)
+    out = go_no_go(judged, values)
+    out["votes"] = votes
+    out["skipped"] = skipped
+    out["spend"] = spend.today() if spend is not None else {}
+    return out
+
+
+def calibrate_main(argv: list[str] | None = None) -> int:
+    """``cadmind-calibrate SET.json --platform URL --queue-key-file K --model PROVIDER:MODEL
+    --key-file M --out RESULTS.json``: the calibration run (PAID: one vote per item, three model
+    calls each). Prints the go/no-go and writes every vote to ``--out``."""
+    import argparse  # noqa: PLC0415
+    import sys  # noqa: PLC0415
+
+    from .daemon import read_key  # noqa: PLC0415
+    from .models import Prices, Spend, model_from  # noqa: PLC0415
+    from .platform import OperatorClient  # noqa: PLC0415
+
+    ap = argparse.ArgumentParser(prog="cadmind-calibrate")
+    ap.add_argument("set", type=Path, help="the calibration set (private)")
+    ap.add_argument("--platform", required=True, help="the platform's base URL")
+    ap.add_argument(
+        "--queue-url", default="", help="the job queue's base URL (default: --platform)"
+    )
+    ap.add_argument("--queue-key-file", type=Path, required=True, help="the validator's queue key")
+    ap.add_argument("--model", required=True, help="anthropic:<model> or openai:<model>")
+    ap.add_argument("--key-file", type=Path, required=True, help="the model's API key (0600)")
+    ap.add_argument("--base-url", default="")
+    ap.add_argument("--effort", default="medium")
+    ap.add_argument("--samples", type=int, default=3)
+    ap.add_argument("--daily-usd", type=float, default=10.0, help="stop past this spend (0: none)")
+    ap.add_argument("--usd-per-mtok-in", type=float, default=0.0)
+    ap.add_argument("--usd-per-mtok-out", type=float, default=0.0)
+    ap.add_argument("--usd-per-mtok-cached", type=float, default=0.0)
+    ap.add_argument("--wait-s", type=float, default=1800.0, help="how long to wait for a bundle")
+    ap.add_argument("--out", type=Path, required=True, help="where every vote is written")
+    a = ap.parse_args(argv if argv is not None else sys.argv[1:])
+
+    def say(line: str) -> None:
+        print(f"[cadmind-calibrate] {line}", file=sys.stderr, flush=True)  # noqa: T201 -- a CLI
+
+    queue_key = read_key(a.queue_key_file)
+    platform = OperatorClient(
+        a.platform, queue_key, queue_key=queue_key, queue_url=a.queue_url, log=say
+    )
+    model = model_from(a.model, read_key(a.key_file), base_url=a.base_url, effort=a.effort)
+    spend = Spend(
+        a.daily_usd,
+        Prices(a.usd_per_mtok_in, a.usd_per_mtok_out, a.usd_per_mtok_cached),
+        alert=say,
+    )
+    out = run(
+        CalibrationSet.load(a.set),
+        platform,
+        model,
+        samples=a.samples,
+        spend=spend,
+        wait_s=a.wait_s,
+        log=say,
+    )
+    a.out.parent.mkdir(parents=True, exist_ok=True)
+    a.out.write_text(json.dumps(out, indent=1), encoding="utf-8")
+    summary = {k: out[k] for k in ("go", "failed", "skipped", "spend")}
+    summary["items"] = [{k: r[k] for k in ("id", "value", "passed", "why")} for r in out["items"]]
+    print(json.dumps(summary, indent=1))  # noqa: T201 -- a CLI
+    return 0 if out["go"] else 1
 
 
 def main(argv: list[str] | None = None) -> int:
