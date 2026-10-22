@@ -282,9 +282,9 @@ class SlowPlatform(FakePlatform):
             self._now -= 1
             return super().grant(hotkey, **kw)
 
-    def lease(self, jobs: list[str]) -> dict[str, Any]:
+    def lease(self, jobs: list[str], working: list[str] | None = None) -> dict[str, Any]:
         self.lease_calls.append(time.monotonic())
-        return super().lease(jobs)
+        return super().lease(jobs, working)
 
 
 class TestConcurrency(unittest.TestCase):

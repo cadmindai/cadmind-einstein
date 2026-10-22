@@ -40,7 +40,7 @@ class _Fleet(TestDesk):
     def leased_now(self, job: str) -> bool:
         seen: list[list[str]] = []
         real = self.p.lease
-        self.p.lease = lambda jobs: (seen.append(list(jobs)), real(jobs))[1]  # type: ignore[method-assign]
+        self.p.lease = lambda jobs, working=None: (seen.append(list(jobs)), real(jobs, working))[1]  # type: ignore[method-assign]
         try:
             self.desk._leased_ms = 0
             self.desk._lease(self.desk.now_ms())
@@ -202,3 +202,73 @@ class TestReclaimedAfterALostLease(TestDesk):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestLeaseSaysWhoBuilds(TestDesk):
+    """The lease names the jobs a builder accepted (the platform charges a client's cancel only
+    from then on), and goes out soon after an accept, a submit or a rejection."""
+
+    def lease(self) -> list[str] | None:
+        self.desk._leased_ms = 0
+        self.desk._lease(self.desk.now_ms())
+        return self.p.working
+
+    def test_working_from_accept_through_judging_and_not_after_a_rejection(self) -> None:
+        self.poll(A, B, C)
+        self.enqueue({"job": "w1", "brief": "A wall hook."})
+        hk = next(h for h, x in self.poll(A, B, C).items() if x["job"])
+        self.assertEqual(self.lease(), [])  # assigned, not accepted: no builder yet
+        self.clock.t += 1
+        self.desk.accept(hk, "w1")
+        self.assertEqual(self.desk._leased_ms, 0)
+        self.assertEqual(self.lease(), ["w1"])
+        self.desk.reject(hk, "w1", "not-capable", "too hard for me")
+        self.assertTrue(self.desk.wait_idle())
+        self.assertEqual(self.p.working, [])  # the reject's own tick already said so
+        self.assertEqual(self.lease(), [])
+        hk2 = next(h for h, x in self.poll(A, B, C).items() if x["job"] == "w1")
+        self.desk.accept(hk2, "w1")
+        with self.desk._mut():
+            self.desk.jobs["w1"].state = "judging"
+            self.desk._judging.add("w1")
+        self.assertEqual(self.lease(), ["w1"])
+
+    def test_a_delivered_round_keeps_the_builders_summary(self) -> None:
+        self.poll(A, B, C)
+        self.enqueue({"job": "w2", "brief": "A wall hook."})
+        hk, w = next((h, x) for h, x in self.poll(A, B, C).items() if x["job"])
+        self.desk.accept(hk, "w2")
+        self.p.work(w["workspace"], GOOD, deliverable=True)
+        self.desk.submit(hk, "w2", w["workspace"], "d", summary="Printed  upright;\n no supports.")
+        st = wait_state(self.desk, "w2", ("done",))
+        self.assertEqual(st["result"]["label"], "delivered")
+        self.assertEqual(
+            (st["result"]["summary"], st["result"]["summary_by"]),
+            ("Printed upright; no supports.", "builder"),
+        )
+        self.tick()
+        self.assertEqual(self.p.completed["w2"]["summary"], "Printed upright; no supports.")
+
+    def test_a_delivery_without_a_summary_carries_none(self) -> None:
+        self.poll(A, B, C)
+        self.enqueue({"job": "w3", "brief": "A wall hook."})
+        hk, w = next((h, x) for h, x in self.poll(A, B, C).items() if x["job"])
+        self.desk.accept(hk, "w3")
+        self.p.work(w["workspace"], GOOD, deliverable=True)
+        self.desk.submit(hk, "w3", w["workspace"], "d")
+        self.assertNotIn("summary", wait_state(self.desk, "w3", ("done",))["result"])
+
+
+class TestClientLease(unittest.TestCase):
+    def sent(self, **kw: object) -> dict[str, object]:
+        from cadmind_einstein.platform import OperatorClient
+
+        bodies: list[dict[str, object]] = []
+        c = OperatorClient("http://platform.invalid", "op")
+        c._call = lambda method, path, body=None, **_: bodies.append(dict(body or {})) or {}  # type: ignore[method-assign]
+        c.lease(["j1", "j2"], **kw)  # type: ignore[arg-type]
+        return bodies[0]
+
+    def test_the_working_field_is_sent_and_omitted_when_unknown(self) -> None:
+        self.assertEqual(self.sent(working=["j2"]), {"jobs": ["j1", "j2"], "working": ["j2"]})
+        self.assertEqual(self.sent(), {"jobs": ["j1", "j2"]})

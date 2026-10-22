@@ -36,6 +36,14 @@ All notable changes to this project are listed here. The format follows
   rejection another miner overturns still scores 0).
 
 ### Added
+- **The lease says which jobs a builder has accepted.** The validator's lease call now sends
+  `{"jobs": [...], "working": [...]}`. `working` lists the jobs whose current attempt a builder has accepted and
+  that are being worked or judged. The platform uses it to charge a client's cancel only once a builder has
+  accepted. Accepts, submits and rejections now send the lease on the next heartbeat (within about 5 s) instead of
+  waiting up to 30 s. A platform that predates the field ignores it (it reads only `jobs`).
+- **A delivered round keeps the builder's summary.** The delivered result now carries `summary` (and
+  `summary_by: "builder"`) when the miner sent one with its submit. Before, a summary was kept only on undelivered
+  rounds.
 - **One structured log line per job event.** The format is `job-event {"event": ..., "job": ..., ...}` for these
   events: `assigned`, `accepted`, `rejected` (with its category), `submitted`, `deadline`, `gate-start` (with its
   run id), `gate-attach`, `gate-lost`, `gate-run`, `judge-retry` (with its reason), `verdict`, `attempt-failed`,

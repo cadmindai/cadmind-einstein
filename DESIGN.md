@@ -261,7 +261,8 @@ scratch, throwing the first builder's work away; after two or four tries the job
   so they can earn a score; else to an available miner drawn with weight `(quality + 0.05)²`.
 - **No miner free:** nothing is claimed and jobs wait in the platform's queue, which shows the client a position
   and an ETA (from the validator's `GET /v1/capacity`). A job is never refused for lack of miners.
-- **Lease.** The validator renews a lease on every job it holds every 30 s; a job whose lease lapses goes back to
+- **Lease.** The validator renews a lease on every job it holds every 30 s (and soon after a miner accepts, submits
+  or rejects), naming the jobs a builder has accepted (`working`: a client's cancel is charged from then on); a job whose lease lapses goes back to
   the platform's queue, and one the platform reports lost (cancelled, re-queued) is dropped. A lost job that the
   validator claims again is worked again: a new attempt, with the earlier ones kept and the lost one uncounted.
   After a restart the validator reconciles with the platform's list of jobs it holds.

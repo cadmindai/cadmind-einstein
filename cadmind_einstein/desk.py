@@ -265,7 +265,7 @@ class Platform(Protocol):
     def export(self, ws: str) -> bytes: ...
     def delete(self, ws: str) -> None: ...
     def claim(self) -> dict[str, Any] | None: ...
-    def lease(self, jobs: list[str]) -> dict[str, Any]: ...
+    def lease(self, jobs: list[str], working: list[str] | None = None) -> dict[str, Any]: ...
     def claimed(self) -> list[dict[str, Any]]: ...
     def complete(self, job: str, result: dict[str, Any]) -> Any: ...
 
@@ -1059,6 +1059,7 @@ class Desk:
             a.deadline_ms = now + self.deadlines.get(job.effort, DEADLINE_S["medium"]) * 1000
             job.state = "working"
             self._event("accepted", job_id, hotkey=hotkey, deadline_ms=a.deadline_ms)
+            self._leased_ms = 0  # the platform hears of the builder on the next beat
             return {"job": job_id, "workspace": a.workspace, "deadline_ms": a.deadline_ms}
 
     def submit(
@@ -1085,6 +1086,7 @@ class Desk:
             # the miner's part is over: it is free for another job while the validator judges this
             # one (``max_inflight`` still counts the judgement)
             self._release(hotkey, job_id)
+            self._leased_ms = 0
             self._event(
                 "submitted",
                 job_id,
@@ -1141,6 +1143,7 @@ class Desk:
             a.category, a.message = category, text
             self.rejected[hotkey] = self.rejected.get(hotkey, 0) + 1
             self._event("rejected", job_id, hotkey=hotkey, category=category)
+            self._leased_ms = 0  # no builder now: the platform hears so on the next beat
             self._fail(job, a, f"rejected ({category})", kind="reject")
         self.tick()
         return {"job": job_id, "state": self.status(job_id)["state"]}
@@ -1746,10 +1749,19 @@ class Desk:
                     for j in self.jobs.values()
                     if j.kind == "client" and (j.state != "done" or self._held_for_review(j))
                 ]
+                # a builder accepted these: the platform charges a client's cancel from then on
+                working = [
+                    j.job
+                    for j in self.jobs.values()
+                    if j.kind == "client"
+                    and j.attempts
+                    and j.attempts[-1].accepted_ms
+                    and j.state in ("working", "judging")
+                ]
             if not open_jobs:
                 return
             try:
-                out = self.platform.lease(open_jobs)
+                out = self.platform.lease(open_jobs, working=working)
             except PlatformError:
                 return
             for job_id in out.get("lost") or []:
@@ -2540,6 +2552,8 @@ class Desk:
                 "on_time": on_time,
                 "attempts": len(job.attempts),
             }
+            if a.summary:  # the builder's notes on what it delivered
+                job.result["summary"], job.result["summary_by"] = a.summary, "builder"
             self._outbox.append(job.job)
             self._event("ended", job.job, label="delivered", hotkey=a.hotkey, score=s)
 

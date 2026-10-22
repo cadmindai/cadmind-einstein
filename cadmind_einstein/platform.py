@@ -322,14 +322,19 @@ class OperatorClient:
         job = out.get("job")
         return dict(job) if isinstance(job, dict) else None
 
-    def lease(self, jobs: list[str]) -> dict[str, Any]:
+    def lease(self, jobs: list[str], working: list[str] | None = None) -> dict[str, Any]:
         """Renew the lease on the jobs we hold; ``lost`` lists those the platform no longer gives us
-        (cancelled, or re-queued after a lapsed lease)."""
+        (cancelled, or re-queued after a lapsed lease). ``working``: the jobs among them a builder
+        has accepted (being worked or judged); the platform charges a client's cancel only once a
+        builder has (a platform that predates the field ignores it)."""
+        body: dict[str, Any] = {"jobs": list(jobs)}
+        if working is not None:
+            body["working"] = list(working)
         return dict(
             self._call(
                 "POST",
                 "/api/engine/einstein/lease",
-                {"jobs": list(jobs)},
+                body,
                 base=self.queue,
                 role=QUEUE,
             )

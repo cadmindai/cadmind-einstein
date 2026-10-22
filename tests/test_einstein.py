@@ -72,6 +72,7 @@ class FakePlatform:
         self.queue: list[dict[str, Any]] = []  # the platform's single queue (einstein's jobs)
         self.leased: list[str] = []
         self.lost: set[str] = set()
+        self.working: list[str] | None = None  # the last lease's builders (the platform's L3 field)
         self.completed: dict[str, dict[str, Any]] = {}
         self.suspended: set[str] = set()  # miners Watt's telemetry suspended (platform side)
         self.runs: list[tuple[str, str]] = []  # (workspace, command) of every watt run
@@ -86,7 +87,8 @@ class FakePlatform:
         self.leased.append(str(job["job"]))
         return job
 
-    def lease(self, jobs: list[str]) -> dict[str, Any]:
+    def lease(self, jobs: list[str], working: list[str] | None = None) -> dict[str, Any]:
+        self.working = None if working is None else list(working)
         return {
             "renewed": [j for j in jobs if j not in self.lost],
             "lost": [j for j in jobs if j in self.lost],
