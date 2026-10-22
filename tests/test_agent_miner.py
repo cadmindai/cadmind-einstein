@@ -353,7 +353,7 @@ class TestNoHandOver(unittest.TestCase):
         self.assertEqual(watched[-1], None)  # the heartbeat is told when nothing runs
         return got, runs, logs
 
-    def test_an_agent_that_stops_early_is_resumed_once_in_its_session(self) -> None:
+    def test_an_agent_that_stops_early_is_resumed_in_its_session(self) -> None:
         got, runs, logs = self.run_build(
             [("Hand-over note: the rest is too large.", False), ("built more\nDONE abc123", False)],
             left_s=45 * 60,
@@ -370,15 +370,51 @@ class TestNoHandOver(unittest.TestCase):
         self.assertEqual(got.text, "built more\nDONE abc123")
         self.assertIn("--- RESUMED with 45 min left ---", got.record)
         self.assertIn("Hand-over note", got.record)
-        self.assertTrue(any("resuming it once" in m for m in logs))
+        self.assertTrue(any("resuming it" in m for m in logs))
         self.assertEqual(outcome("job-1", "ws", got.text)[1]["digest"], "abc123")
 
-    def test_the_resume_happens_once_only(self) -> None:
-        got, runs, _ = self.run_build(
-            [("stopped", False), ("stopped again", False)], left_s=50 * 60
+    def test_the_resumes_stop_at_their_cap(self) -> None:
+        outputs = [(f"stopped {i}", False) for i in range(agent_miner.MAX_RESUMES + 1)]
+        got, runs, _ = self.run_build(outputs, left_s=50 * 60)
+        self.assertEqual(len(runs), agent_miner.MAX_RESUMES + 1)
+        self.assertEqual(got.text, f"stopped {agent_miner.MAX_RESUMES}")
+        self.assertEqual(got.runs, agent_miner.MAX_RESUMES + 1)
+
+    def test_a_dead_session_is_replaced_and_its_empty_answer_keeps_the_earlier_words(self) -> None:
+        """2026-10-21: the first run ended with no output, and `--resume` answered "No response
+        requested." in 9 s; 157 Max minutes were lost. A dead session is not resumed: a new one is
+        started, told of its earlier work, and an empty answer never replaces earlier words."""
+        got, runs, logs = self.run_build(
+            [
+                ("worked a while", False),
+                ("No response requested.", False),
+                ("", False),
+                ("built the clip\nDONE d9", False),
+            ],
+            left_s=90 * 60,
         )
-        self.assertEqual(len(runs), 2)
-        self.assertEqual(got.text, "stopped again")
+        self.assertEqual(len(runs), 4)
+        self.assertEqual(runs[1].argv[:3], ["claude", "--resume", "sid-1"])  # words: resumed
+        new = runs[2].argv  # "No response requested.": a new session
+        self.assertEqual(new[:2], ["claude", "--session-id"])
+        self.assertNotEqual(new[2], "sid-1")
+        self.assertIn("already holds the work of your earlier run", new[4])
+        self.assertIn("its session answered no more", new[4])
+        self.assertTrue(new[4].startswith("PROMPT"))
+        third = runs[3].argv  # no output: another new session
+        self.assertEqual(third[:2], ["claude", "--session-id"])
+        self.assertNotEqual(third[2], new[2])
+        self.assertIn("it ended with no output", third[4])
+        self.assertEqual(got.text, "built the clip\nDONE d9")
+        self.assertTrue(any("a new session takes over" in m for m in logs))
+        got, runs, _ = self.run_build([("half done", False), ("", True)], left_s=60 * 60)
+        self.assertEqual(got.text, "half done")  # the empty resumed run keeps the first run's words
+        self.assertIn("--- TIMEOUT ---", got.record)
+        got, runs, logs = self.run_build(
+            [("You've hit your weekly limit · resets Oct 24, 9am", False)], left_s=60 * 60
+        )
+        self.assertEqual(len(runs), 1)  # resuming would hit the limit again
+        self.assertTrue(any("usage limit" in m for m in logs))
 
     def test_no_resume_after_done_or_reject_or_with_little_time_left(self) -> None:
         for text in ("work\nDONE d1", "REJECT not-capable: we cannot build engines"):
@@ -423,7 +459,14 @@ class TestNoHandOver(unittest.TestCase):
         # an UNFINISHED line an agent writes anyway (the prompt no longer asks) still wins
         said = outcome("j", "w", "lots of log\nUNFINISHED: the clip is untested\n")[1]["summary"]
         self.assertEqual(said, "the clip is untested")
-        self.assertNotIn("summary", outcome("j", "w", "work\nDONE d1\n")[1])
+        # DONE: the builder's notes reach the client too, without the DONE line (P0-3, 2026-10-22)
+        done = outcome("j", "w", "Built the hook.\nThe pad size is my estimate.\nDONE d1\n")[1]
+        self.assertEqual(done["digest"], "d1")
+        self.assertEqual(done["summary"], "Built the hook. The pad size is my estimate.")
+        self.assertNotIn("summary", outcome("j", "w", "DONE d1\n")[1])
+        # a usage-limit notice is the CLI's, never the builder's words
+        limit = outcome("j", "w", "You've hit your weekly limit · resets Oct 24, 9am")[1]
+        self.assertNotIn("summary", limit)
         self.assertNotIn("summary", outcome("j", "w", "  \n")[1])
         kind, body = outcome("j", "w", "REJECT not-allowed: a weapon")
         self.assertEqual(
@@ -434,6 +477,104 @@ class TestNoHandOver(unittest.TestCase):
         said = "REJECT needs-client: charge the phone? options: a: no; b: a PD chip"
         kind, body = outcome("j", "w", said)
         self.assertEqual((kind, body["category"]), ("reject", "needs-client"))
+
+    def test_a_reject_message_is_kept_whole(self) -> None:
+        """2026-10-21: only the first line reached the client, and the builder's offer to fix the
+        dimensions, the lip and W0808 was lost."""
+        text = (
+            "I looked hard.\nREJECT not-capable: the camera position is unpublished.\n\n"
+            "I can still fix:\n- the dimensions\n- the lip\n"
+        )
+        kind, body = outcome("j", "w", text)
+        self.assertEqual(kind, "reject")
+        self.assertEqual(
+            body["message"],
+            "the camera position is unpublished. I can still fix: - the dimensions - the lip",
+        )
+        body = outcome("j", "w", "REJECT needs-client:\nWhich phone? options: a: 10; b: 10 Pro")[1]
+        self.assertEqual(body["message"], "Which phone? options: a: 10; b: 10 Pro")
+
+
+class TestSendAndKeepAdmitted(unittest.TestCase):
+    def test_a_lost_or_busy_submit_is_sent_again_and_a_final_answer_is_not(self) -> None:
+        for codes, tries in (
+            ([0, 503, 429, 200], 4),
+            ([410], 1),
+            ([404], 1),
+            ([400], 1),
+            ([0] * 9, 6),
+        ):
+            answers = iter(codes)
+            calls: list[str] = []
+            slept: list[float] = []
+
+            def call(path: str, body: dict, answers=answers, calls=calls) -> tuple[int, dict]:
+                calls.append(path)
+                return next(answers), {}
+
+            code, _ = agent_miner.send(
+                call, "/v1/jobs/submit", {"job": "j"}, log=lambda m: None, sleep=slept.append
+            )
+            self.assertEqual(len(calls), tries, codes)
+            self.assertEqual(len(slept), tries - 1)
+            self.assertEqual(code, codes[tries - 1])
+
+    def test_a_revoked_key_is_minted_again_and_admission_asked_again(self) -> None:
+        calls: list[str] = []
+        minted: list[bool] = []
+
+        def call(path: str, body: dict) -> tuple[int, dict]:
+            calls.append(path)
+            return 200, {"admitted": True}
+
+        def mint() -> bool:
+            minted.append(True)
+            return True
+
+        agent_miner.keep_admitted(call, mint, lambda: False, log=lambda m: None)
+        self.assertEqual((minted, calls), ([True], ["/v1/miners/admission"]))
+        minted.clear()
+        calls.clear()
+        for works in (True, None):  # taken, or the platform could not tell: no new key
+            agent_miner.keep_admitted(call, mint, lambda w=works: w, log=lambda m: None)
+        self.assertEqual((minted, calls), ([], ["/v1/miners/admission"] * 2))
+
+    def test_key_works_reads_the_platforms_answer(self) -> None:
+        import urllib.error
+
+        def raising(code: int):
+            def f(*a: object, **k: object) -> None:
+                raise urllib.error.HTTPError("u", code, "x", {}, None)  # type: ignore[arg-type]
+
+            return f
+
+        with mock.patch.object(agent_miner.urllib.request, "urlopen", raising(401)):
+            self.assertIs(agent_miner.key_works("https://p", "k"), False)
+        with mock.patch.object(agent_miner.urllib.request, "urlopen", raising(502)):
+            self.assertIsNone(agent_miner.key_works("https://p", "k"))
+        with mock.patch.object(agent_miner.urllib.request, "urlopen", side_effect=OSError):
+            self.assertIsNone(agent_miner.key_works("https://p", "k"))
+        with mock.patch.object(agent_miner.urllib.request, "urlopen", mock.MagicMock()):
+            self.assertIs(agent_miner.key_works("https://p", "k"), True)
+
+
+class TestOneRule(unittest.TestCase):
+    def test_the_prompts_say_one_rule_for_a_missed_need_and_when_to_split(self) -> None:
+        said = " ".join(PROMPT.split())
+        self.assertIn("watt_guide` (brief, then primer, then scope)", said)
+        self.assertIn("only the client trades a need away", said)
+        self.assertIn(
+            "When the client can be asked, it stays open and you deliver the rest (DONE)", said
+        )
+        self.assertIn("`REJECT needs-client`, as the questions rule says, never DONE", said)
+        self.assertIn("A device too big for one round", said)
+        self.assertIn("`watt describe subproject`", said)
+        self.assertIn("brief/parent.md", said)
+        nq = " ".join(agent_miner.NO_QUESTIONS.split())
+        self.assertIn("Every other would-be question is decided and built as usual", nq)
+        q = " ".join(agent_miner.QUESTIONS.split())
+        self.assertIn("keep its assumption line", q)
+        self.assertIn("a `watt` answer also says when the client wrote", q)
 
 
 if __name__ == "__main__":
