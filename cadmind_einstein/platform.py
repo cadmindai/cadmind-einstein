@@ -62,6 +62,9 @@ ROLES = (WORKSPACES, KEYS, QUEUE)
 FROZEN = ("operator_frozen", "operator_ceiling")
 RECHECK_S = 300.0
 BACKOFF_S = 5.0
+POLL_RETRIES = 3
+POLL_BACKOFF_S = 2.0
+"""a failed poll of a run is asked again this many times (2, 4, then 8 s apart) before it fails"""
 ALERT_EVERY_S = 300.0
 """the same ALERT is logged at most this often"""
 
@@ -91,12 +94,15 @@ class OperatorClient:
         log: Callable[[str], None] | None = None,
         clock: Callable[[], float] = time.monotonic,
         recheck_s: float = RECHECK_S,
+        poll_retries: int = POLL_RETRIES,
+        poll_backoff_s: float = POLL_BACKOFF_S,
     ) -> None:
         self.base, self.timeout = base_url.rstrip("/"), timeout
         self.queue = (queue_url or base_url).rstrip("/")
         self.keys = {WORKSPACES: key, KEYS: mint_key or key, QUEUE: queue_key or key}
         self.log = log or (lambda _line: None)
         self.clock, self.recheck_s = clock, recheck_s
+        self.poll_retries, self.poll_backoff_s = max(0, poll_retries), poll_backoff_s
         self._frozen: dict[str, float] = {}
         """per role, when the platform is asked again (a frozen key)"""
         self._held: dict[str, float] = {}
@@ -316,14 +322,19 @@ class OperatorClient:
         job = out.get("job")
         return dict(job) if isinstance(job, dict) else None
 
-    def lease(self, jobs: list[str]) -> dict[str, Any]:
+    def lease(self, jobs: list[str], working: list[str] | None = None) -> dict[str, Any]:
         """Renew the lease on the jobs we hold; ``lost`` lists those the platform no longer gives us
-        (cancelled, or re-queued after a lapsed lease)."""
+        (cancelled, or re-queued after a lapsed lease). ``working``: the jobs among them a builder
+        has accepted (being worked or judged); the platform charges a client's cancel only once a
+        builder has (a platform that predates the field ignores it)."""
+        body: dict[str, Any] = {"jobs": list(jobs)}
+        if working is not None:
+            body["working"] = list(working)
         return dict(
             self._call(
                 "POST",
                 "/api/engine/einstein/lease",
-                {"jobs": list(jobs)},
+                body,
                 base=self.queue,
                 role=QUEUE,
             )
@@ -400,7 +411,9 @@ class OperatorClient:
     ) -> dict[str, Any]:
         """A `watt` command in one of the validator's workspaces, waited to its end -- or, still
         ``running``, at ``budget_s`` or as soon as ``stop`` is set (the caller decides whether to
-        cancel it). ``on_run`` is told the run's id as soon as it is known."""
+        cancel it). ``on_run`` is told the run's id as soon as it is known. A failed poll is asked
+        again (:meth:`_poll`) before it fails the call; the run goes on on the platform either way,
+        and :meth:`attach` takes it up again."""
         end = time.monotonic() + budget_s
         out = dict(
             self._call(
@@ -411,16 +424,52 @@ class OperatorClient:
         )
         if out.get("state") == "running" and on_run is not None and out.get("run"):
             on_run(str(out["run"]))
+        return self._follow(out, end, stop)
+
+    def attach(
+        self, run: str, *, budget_s: float = 1800.0, stop: threading.Event | None = None
+    ) -> dict[str, Any]:
+        """Wait for a run this validator started earlier (a judgement retried after a failed poll,
+        or after a restart) as :meth:`run` waits for its own. It is polled at least once, so a run
+        that ended meanwhile answers its result. A run the platform no longer knows raises its
+        404."""
+        end = time.monotonic() + max(0.0, budget_s)
+        return self._follow(self._poll(str(run), end, stop), end, stop)
+
+    def _follow(
+        self, out: dict[str, Any], end: float, stop: threading.Event | None
+    ) -> dict[str, Any]:
         while out.get("state") == "running" and time.monotonic() < end:
             if stop is not None and stop.is_set():
                 break
-            out = dict(
-                self._call(
-                    "GET",
-                    f"/api/agent/runs/{quote(str(out['run']), safe='')}?wait_s={_wait(end)}",
-                )
-            )
+            out = self._poll(str(out["run"]), end, stop)
         return out
+
+    def _poll(self, run: str, end: float, stop: threading.Event | None) -> dict[str, Any]:
+        """One long-poll of a run. A poll that fails on the way (the platform unreachable, a 5xx, a
+        408 or a 429) is asked again ``poll_retries`` times, ``poll_backoff_s`` doubling between
+        them, before its error is raised: a network blip must not throw away a run that is still
+        going. A stop set during a back-off answers the run as still running."""
+        for i in range(self.poll_retries + 1):
+            try:
+                return dict(
+                    self._call("GET", f"/api/agent/runs/{quote(run, safe='')}?wait_s={_wait(end)}")
+                )
+            except PlatformError as e:
+                transient = e.status in (0, 408, 429) or e.status >= 500
+                if i >= self.poll_retries or not transient:
+                    raise
+                self.log(
+                    f"run {run}: a poll failed ({e.status} {e.code or 'no code'}); asked again "
+                    f"({i + 1} of {self.poll_retries})"
+                )
+                delay = self.poll_backoff_s * 2**i
+                if stop is not None:
+                    if stop.wait(delay):
+                        return {"state": "running", "run": run}
+                elif delay > 0:
+                    time.sleep(delay)
+        raise AssertionError("unreachable")  # pragma: no cover -- the loop returns or raises
 
     def cancel_run(self, run: str) -> None:
         """Stop one of the validator's own runs (a guard run past its budget, or of a cancelled

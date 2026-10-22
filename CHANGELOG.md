@@ -7,6 +7,49 @@ All notable changes to this project are listed here. The format follows
 
 ## [Unreleased]
 
+### Fixed
+- **A network blip no longer throws away the validator's guard run.** A failed poll of a run is asked again 3
+  times (2, 4, then 8 s apart) before it counts. A judgement retried on the validator's side, or judged again after
+  a validator restart, now re-attaches to the guard run it already started (`gate_run`, with what is left of its
+  budget) instead of starting a second `watt report --mutate` run on the fork. A run the platform no longer knows
+  (404) is started again. Before this fix, a blip cost a 6 to 15 minute rerun of the guard.
+- **A miner is free for its next job as soon as it submits.** A miner used to stay busy until the validator
+  finished judging its job, which could take up to 30 minutes. `max_inflight` still counts the jobs being judged,
+  so the validator's load stays bounded. A job's end frees its miner of that job only, so a miner that has taken
+  another job keeps it. A cancel of a submitted job no longer tells the miner to stop or cools it off. After a
+  restart, a submitted job being judged holds no miner. A job judged at its deadline (never submitted) still
+  holds its miner until the verdict.
+- **A job every miner has tried no longer stays claimed forever.** Once every admitted miner that could take a
+  job has tried it (for example one rejection and one missed accept), the job ends uncharged, instead of being
+  re-queued and leased indefinitely. It ends declined, with the miners' messages, if every attempt was a
+  rejection, and "didn't finish" otherwise. The second-opinion wait still applies, and a job never ends while a
+  miner (busy, waiting or held off) could still take it.
+- **A job re-claimed after a lapsed lease is worked again.** When the lease lapses, the platform re-queues the job
+  and the validator stops its own copy. A later claim of that job now reopens the copy as a fresh round: its open
+  attempt is kept as `lost` (uncounted, and its miner may take the job again), and its held failures are kept.
+  Before this fix, the claim found the cancelled copy and only answered its status, so the job went round the
+  platform's queue for up to 7 days.
+- **The overturned-rejection rule.** A `needs-client` rejection is never overturned: on a no-questions job,
+  missing a need is the client's decision alone, so that rejection is honest even when another builder later
+  delivered the job. A delivery by a hotkey of the same coldkey as the rejecting one overturns nothing either. The
+  rest of the abuse policy is unchanged (needs-client rejections still count in the rejection rate, and a
+  rejection another miner overturns still scores 0).
+
+### Added
+- **The lease says which jobs a builder has accepted.** The validator's lease call now sends
+  `{"jobs": [...], "working": [...]}`. `working` lists the jobs whose current attempt a builder has accepted and
+  that are being worked or judged. The platform uses it to charge a client's cancel only once a builder has
+  accepted. Accepts, submits and rejections now send the lease on the next heartbeat (within about 5 s) instead of
+  waiting up to 30 s. A platform that predates the field ignores it (it reads only `jobs`).
+- **A delivered round keeps the builder's summary.** The delivered result now carries `summary` (and
+  `summary_by: "builder"`) when the miner sent one with its submit. Before, a summary was kept only on undelivered
+  rounds.
+- **One structured log line per job event.** The format is `job-event {"event": ..., "job": ..., ...}` for these
+  events: `assigned`, `accepted`, `rejected` (with its category), `submitted`, `deadline`, `gate-start` (with its
+  run id), `gate-attach`, `gate-lost`, `gate-run`, `judge-retry` (with its reason), `verdict`, `attempt-failed`,
+  `requeued`, `cancelled`, `ended` and `vote-recorded`. The lines hold ids, kinds and counts only: no key, no brief
+  and no message to the client. An attempt keeps its last retry reason (`last_retry`) after it is judged.
+
 ## [0.4.4] - 2026-10-22
 
 ### Added

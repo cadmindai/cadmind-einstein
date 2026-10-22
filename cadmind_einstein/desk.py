@@ -11,7 +11,8 @@ A job's life:
    client's project). The miner sees it on ``work`` and must ``accept`` within ``accept_s``.
 3. **working** -- accepted; the deadline is the effort's (low 30, medium 60, high 120, max 180
    minutes).
-4. **judging** -- the miner submitted, or its deadline passed: the workspace is frozen, the
+4. **judging** -- the miner submitted (it is free for another job from then on), or its deadline
+   passed: the workspace is frozen, the
    validator forks it and gates the fork (:meth:`Desk._gate`): the miner's ``watt status`` must
    say deliverable, then the validator runs the mutation guard itself (``watt test --mutate`` on
    its fork, the operator's lane, which draws its own sample), and the guard record ``watt status``
@@ -107,11 +108,13 @@ CATEGORIES = ("not-allowed", "not-capable", "needs-client")
 """What an agent may reject a job as (:meth:`Desk.reject`)."""
 SUBSTANTIVE = ("reject", "gate")
 """attempt kinds that are an opinion on the job (it cannot or should not be done)"""
-UNCOUNTED = ("dereg", "disabled", "stale", "ours")
+UNCOUNTED = ("dereg", "disabled", "stale", "ours", "lost")
 """attempt kinds that do not count toward a job's attempt cap and score nobody: the miner left the
 subnet, or was disabled for abuse while it held the job (``dereg``, ``disabled``); the first
 assignment after a cancel was not accepted in time because the miner was still stopping the
-cancelled job (``stale``); the validator could not judge it, on its own side (``ours``)"""
+cancelled job (``stale``); the validator could not judge it, on its own side (``ours``); the
+platform took the job back when the validator's lease lapsed (``lost``: its miner may take it
+again when it is claimed again)"""
 REFUSED_DELIVERY = ("delivery_not_of_job", "delivery_digest_mismatch")
 """the platform's refusals of a delivered result whose provenance it cannot accept (the workspace
 does not descend from the job's own grant, or is not at the digest the validator gated): a
@@ -187,6 +190,15 @@ WATCH_PAIRS = 20_000
 """copy comparisons kept for the hourly report (the oldest dropped past it, and counted)"""
 
 
+def job_event(event: str, job: str, **fields: Any) -> str:
+    """One structured log line for one job event: ``job-event`` and a JSON object (``event``,
+    ``job``, then the fields that are set). Callers pass ids, kinds, categories and counts only --
+    never a key, a brief or a message the client reads."""
+    row: dict[str, Any] = {"event": event, "job": job}
+    row.update({k: v for k, v in fields.items() if v is not None and v != ""})
+    return "job-event " + json.dumps(row, separators=(",", ":"), default=str)
+
+
 def _survivors(guard: Any) -> str:
     """The must requirements a refused guard run names unguarded, for the verdict's words."""
     if not isinstance(guard, dict):
@@ -215,7 +227,8 @@ class AbusePolicy:
     """entry tests that did not pass the gate (one a day at most)"""
     rejections: bool = True
     """the rejection telemetry's flag: ``rejections_min`` rejections at over ``rejection_ratio``
-    times the fleet's rate, or ``overturned`` rejections another miner then passed"""
+    times the fleet's rate, or ``overturned`` rejections a miner of another coldkey then passed (a
+    ``needs-client`` rejection is never overturned: :meth:`Desk._overturns`)"""
     rejections_min: int = 5
     rejection_ratio: float = 2.0
     overturned: int = 3
@@ -245,11 +258,14 @@ class Platform(Protocol):
         on_run: Callable[[str], None] | None = None,
         stop: threading.Event | None = None,
     ) -> dict[str, Any]: ...
+    def attach(
+        self, run: str, *, budget_s: float = 1800.0, stop: threading.Event | None = None
+    ) -> dict[str, Any]: ...
     def cancel_run(self, run: str) -> None: ...
     def export(self, ws: str) -> bytes: ...
     def delete(self, ws: str) -> None: ...
     def claim(self) -> dict[str, Any] | None: ...
-    def lease(self, jobs: list[str]) -> dict[str, Any]: ...
+    def lease(self, jobs: list[str], working: list[str] | None = None) -> dict[str, Any]: ...
     def claimed(self) -> list[dict[str, Any]]: ...
     def complete(self, job: str, result: dict[str, Any]) -> Any: ...
 
@@ -282,10 +298,19 @@ class Attempt:
     """the validator's fork being gated, kept across a judgement retried on our side (its guard
     outcomes and build are reused, and no second fork is made)"""
     gate_run: str = ""
-    """the validator's own guard run on the fork, while it runs (stopped on a cancel)"""
+    """the validator's own guard run on the fork, while it runs (stopped on a cancel); a judgement
+    retried on our side (a failed poll, a restart) takes this run up again instead of starting
+    another"""
+    gate_digest: str = ""
+    """the digest the miner's record said deliverable when ``gate_run`` was started (a run taken up
+    again is checked against it: the fork's status cannot be read while the run holds the fork)"""
+    gate_started_ms: int = 0
+    """when ``gate_run`` started: a run taken up again keeps what is left of its budget"""
     gate_timeouts: int = 0
     retries: int = 0
     """judgements retried on our side"""
+    last_retry: str = ""
+    """why the last judgement was retried on our side (kept when the attempt is then judged)"""
     first_retry_ms: int = 0
     reference: str = ""
     """a continuation's base, a read-only workspace the platform granted beside this one (the last
@@ -617,7 +642,9 @@ class Desk:
     def _recover(self) -> None:
         """After a restart: a grant cut off mid-call goes back to the queue (its miner freed); a
         working attempt keeps its workspace and deadline; a judged attempt is judged again on
-        :meth:`start`; every miner's job is re-derived from the jobs."""
+        :meth:`start`; every miner's job is re-derived from the jobs. A submitted attempt being
+        judged holds no miner (it was freed at its submit); one judged at its deadline holds its
+        miner until the verdict, as before the restart."""
         with self._mut():
             for m in self.miners.values():
                 m.job = ""
@@ -625,7 +652,10 @@ class Desk:
                 if job.state == "assigning":
                     job.state = "queued"
                 elif job.state in ("assigned", "working", "judging") and job.attempts:
-                    holder = self.miners.get(job.attempts[-1].hotkey)
+                    last = job.attempts[-1]
+                    if job.state == "judging" and last.submitted_ms:
+                        continue
+                    holder = self.miners.get(last.hotkey)
                     if holder is not None:
                         holder.job = job.job
 
@@ -1028,6 +1058,8 @@ class Desk:
             a.accepted_ms = now
             a.deadline_ms = now + self.deadlines.get(job.effort, DEADLINE_S["medium"]) * 1000
             job.state = "working"
+            self._event("accepted", job_id, hotkey=hotkey, deadline_ms=a.deadline_ms)
+            self._leased_ms = 0  # the platform hears of the builder on the next beat
             return {"job": job_id, "workspace": a.workspace, "deadline_ms": a.deadline_ms}
 
     def submit(
@@ -1051,6 +1083,18 @@ class Desk:
             a.submitted_ms, a.digest = self.now_ms(), str(digest or "")[:100]
             a.summary = " ".join(str(summary or "").split())[:SUMMARY_MAX]
             job.state = "judging"
+            # the miner's part is over: it is free for another job while the validator judges this
+            # one (``max_inflight`` still counts the judgement)
+            self._release(hotkey, job_id)
+            self._leased_ms = 0
+            self._event(
+                "submitted",
+                job_id,
+                hotkey=hotkey,
+                digest=a.digest,
+                on_time=a.submitted_ms <= a.deadline_ms,
+                summary_chars=len(a.summary),
+            )
         self._start_judge(job, a)
         return {"job": job_id, "state": "judging"}
 
@@ -1078,9 +1122,11 @@ class Desk:
         only be met or traded away by the client's decision -- Watt's W0240, a decision that
         ``misses`` a need -- whose question and options are the message), with a message the
         client reads if the job ends declined. The job goes to a second miner, which decides on its
-        own and is not shown the first one's message. A ``needs-client`` rejection counts like the
-        others in the miner's telemetry: another miner that delivers the job overturns it, which is
-        the check on a miner that sheds hard work under that category."""
+        own and is not shown the first one's message. A ``needs-client`` rejection counts in the
+        miner's rejection rate like the others, but another miner delivering the job does not
+        overturn it: on a no-questions job, missing a need is the client's decision alone, so the
+        rejection was honest even when another builder traded the need away itself
+        (:meth:`_overturns`)."""
         if category not in CATEGORIES:
             raise DeskError("category is not-allowed, not-capable or needs-client")
         text = " ".join(str(message or "").split())[:2000]
@@ -1096,6 +1142,8 @@ class Desk:
             self._spawn(self._freeze_quietly, a.workspace)
             a.category, a.message = category, text
             self.rejected[hotkey] = self.rejected.get(hotkey, 0) + 1
+            self._event("rejected", job_id, hotkey=hotkey, category=category)
+            self._leased_ms = 0  # no builder now: the platform hears so on the next beat
             self._fail(job, a, f"rejected ({category})", kind="reject")
         self.tick()
         return {"job": job_id, "state": self.status(job_id)["state"]}
@@ -1241,7 +1289,22 @@ class Desk:
         exclude = [str(x) for x in body.get("exclude") or []]
         rerun_of = str(body.get("rerun_of") or "")
         with self._mut():
-            if job_id in self.jobs:
+            old = self.jobs.get(job_id)
+            if old is not None and old.state == "done" and old.result.get("lost"):
+                # claimed again after the platform took it back (a lapsed lease): a fresh round of
+                # the same job -- its earlier attempts kept as history (the lost one uncounted)
+                old.brief, old.seed, old.effort = brief, seed, effort
+                old.no_questions = body.get("no_questions") is True
+                old.style = _style_of(body.get("style"))
+                old.continuation = _continuation_of(body.get("continuation"))
+                old.state, old.result = "queued", {}
+                old.queued_ms = self.now_ms()
+                if job_id in self._outbox:
+                    self._outbox.remove(job_id)
+                self._final.discard(job_id)
+                self._event("reclaimed", job_id, attempts=len(old.attempts))
+                return self.status(job_id)
+            if old is not None:
                 return self.status(job_id)
             if rerun_of:
                 # A re-run is a new job at the normal price, sent to a different miner; for the
@@ -1336,12 +1399,17 @@ class Desk:
             raise DeskError("no delivered job by that id", 404)
         return {"job": job_id, "score": s}
 
-    def cancel(self, job_id: str) -> dict[str, Any]:
+    def cancel(self, job_id: str, *, lost: bool = False) -> dict[str, Any]:
         """The client cancels (what it is charged is the platform's). A job in progress is frozen
         and its miner freed; nobody is scored on it. The miner is told on its next ``work``
         (``cancelled``), gets no new job for ``cancel_cooloff_s`` (time to stop its agent), and its
         first assignment after this one is not scored if it is not accepted in time. A job being
-        judged has the validator's guard run stopped and its fork deleted."""
+        judged has the validator's guard run stopped and its fork deleted.
+
+        ``lost``: the platform no longer holds the job for this validator (its lease lapsed, and the
+        platform queued the job again). The copy here stops the same way, but its open attempt is
+        ``lost`` (uncounted; its miner may take the job again), its held failures are kept, and a
+        later claim of the job reopens it (:meth:`create`)."""
         with self._mut():
             job = self.jobs.get(job_id)
             if job is None:
@@ -1354,16 +1422,30 @@ class Desk:
                 a = job.attempts[-1]
             if a is not None:
                 self._spawn(self._freeze_quietly, a.workspace)
-                a.outcome, a.kind = "cancelled by the client", "cancelled"
-                self._release(a.hotkey)
+                a.outcome, a.kind = (
+                    ("the validator's lease lapsed: the platform took the job back", "lost")
+                    if lost
+                    else ("cancelled by the client", "cancelled")
+                )
                 m = self.miners.get(a.hotkey)
-                if m is not None:
+                if m is not None and m.job == job_id:
+                    # still working on it (a submitted attempt freed its miner, which may hold
+                    # another job by now): told, and cooled off
                     m.cancelled_job, m.cancelled_ms, m.after_cancel = job_id, self.now_ms(), True
+                self._release(a.hotkey, job_id)
                 if judging:
                     self._drop_gate(job.job, a)
-            job.pending.clear()
+            self._event(
+                "lease-lost" if lost else "cancelled",
+                job_id,
+                state="judging" if judging else job.state,
+            )
+            if not lost:
+                job.pending.clear()
             job.state = "done"
             job.result = {"label": "cancelled", "charge": False, "attempts": len(job.attempts)}
+            if lost:
+                job.result["lost"] = True
             return self.status(job_id)
 
     def capacity(self) -> dict[str, Any]:
@@ -1418,7 +1500,7 @@ class Desk:
     def _available(self, job: Job) -> list[Miner]:
         now = self.now_ms()
         reg = set(self.registered())
-        tried = {a.hotkey for a in job.attempts} | set(job.exclude)
+        tried = self._tried(job)
         cmap = self._cmap()
         # A second opinion comes from another owner: the coldkeys that rejected or failed this job
         # do not get it again until it has waited ``second_opinion.wait_s``.
@@ -1437,6 +1519,59 @@ class Desk:
             and m.hotkey not in tried
             and self.coldkey(m.hotkey, cmap) not in opinions
         ]
+
+    @staticmethod
+    def _tried(job: Job) -> set[str]:
+        """The hotkeys that may not take ``job``: those that tried it (a ``lost`` attempt aside: the
+        platform took the job back from the validator, not from the miner) and its excluded ones."""
+        return {a.hotkey for a in job.attempts if a.kind != "lost"} | set(job.exclude)
+
+    def _exhausted(self, job: Job, reg: set[str]) -> bool:
+        """Whether no miner that could ever take ``job`` is left: none registered, admitted, keyed,
+        not excluded and not yet tried. A busy, idle, cooling-off or second-opinion-waiting miner
+        still counts (it may take the job later), so a job never ends while a miner of another
+        coldkey -- or, after the wait, of the same one -- could still take it."""
+        tried = self._tried(job)
+        return not any(
+            m.admitted and m.key_id and m.hotkey in reg and m.hotkey not in tried
+            for m in self.miners.values()
+            if m.hotkey not in self.excluded
+        )
+
+    def _end_exhausted(self, job: Job) -> None:
+        """Inside a mutation: every miner that could take ``job`` has tried it. It ends declined
+        (every counted attempt a rejection: the miners' messages shown) or "didn't finish";
+        uncharged either way. The held failures count (0) unless they came from
+        ``second_opinion.coldkeys`` coldkeys, as at any undelivered ending."""
+        counted = [x for x in job.attempts if x.kind not in UNCOUNTED]
+        substantive = [x for x in job.attempts if x.kind in SUBSTANTIVE]
+        cmap = self._cmap()
+        owners = {self.coldkey(x.hotkey, cmap) for x in substantive}
+        independent = len(owners) >= max(1, self.second_opinion.coldkeys)
+        label = "declined" if all(x.kind == "reject" for x in counted) else "didn't finish"
+        if not independent:
+            for held in job.pending:
+                held.ended_ms = self.now_ms()
+                self.ledger.add(held)
+        job.pending.clear()
+        job.state = "done"
+        last = job.attempts[-1]
+        job.result = {
+            "label": label,
+            "charge": False,
+            "review": label == "declined",
+            "why": "every miner that could take the job has tried it",
+            "messages": [
+                {"category": x.category, "message": x.message}
+                for x in job.attempts
+                if x.kind == "reject"
+            ],
+            "hotkey": last.hotkey,
+            "workspace": "",
+            "attempts": len(job.attempts),
+        }
+        self._outbox.append(job.job)
+        self._event("ended", job.job, label=label, attempts=len(job.attempts), exhausted=True)
 
     def route(self, job: Job) -> Miner | None:
         """One miner. An admission job: its own miner. A client job: an ADMITTED miner -- the job's
@@ -1494,6 +1629,7 @@ class Desk:
                 elif job.state == "working" and a and now > a.deadline_ms:
                     job.state = "judging"
                     late.append((job, a))
+                    self._event("deadline", job.job, hotkey=a.hotkey)
             for key in [
                 k
                 for k, j in self.jobs.items()
@@ -1532,6 +1668,16 @@ class Desk:
                 for j in self.jobs.values()
                 if j.state in ("assigning", "assigned", "working", "judging")
             )
+            reg = set(self.registered())
+            for job in [
+                j
+                for j in self.jobs.values()
+                if j.state == "queued"
+                and j.kind == "client"
+                and any(x.kind not in UNCOUNTED for x in j.attempts)
+            ]:
+                if self._exhausted(job, reg):
+                    self._end_exhausted(job)
             queued = sorted(
                 (j for j in self.jobs.values() if j.state == "queued"), key=lambda j: j.created_ms
             )
@@ -1603,10 +1749,19 @@ class Desk:
                     for j in self.jobs.values()
                     if j.kind == "client" and (j.state != "done" or self._held_for_review(j))
                 ]
+                # a builder accepted these: the platform charges a client's cancel from then on
+                working = [
+                    j.job
+                    for j in self.jobs.values()
+                    if j.kind == "client"
+                    and j.attempts
+                    and j.attempts[-1].accepted_ms
+                    and j.state in ("working", "judging")
+                ]
             if not open_jobs:
                 return
             try:
-                out = self.platform.lease(open_jobs)
+                out = self.platform.lease(open_jobs, working=working)
             except PlatformError:
                 return
             for job_id in out.get("lost") or []:
@@ -1616,7 +1771,7 @@ class Desk:
                         job.result = {**job.result, "released": True}
                     continue
                 with contextlib.suppress(DeskError):
-                    self.cancel(str(job_id))
+                    self.cancel(str(job_id), lost=True)
         finally:
             self._lease_lock.release()
 
@@ -1705,11 +1860,7 @@ class Desk:
             if job_id in self._outbox:
                 self._outbox.remove(job_id)
             gone = self.ledger.withdraw(job_id)
-            for o in gone:
-                if o.kind == "pass" and self.delivered.get(o.hotkey, 0) > 0:
-                    self.delivered[o.hotkey] -= 1
-                if o.kind == "reject" and self.overturned.get(o.hotkey, 0) > 0:
-                    self.overturned[o.hotkey] -= 1
+            self._unscore(job, gone)
             row = {
                 "job": job_id,
                 "code": e.code,
@@ -1742,11 +1893,7 @@ class Desk:
             if job is None:
                 return
             gone = self.ledger.withdraw(job_id)
-            for o in gone:
-                if o.kind == "pass" and self.delivered.get(o.hotkey, 0) > 0:
-                    self.delivered[o.hotkey] -= 1
-                if o.kind == "reject" and self.overturned.get(o.hotkey, 0) > 0:
-                    self.overturned[o.hotkey] -= 1
+            self._unscore(job, gone)
             job.result = {
                 **job.result,
                 "label": str(answer.get("label") or "not charged")[:40],
@@ -1791,6 +1938,8 @@ class Desk:
                     job.state = "queued"
                 return
             self.assigned[m.hotkey] = self.assigned.get(m.hotkey, 0) + 1
+            if m.cancelled_job == job.job:  # its job again, after a lapsed lease: not "cancelled"
+                m.cancelled_job = ""
             job.attempts.append(
                 Attempt(
                     hotkey=m.hotkey,
@@ -1801,6 +1950,16 @@ class Desk:
                 )
             )
             job.state = "assigned"
+            self._event(
+                "assigned",
+                job.job,
+                hotkey=m.hotkey,
+                attempt=len(job.attempts),
+                workspace=ws,
+                kind=job.kind,
+                effort=job.effort,
+                no_questions=job.no_questions or None,
+            )
 
     def _fail(
         self,
@@ -1828,8 +1987,11 @@ class Desk:
           job nobody could do).
         """
         a.outcome, a.kind = why, kind
+        if kind != "reject":  # a rejection logged its own line
+            self._event("attempt-failed", job.job, hotkey=a.hotkey, kind=kind, why=why[:200])
         if job.kind == "admission":
-            self._release(a.hotkey)
+            self._release(a.hotkey, job.job)
+            self._event("ended", job.job, label="not admitted", hotkey=a.hotkey)
             job.state = "done"
             job.result = {"label": "not admitted", "charge": False, "why": why}
             if kind in ("gate", "timeout"):
@@ -1851,7 +2013,7 @@ class Desk:
                 self.ledger.add(o)
             else:
                 job.pending.append(o)
-        self._release(a.hotkey)
+        self._release(a.hotkey, job.job)
         substantive = [x for x in job.attempts if x.kind in SUBSTANTIVE]
         counted = [x for x in job.attempts if x.kind not in UNCOUNTED]
         cmap = self._cmap()
@@ -1864,6 +2026,7 @@ class Desk:
         if not ends and len(counted) < self.max_attempts:
             job.state = "queued"
             job.queued_ms = self.now_ms()
+            self._event("requeued", job.job, attempts=len(job.attempts))
             return
         if worked:
             label = "not finished"
@@ -1899,11 +2062,19 @@ class Desk:
             job.result["summary"] = a.summary or _gate_summary(kind, verdict or {})
             job.result["summary_by"] = "builder" if a.summary else "gate"
         self._outbox.append(job.job)
+        self._event("ended", job.job, label=label, hotkey=a.hotkey, attempts=len(job.attempts))
 
-    def _release(self, hotkey: str) -> None:
+    def _release(self, hotkey: str, job_id: str) -> None:
+        """Free ``hotkey`` of ``job_id`` -- only of that job: a miner freed at its submit may hold
+        another job by the time this one ends."""
         m = self.miners.get(hotkey)
-        if m is not None:
+        if m is not None and m.job == job_id:
             m.job = ""
+
+    def _event(self, event: str, job: str, **fields: Any) -> None:
+        """One structured line per job event (:func:`job_event`)."""
+        with contextlib.suppress(Exception):  # a log line never breaks the desk
+            self.log(job_event(event, job, **fields))
 
     # -- judging (section 4) -----------------------------------------------------------------------
 
@@ -1951,6 +2122,7 @@ class Desk:
             a.retries += 1
             a.first_retry_ms = a.first_retry_ms or now
             a.outcome = f"judging retried: {why[:200]}"
+            a.last_retry = why[:200]
             if a.retries > self.judge_max_retries or (
                 now - a.first_retry_ms >= self.judge_give_up_s * 1000
             ):
@@ -1959,6 +2131,15 @@ class Desk:
             delay = min(RETRY_MAX_S, first_s * 2 ** (a.retries - 1))
             delay *= 0.8 + 0.4 * self.rng.random()
             self._retry_at[job.job] = time.monotonic() + delay
+            self._event(
+                "judge-retry",
+                job.job,
+                hotkey=a.hotkey,
+                retry=a.retries,
+                in_s=round(delay, 1),
+                gate_run=a.gate_run,
+                why=why[:200],
+            )
 
     def _give_up(self, job: Job, a: Attempt, why: str) -> None:
         """Inside a mutation: the validator could not judge this attempt on its own side. The job
@@ -1966,7 +2147,8 @@ class Desk:
         and the held failures are dropped; the miner is freed and the fork deleted."""
         a.outcome = f"the validator could not judge it: {why[:200]}"
         a.kind = "ours"
-        self._release(a.hotkey)
+        self._event("ended", job.job, label="didn't finish", hotkey=a.hotkey, ours=True)
+        self._release(a.hotkey, job.job)
         self._drop_gate(job.job, a)
         job.pending.clear()
         job.state = "done"
@@ -2017,43 +2199,76 @@ class Desk:
         freeing its lane for the other judgements -- and raises :class:`_GateTimeoutError`, as for
         a run Watt stopped at its own wall-clock limit. A cancel of the job stops it too.
 
+        **A judgement retried on our side** (a poll that failed past the client's own retries, a
+        validator restart mid-run) takes the attempt's ``gate_run`` up again -- waiting for it, or
+        reading the result it already has -- with what is left of its budget, instead of starting
+        another: the fork cannot even be read while that run holds it, and a second run repeats
+        minutes of guard work. A run the platform no longer knows (404) is started again.
+
         Raises :class:`_GateRetryError` (and lets :class:`PlatformError` through) on our side.
         """
-        before = self._status(fork)
-        digest = str(before.get("digest") or "")
-        verdict: dict[str, Any] = {
-            "deliverable": False,
-            "stage": str(before.get("stage") or "none"),
-            "digest": digest,
-        }
-        if not before.get("deliverable"):
-            return verdict
+        jid = job.job if job is not None else ""
+        resume = a.gate_run if a is not None else ""
+        if resume and a is not None and a.gate_digest:
+            # the miner's record said deliverable when this run was started, at this digest
+            digest = a.gate_digest
+            verdict: dict[str, Any] = {
+                "deliverable": False,
+                "stage": "deliverable",
+                "digest": digest,
+            }
+        else:
+            before = self._status(fork)
+            digest = str(before.get("digest") or "")
+            verdict = {
+                "deliverable": False,
+                "stage": str(before.get("stage") or "none"),
+                "digest": digest,
+            }
+            if not before.get("deliverable"):
+                return verdict
         # the guard and the delivery's files in ONE run (`watt report --mutate`): one machine start,
         # and the files are made from the very design this run guards (2026-10-16)
         stop = threading.Event()
-        key = job.job if job is not None else ""
-        if key:
+        if jid:
             with self._lock:
-                self._gate_stop[key] = stop
+                self._gate_stop[jid] = stop
 
         def started(run_id: str) -> None:
             if a is not None:
                 with self._mut():
                     a.gate_run = str(run_id)
+                    a.gate_digest, a.gate_started_ms = digest, self.now_ms()
+            self._event("gate-start", jid, run=str(run_id), fork=fork, digest=digest)
 
         try:
-            run = self.platform.run(
-                fork,
-                "report",
-                {"mutate": True},
-                budget_s=self.gate_run_s,
-                on_run=started,
-                stop=stop,
-            )
+            run: dict[str, Any] | None = None
+            if resume and a is not None:
+                spent = (self.now_ms() - a.gate_started_ms) / 1000 if a.gate_started_ms else 0.0
+                left = max(1.0, self.gate_run_s - max(0.0, spent))
+                self._event("gate-attach", jid, run=resume, fork=fork, left_s=round(left))
+                try:
+                    run = self.platform.attach(resume, budget_s=left, stop=stop)
+                except PlatformError as e:
+                    if e.status != 404:
+                        raise
+                    # the platform no longer knows it: a run of our own, started again
+                    self._event("gate-lost", jid, run=resume)
+                    with self._mut():
+                        a.gate_run = ""
+            if run is None:
+                run = self.platform.run(
+                    fork,
+                    "report",
+                    {"mutate": True},
+                    budget_s=self.gate_run_s,
+                    on_run=started,
+                    stop=stop,
+                )
         finally:
-            if key:
+            if jid:
                 with self._lock:
-                    self._gate_stop.pop(key, None)
+                    self._gate_stop.pop(jid, None)
         state, stopped = run.get("state"), str(run.get("stopped") or "")
         if stop.is_set():
             raise _GateRetryError("the job ended while its guard ran")
@@ -2072,6 +2287,14 @@ class Desk:
         if a is not None:
             with self._mut():
                 a.gate_run = ""
+        self._event(
+            "gate-run",
+            jid,
+            run=str(run.get("run") or resume or ""),
+            state=str(state or ""),
+            ok=bool(run.get("ok")),
+            stopped=stopped,
+        )
         if stopped == "wall":
             raise _GateTimeoutError("the validator's guard run hit Watt's wall-clock limit")
         if state != "done" or stopped in ("cancelled", "frozen"):
@@ -2243,11 +2466,24 @@ class Desk:
                     "error": f"the delivered project could not be read ({type(e).__name__})",
                 }
                 outcome.deliverable, outcome.stage = False, "export"
-        cold = self.coldkey(a.hotkey)
+        cmap = self._cmap()
+        cold = self.coldkey(a.hotkey, cmap)
         with self._mut():
             if job.state != "judging" or not job.attempts or job.attempts[-1] is not a:
                 self._drop_gate(job.job, a)
                 return  # cancelled (or lost) while it was judged: nobody is scored
+            self._event(
+                "verdict",
+                job.job,
+                hotkey=a.hotkey,
+                deliverable=bool(verdict["deliverable"]),
+                stage=str(verdict.get("stage") or ""),
+                digest=str(verdict.get("digest") or ""),
+                error=str(verdict.get("error") or "")[:200],
+                on_time=on_time,
+                retries=a.retries,
+                last_retry=a.last_retry,
+            )
             copy = None
             if verdict["deliverable"] and job.kind == "client":
                 copy = self.copies.check(
@@ -2268,7 +2504,7 @@ class Desk:
                 if m is not None:
                     m.admitted = True
                 a.outcome, a.kind = "admitted", "pass"
-                self._release(a.hotkey)
+                self._release(a.hotkey, job.job)
                 self._drop_gate(job.job, a)  # an entry test delivers nothing
                 job.state = "done"
                 job.result = {"label": "admitted", "charge": False}
@@ -2294,7 +2530,7 @@ class Desk:
             for held in job.pending:  # another miner passed: the held failures count now
                 held.ended_ms = self.now_ms()
                 self.ledger.add(held)
-                if held.kind == "reject":
+                if held.kind == "reject" and self._overturns(job, held.hotkey, a.hotkey, cmap):
                     self.overturned[held.hotkey] = self.overturned.get(held.hotkey, 0) + 1
             job.pending.clear()
             outcome.kind = "pass"
@@ -2302,7 +2538,7 @@ class Desk:
             if job.kind == "client":
                 self.delivered[a.hotkey] = self.delivered.get(a.hotkey, 0) + 1
             a.outcome, a.kind = "judged", "pass"
-            self._release(a.hotkey)
+            self._release(a.hotkey, job.job)
             job.state = "done"
             job.result = {
                 "label": "delivered",
@@ -2316,7 +2552,40 @@ class Desk:
                 "on_time": on_time,
                 "attempts": len(job.attempts),
             }
+            if a.summary:  # the builder's notes on what it delivered
+                job.result["summary"], job.result["summary_by"] = a.summary, "builder"
             self._outbox.append(job.job)
+            self._event("ended", job.job, label="delivered", hotkey=a.hotkey, score=s)
+
+    def _overturns(
+        self, job: Job, rejecter: str, deliverer: str, cmap: Mapping[str, str] | None = None
+    ) -> bool:
+        """Whether ``deliverer`` passing ``job`` overturns ``rejecter``'s rejection of it (the
+        abuse policy's ``overturned`` count). Not when the rejection was ``needs-client`` (on a
+        no-questions job, missing a need is the client's decision alone: the rejection was honest
+        even if another builder traded the need away), nor when both hotkeys are one owner's (one
+        coldkey: no independent opinion). The held 0 the rejection scores is unchanged."""
+        category = next(
+            (x.category for x in job.attempts if x.hotkey == rejecter and x.kind == "reject"), ""
+        )
+        if category == "needs-client":
+            return False
+        cmap = self._cmap() if cmap is None else cmap
+        return self.coldkey(rejecter, cmap) != self.coldkey(deliverer, cmap)
+
+    def _unscore(self, job: Job, gone: list[JobOutcome]) -> None:
+        """Inside a mutation: the desk's tallies of a job whose scores were withdrawn."""
+        deliverer = str(job.result.get("hotkey") or "")
+        cmap = self._cmap()
+        for o in gone:
+            if o.kind == "pass" and self.delivered.get(o.hotkey, 0) > 0:
+                self.delivered[o.hotkey] -= 1
+            if (
+                o.kind == "reject"
+                and self.overturned.get(o.hotkey, 0) > 0
+                and self._overturns(job, o.hotkey, deliverer, cmap)
+            ):
+                self.overturned[o.hotkey] -= 1
 
     @staticmethod
     def _read_export(

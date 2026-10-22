@@ -147,9 +147,9 @@ class TestRefusedDelivery(_Case):
         leased: list[list[str]] = []
         real = self.p.lease
 
-        def lease(jobs: list[str]) -> dict[str, Any]:
+        def lease(jobs: list[str], working: list[str] | None = None) -> dict[str, Any]:
             leased.append(list(jobs))
-            return real(jobs)
+            return real(jobs, working)
 
         self.p.lease = lease  # type: ignore[method-assign]
         self.desk._lease(self.desk.now_ms() + 1)

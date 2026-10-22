@@ -136,6 +136,7 @@ validator: freeze on submit, fork, read Watt's verdict (the gate), copy check, s
   | a worked attempt does not pass (gate failure, or late and failing) | **not finished**: its project kept, the builder's summary for the client | no | a timeout already scored 0; held rejections and the gate failure count (0) unless two coldkeys gave them |
   | two rejections, from two coldkeys | **declined**: the client reads both messages; the brief is flagged for review | no | nobody penalised |
   | four attempts without either of the above (timeouts before accepting, copies) | **didn't finish** | no | each timeout and copy already scored 0; held rejections count (0) unless two coldkeys gave them |
+  | every admitted miner that could take it has tried it (the second-opinion wait still applies) | **declined** if every attempt was a rejection, else **didn't finish** | no | as above |
 
   Earlier releases also ended a job **out of reach** (two substantive failures from two coldkeys); a worked failure
   now ends the round at once, so that ending is no longer reached.
@@ -260,9 +261,11 @@ scratch, throwing the first builder's work away; after two or four tries the job
   so they can earn a score; else to an available miner drawn with weight `(quality + 0.05)²`.
 - **No miner free:** nothing is claimed and jobs wait in the platform's queue, which shows the client a position
   and an ETA (from the validator's `GET /v1/capacity`). A job is never refused for lack of miners.
-- **Lease.** The validator renews a lease on every job it holds every 30 s; a job whose lease lapses goes back to
-  the platform's queue, and one the platform reports lost (cancelled, re-queued) is dropped. After a restart the
-  validator reconciles with the platform's list of jobs it holds.
+- **Lease.** The validator renews a lease on every job it holds every 30 s (and soon after a miner accepts, submits
+  or rejects), naming the jobs a builder has accepted (`working`: a client's cancel is charged from then on); a job whose lease lapses goes back to
+  the platform's queue, and one the platform reports lost (cancelled, re-queued) is dropped. A lost job that the
+  validator claims again is worked again: a new attempt, with the earlier ones kept and the lost one uncounted.
+  After a restart the validator reconciles with the platform's list of jobs it holds.
 - **Reassignment stays inside the validator.** A failed attempt keeps the claim; the held job takes the next free
   miner before anything new is claimed. This keeps a job's attempts together (a held failure is scored only once
   the job's outcome is known) and keeps the next miner away from the ones that already failed it.
@@ -295,10 +298,12 @@ the client is), every score, each miner's weight and quality, the admitted and r
   window, results not yet taken by the platform, keys still to revoke, the last hour closed, commitments) lives in
   one SQLite file (WAL, `synchronous=FULL`). A desk mutation and the ledger writes it causes share one transaction.
   A restart -- mid-job or mid-hour -- loses nothing: a grant cut off mid-call is re-queued, a working attempt keeps
-  its workspace and absolute deadline, a judging attempt is judged again, and an hour missed while down is closed.
+  its workspace and absolute deadline, a judging attempt is judged again (re-attached to the guard run it had
+  started), and an hour missed while down is closed.
 - Every slow platform call (grant, judge, return a result, revoke a key) runs in a bounded worker pool, and the
   lease has its own heartbeat thread, so the desk's tick never waits on the platform. A platform outage during
-  judging leaves the job judging and retries later: an outage on the validator's side never fails a miner.
+  judging leaves the job judging and retries later, on the same guard run (a failed poll is asked again 3 times
+  first): an outage on the validator's side never fails a miner.
 - Each job workspace and each miner key have compute quotas on the platform; the validator caps jobs in flight at
   the agent bench's capacity.
 
@@ -383,7 +388,8 @@ subnet's hyperparameters, inside `weights_rate_limit`. The weights carry the val
 - **Disables.** Every tick the validator disables a miner whose counts since its last strike cross the policy:
   copies (2), Watt suspensions (1: the platform suspends a key on Watt-side telemetry such as secrecy refusals or
   quota storms), failed entry tests (3), or the rejection pattern (at
-  least 5 rejections at over twice the fleet's rate, or 3 overturned rejections; the same rule is applied to each
+  least 5 rejections at over twice the fleet's rate, or 3 overturned rejections -- delivered by a miner of another
+  coldkey, never a `needs-client` rejection; the same rule is applied to each
   coldkey's hotkeys together, so spreading rejections over hotkeys does not hide them). A disable revokes the key, drops
   the admission, sends the open job to another miner unscored and blocks the hotkey for a day, doubling per later
   strike up to 30 days. All thresholds are daemon flags (`--abuse-*`; 0 turns a rule off). Every disable is logged
