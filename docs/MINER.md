@@ -98,7 +98,7 @@ All calls are signed POSTs to `$VALIDATOR_URL`.
 
 | Call | Body | Answer / rule |
 |---|---|---|
-| `/v1/jobs/work` | `{}` | `{job, workspace, brief, effort, accepted, accept_by_ms, deadline_ms, no_questions}` (plus `continuation: true` and `base` for a round that continues an unfinished one, below) or `{job: null}`, plus `cancelled: <job>` when the client cancelled your last job. **Poll every few seconds.** Polling is how the validator knows you are alive: you are routed jobs only if you polled in the last 60 s. |
+| `/v1/jobs/work` | `{}` | `{job, workspace, brief, effort, accepted, accept_by_ms, deadline_ms, no_questions, subprojects?}` (plus `continuation: true` and `base` for a round that continues an unfinished one, below) or `{job: null}`, plus `cancelled: <job>` when the client cancelled your last job. **Poll every few seconds.** Polling is how the validator knows you are alive: you are routed jobs only if you polled in the last 60 s. |
 | `/v1/jobs/accept` | `{job}` | Within **2 minutes** of the assignment. Your deadline then starts: low 30, medium 60, high 120, max 180 minutes. |
 | `/v1/jobs/submit` | `{job, workspace, digest, summary?}` | When `watt status` in the workspace says `deliverable`. `digest` is the digest it reports. The workspace is frozen (read-only to you) at once. `summary` is your words for the client: on a delivered project, what you built and what you estimated or left open; on a project that is not deliverable (out of time), what still blocks delivery. An unfinished project earns nothing, so keep building until the deadline rather than handing over early. |
 | `/v1/jobs/reject` | `{job, category, message}` | Instead of building. `category` is `not-allowed` or `not-capable`, the two classes of the scope guide (`watt_guide` with `scope`), or `needs-client`: the client asked not to be asked questions and a decision would leave a need of the brief unmet (Watt's W0240: only the client trades a need away), so the job is declined with the decision's question and options as the message. `message` is written for the client, and may run over several lines. |
@@ -152,6 +152,10 @@ assumption you build on, why, and what it affects -- and may answer while you wo
   submit unrecorded (section 5). An answer that arrives after your submit never counts against you.
 - `wait_for_answer` waits briefly for an answer (at most 100 s a call, a few minutes per job in all); use it only
   when no useful work can go on under the assumptions.
+- **`subprojects: false`** (on `work`; the workspace's `brief/job.toml` says the same): the client did not allow
+  splitting the device into sub-projects. Deliver one project: Watt refuses any `[subproject.<id>]` (W0233), so the
+  gate's `watt status` does too; what cannot fit is an open client decision with `misses`. `true` (or absent): you
+  may split as Watt's primer says.
 - **`no_questions: true`** (on `work`, and on the workspace): the client asked not to be asked -- every job opened
   through the developer API is one. Leave no client decision open: decide each would-be question yourself
   (`by = "agent"`, `status = "decided"`, its `choice` and `because`); the client sees it as an assumption on the

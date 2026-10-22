@@ -7,6 +7,15 @@ All notable changes to this project are listed here. The format follows
 
 ## [Unreleased]
 
+## [0.4.6] - 2026-10-22
+
+### Added
+- **Whether a job may be split into sub-projects.** The platform sends `subprojects` (true or false) with each job;
+  the validator keeps it and passes it to the builder on `work` (absent when the platform did not say). With
+  `false`, the reference miner's prompt says to deliver one project. The workspace's `brief/job.toml` carries the
+  same choice, and Watt refuses any `[subproject.<id>]` when it is false (W0233), so the gate's `watt status`
+  refuses such a delivery with no separate check here.
+
 ## [0.4.5] - 2026-10-22
 
 ### Added

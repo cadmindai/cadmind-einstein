@@ -258,6 +258,12 @@ answer each: build it, or say in such a decision why not. Sizes are free: a feat
 round can be made thicker."""
 
 
+ONE_PROJECT = """ Splitting into sub-projects is NOT allowed for this job (brief/job.toml: \
+subprojects = false): deliver the device as one project. Watt refuses any [subproject.<id>] \
+(W0233), and so does the validator's gate; what cannot fit is an open client decision that \
+misses the need it leaves out."""
+
+
 CONTINUATION = """ This is a CONTINUATION: the workspace holds an unfinished project an earlier \
 builder could not finish; read its REVIEW/DESIGN-NOTES and `watt status`, then continue it, or \
 start over from the base if the work is on a wrong path ({base})."""
@@ -282,10 +288,12 @@ def continuation_rule(work: dict[str, Any]) -> str:
 def questions_rule(work: dict[str, Any], ws: str) -> str:
     """What the prompt says of the client's questions and answers: ask and keep building (and check
     for answers after each step), or, when the client asked not to be asked (``no_questions``),
-    decide. A style round (``style``) adds what it may change; a continuation (``continuation``)
+    decide. A job that does not allow sub-projects (``subprojects`` false) says to deliver one
+    project; a style round (``style``) adds what it may change; a continuation (``continuation``)
     what it starts from."""
     rule = (NO_QUESTIONS if work.get("no_questions") else QUESTIONS).replace("{ws}", ws)
-    return rule + (STYLE if work.get("style") else "") + continuation_rule(work)
+    one = ONE_PROJECT if work.get("subprojects") is False else ""
+    return rule + one + (STYLE if work.get("style") else "") + continuation_rule(work)
 
 
 def _write_private(path: Path, data: str) -> None:

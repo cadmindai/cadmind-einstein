@@ -300,6 +300,25 @@ class TestDeskAnswers(unittest.TestCase):
         _, w = self.assigned()
         self.assertIs(w["no_questions"], False)
 
+    def test_the_builder_is_told_whether_the_job_allows_sub_projects(self) -> None:
+        """The platform's ``subprojects`` reaches the builder's work as sent (Watt enforces it
+        from the workspace's brief/job.toml, W0233, which the gate's ``watt status`` reads); not
+        sent, not said."""
+        for job, sent, said in (("js2", True, True), ("js3", None, None), ("js4", "no", None)):
+            self.desk.create(
+                {
+                    "job": job,
+                    "brief": "A key hook.",
+                    **({"subprojects": sent} if sent is not None else {}),
+                }
+            )
+            self.assertEqual(self.desk.jobs[job].subprojects, said, job)
+            self.desk.jobs.pop(job)
+        self.poll(*self.reg)
+        self.enqueue({"job": "js1", "brief": "A key hook.", "subprojects": False})
+        _, w = self.assigned()
+        self.assertIs(w["subprojects"], False)
+
 
 class TestMinerPrompt(unittest.TestCase):
     def test_the_prompt_checks_answers_after_each_step_or_decides_them(self) -> None:
@@ -321,6 +340,11 @@ class TestMinerPrompt(unittest.TestCase):
         self.assertIn('by = "agent", status = "decided"', decide)
         self.assertIn("REJECT needs-client: <the decision's question>", decide)
         self.assertIn('misses = ["<need>"]', decide)
+        one = questions_rule({"subprojects": False}, "ag-1")
+        self.assertIn("NOT allowed for this job", one)
+        self.assertIn("W0233", one)
+        for work in ({}, {"subprojects": True}):
+            self.assertNotIn("sub-projects", questions_rule(work, "ag-1"))
         # an older template (no {questions}) still formats
         old = "{ws} {job}"
         extra = {"questions": "q", "no_questions": "no"}

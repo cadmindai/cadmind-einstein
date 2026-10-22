@@ -341,6 +341,10 @@ class Job:
     no_questions: bool = False
     """the client asked not to be asked questions (an API job always does): the builder decides
     every would-be question itself, and the gate refuses a delivery with a client decision open"""
+    subprojects: bool | None = None
+    """whether the client allows splitting the device into sub-projects (the platform's
+    ``subprojects``); None when the platform did not say. The workspace's brief/job.toml carries it,
+    and Watt refuses a sub-project when it is false (W0233), so the gate's ``watt status`` does"""
     continuation: dict[str, Any] = field(default_factory=dict)
     """a round that continues an unfinished one (DESIGN.md "Continuing an unfinished round"): its
     seed is the unfinished project and ``base`` the operator's workspace of the project's last
@@ -392,6 +396,11 @@ def _gate_summary(kind: str, verdict: Mapping[str, Any]) -> str:
     where = f" (it stopped at Watt's {stage} stage)" if stage and stage != "none" else ""
     detail = error[:1200]
     return f"{head}{where}." + (f" {detail[:1].upper()}{detail[1:]}" if detail else "")
+
+
+def _flag(value: object) -> bool | None:
+    """A platform boolean the job may not carry: True or False as sent, None otherwise."""
+    return value if isinstance(value, bool) else None
 
 
 def _job_from(row: Mapping[str, Any]) -> Job:
@@ -1017,6 +1026,8 @@ class Desk:
                 "deadline_ms": a.deadline_ms,
                 # the client asked not to be asked questions: decide them, leave none open
                 "no_questions": job.no_questions,
+                # whether the client allows sub-projects (brief/job.toml; W0233 if false)
+                **({"subprojects": job.subprojects} if job.subprojects is not None else {}),
                 # a style round: printed shapes only; Watt refuses a change of function (W0220)
                 **({"style": True} if job.style.get("baseline") else {}),
                 # a round continuing an unfinished one: the workspace starts as that project; the
@@ -1295,6 +1306,7 @@ class Desk:
                 # the same job -- its earlier attempts kept as history (the lost one uncounted)
                 old.brief, old.seed, old.effort = brief, seed, effort
                 old.no_questions = body.get("no_questions") is True
+                old.subprojects = _flag(body.get("subprojects"))
                 old.style = _style_of(body.get("style"))
                 old.continuation = _continuation_of(body.get("continuation"))
                 old.state, old.result = "queued", {}
@@ -1332,6 +1344,7 @@ class Desk:
                 created_ms=self.now_ms(),
                 queued_ms=self.now_ms(),
                 no_questions=body.get("no_questions") is True,
+                subprojects=_flag(body.get("subprojects")),
                 style=_style_of(body.get("style")),
                 continuation=_continuation_of(body.get("continuation")),
             )
