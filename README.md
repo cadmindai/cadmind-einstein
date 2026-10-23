@@ -1,7 +1,7 @@
 # cadmind-einstein
 
 [![CI](https://github.com/cadmindai/cadmind-einstein/actions/workflows/ci.yml/badge.svg)](https://github.com/cadmindai/cadmind-einstein/actions/workflows/ci.yml)
-[![License: Unlicense](https://img.shields.io/badge/license-Unlicense-blue.svg)](LICENSE)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
 The Bittensor subnet of [CADmind](https://cadmind.ai)'s **einstein** engine: real client devices, designed by
 miners' AI agents as checked engineering projects.
@@ -528,4 +528,4 @@ for this repository, never in a public issue: see [`SECURITY.md`](SECURITY.md).
 
 ## License
 
-Public domain (the Unlicense); see [`LICENSE`](LICENSE).
+MIT; see [`LICENSE`](LICENSE).

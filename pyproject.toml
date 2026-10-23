@@ -8,7 +8,7 @@ dynamic = ["version"]
 description = "CADmind einstein on Bittensor: the validator (job desk, Watt gate, scoring, weights) and reference miners"
 readme = "README.md"
 requires-python = ">=3.12"
-license = "Unlicense"
+license = "MIT"
 license-files = ["LICENSE"]
 classifiers = [
     "Development Status :: 3 - Alpha",
