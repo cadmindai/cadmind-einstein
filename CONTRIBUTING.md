@@ -37,5 +37,5 @@ Releases are tagged `vMAJOR.MINOR.PATCH` from `main` and published as GitHub rel
 `version_key` the validator sets weights with, so the subnet's `weights_version` hyperparameter can require a minimum
 release.
 
-By contributing you agree that your contribution is released into the public domain under the
-[Unlicense](LICENSE), like the rest of this repository.
+By contributing you agree that your contribution is licensed under the [MIT licence](LICENSE), like the
+rest of this repository.
