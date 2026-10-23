@@ -48,11 +48,17 @@ window -- follows ``genesis``:
 - ``hotkey``: equal per hotkey among them (an earlier rule; a report without ``genesis`` was made
   by it).
 
-**The subnet owner's hotkey is never weighted**: weighting it burns miner emission. **The vector
-is never empty while an admitted miner exists**: an hour whose rules weight nobody sends the last
-non-empty vector again, or, before any, equal shares per coldkey among the admitted, reachable
-miners (under Null consensus an empty vector would spread the miners' emission over every
-registered UID). Nothing is emitted only when no miner is admitted at all.
+**Launch** (the validator's ``--launch-equal-until``): before that time, equal weight per hotkey
+among the admitted, registered, reachable miners -- each one onboarded by hand -- whatever their
+history; from it on, the rules above. Reports carry ``launch_until_ms`` and recompute follows it.
+
+**The subnet owner's hotkey is never weighted**: weighting it burns miner emission. **Only admitted
+hotkeys are ever weighted**, by every rule and fallback: a revoked, disabled or deregistered miner
+is out from the next vector on. **The vector is never empty while an admitted miner exists**: an
+hour whose rules weight nobody sends the last non-empty vector again (its still-admitted hotkeys),
+or, before any, equal shares per coldkey among the admitted, reachable miners (under Null consensus
+an empty vector would spread the miners' emission over every registered UID). Nothing is emitted
+only when no miner is admitted at all.
 
 Every hour a report holds the window's jobs with their facts and signals, and the vector;
 :func:`recompute` rebuilds the scores and the vector from a report alone (``python -m
@@ -70,6 +76,7 @@ import threading
 from collections import defaultdict
 from collections.abc import Iterable, Mapping
 from dataclasses import asdict, dataclass, field
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -227,6 +234,8 @@ def vector(
     coldkeys: Mapping[str, str] | None = None,
     proven: Iterable[str] = (),
     last: Mapping[str, float] | None = None,
+    now_ms: int = 0,
+    launch_until_ms: int = 0,
 ) -> tuple[list[tuple[int, int]], str]:
     """The weights and the rule that made them. Never the subnet owner's hotkey; never burned.
     ``coldkeys`` (hotkey -> coldkey; a hotkey with none stands alone) and ``proven`` (hotkeys with
@@ -236,11 +245,33 @@ def vector(
     Null consensus spreads the miners' emission evenly over every registered UID. So when the
     rules above weight nobody, ``last`` -- the last non-empty vector, hotkey -> weight -- is sent
     again (its hotkeys still registered); before any vector was ever set, equal shares per coldkey
-    among the admitted, reachable miners. Empty only with no admitted miner at all."""
+    among the admitted, reachable miners. Empty only with no admitted miner at all.
+
+    Every rule and every fallback weights ADMITTED hotkeys only (registered, never the owner's):
+    a miner whose admission was dropped -- its key revoked, disabled, deregistered -- is out of the
+    vector from the next one on, its history and the last vector notwithstanding.
+
+    **Launch** (``now_ms < launch_until_ms``): equal weight per hotkey among the admitted,
+    registered, reachable miners (each one onboarded by hand); history and the last vector are
+    ignored; with none reachable, equal among the admitted ones (never empty). From
+    ``launch_until_ms`` on, the rules above apply."""
     if genesis not in GENESIS:
         raise ValueError(f"genesis is one of {GENESIS}")
     adm = {h for h in admitted if h in uid_by_hotkey and h != owner_hotkey}
     live = adm & set(reachable)
+    if launch_until_ms and now_ms < launch_until_ms:
+        until = iso_ms(launch_until_ms)
+        if live:
+            return (
+                sorted((uid_by_hotkey[h], 65_535) for h in live),
+                f"launch: equal among admitted miners until {until}",
+            )
+        if adm:
+            return (
+                sorted((uid_by_hotkey[h], 65_535) for h in adm),
+                f"launch: equal among admitted miners until {until} (none reachable; never empty)",
+            )
+        return [], "no admitted miner: nothing to weight"
 
     def scaled(w: Mapping[str, float]) -> list[tuple[int, int]]:
         top = max(w.values())
@@ -267,7 +298,7 @@ def vector(
     kept = {
         h: float(v)
         for h, v in (last or {}).items()
-        if float(v) > 0 and h in uid_by_hotkey and h != owner_hotkey
+        if float(v) > 0 and h in adm  # still admitted: a revoked miner is never sent again
     }
     if kept:
         return scaled(kept), "kept: the last non-empty vector, sent again (never empty)"
@@ -282,6 +313,23 @@ def vector(
             ),
         )
     return [], "no admitted miner: nothing to weight"
+
+
+def iso_ms(ms: int) -> str:
+    """Epoch milliseconds as an ISO 8601 UTC time (``2026-11-01T00:00:00Z``)."""
+    return (
+        datetime.fromtimestamp(ms / 1000, tz=UTC)
+        .isoformat(timespec="seconds")
+        .replace("+00:00", "Z")
+    )
+
+
+def parse_iso_ms(text: str) -> int:
+    """An ISO 8601 time as epoch milliseconds; a time without a zone is UTC."""
+    t = datetime.fromisoformat(str(text).strip().replace("Z", "+00:00"))
+    if t.tzinfo is None:
+        t = t.replace(tzinfo=UTC)
+    return int(t.timestamp() * 1000)
 
 
 def report_bytes(rep: Mapping[str, Any]) -> bytes:
@@ -443,6 +491,7 @@ class Ledger:
         coldkeys: Mapping[str, str] | None = None,
         proven: Iterable[str] = (),
         votes: Mapping[str, Any] | None = None,
+        launch_until_ms: int = 0,
     ) -> dict[str, Any]:
         """The hour's report, written as its canonical bytes (``hour-N.json``) beside its SHA-256
         (``hour-N.sha256``), both atomically. ``chain`` (the block, our stake share, the weights
@@ -465,6 +514,8 @@ class Ledger:
             coldkeys=cold,
             proven=prov,
             last=last,
+            now_ms=now_ms,
+            launch_until_ms=launch_until_ms,
         )
         hotkey_of = {u: h for h, u in uid_by_hotkey.items()}
         by_hotkey = {hotkey_of[u]: w for u, w in vec if u in hotkey_of}
@@ -480,6 +531,7 @@ class Ledger:
             "admitted": adm,
             "reachable": reach,
             "genesis": genesis,
+            "launch_until_ms": int(launch_until_ms or 0),
             "coldkeys": cold,
             "proven": prov,
             "vector": [list(x) for x in vec],
@@ -553,6 +605,8 @@ def recompute(report: Mapping[str, Any]) -> dict[str, Any]:
         coldkeys=report.get("coldkeys") or {},
         proven=report.get("proven") or (),
         last=report.get("last_vector") or {},
+        now_ms=int(report["at_ms"]),
+        launch_until_ms=int(report.get("launch_until_ms") or 0),
     )
     same = [list(x) for x in vec] == [list(x) for x in report["vector"]]
     return {"vector": vec, "rule": rule, "matches_published": same, "mismatches": mismatches}

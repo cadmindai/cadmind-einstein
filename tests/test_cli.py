@@ -3,6 +3,7 @@ spec version and release check."""
 
 from __future__ import annotations
 
+import contextlib
 import io
 import logging
 import unittest
@@ -74,6 +75,26 @@ class TestDaemonFlags(unittest.TestCase):
         )
         self.assertEqual(wallet_kwargs(a), {})  # bittensor's own defaults
         self.assertFalse(a.logging_debug or a.logging_trace or a.no_version_check)
+
+    def test_onboarding_flags(self) -> None:
+        a = self.parse()
+        self.assertEqual(
+            (a.key_approval, a.admission_effort, a.launch_equal_until), ("manual", "high", "")
+        )
+        a = self.parse(
+            "--key-approval", "auto", "--admission-effort", "max",
+            "--launch-equal-until", "2026-11-01T00:00:00Z",
+        )  # fmt: skip
+        self.assertEqual(
+            (a.key_approval, a.admission_effort, a.launch_equal_until),
+            ("auto", "max", "2026-11-01T00:00:00Z"),
+        )
+        with self.assertRaises(SystemExit), contextlib.redirect_stderr(io.StringIO()):
+            self.parse("--key-approval", "open")
+
+    def test_a_bad_launch_time_stops_the_daemon_before_it_starts(self) -> None:
+        with self.assertRaises(SystemExit), contextlib.redirect_stderr(io.StringIO()):
+            daemon.main([*DAEMON_BASE, "--launch-equal-until", "next week"])
 
     def test_logging_flags(self) -> None:
         self.assertTrue(self.parse("--logging.debug").logging_debug)

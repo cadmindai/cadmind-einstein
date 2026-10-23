@@ -69,6 +69,19 @@ validator: freeze on submit, fork, read Watt's verdict (the gate), copy check, s
   its ceilings (mints, charges) the platform freezes that role's key until it is enabled again; the validator
   stops that role, alerts, re-checks every 5 minutes, and keeps results to return in its store. A deregistered or
   abusive hotkey's key is deleted.
+- **Manual approval** (`--key-approval manual`, the default since 0.4.8). Miners are let in by hand. A registered
+  hotkey that is not approved gets no key: its request is recorded -- hotkey, coldkey, first and last ask, client
+  address, the miner's optional `contact` note -- and answered `202 {"pending": true, ...}`. The operator lists,
+  approves, refuses (with a reason the miner reads) or revokes over Bearer routes (`/v1/operator/...`, the
+  `cadmind-einstein-operator` CLI). Once approved, the same call mints the key. An approval is bound to the
+  hotkey's coldkey: under another coldkey the hotkey asks again. **Revoking** deletes the key (queued and retried,
+  as for a deregistration), drops the admission, ends the job the miner holds without scoring anyone (`revoked`,
+  uncounted) and sends it to another miner; an entry test it holds ends "not admitted" without counting as a
+  failure, and one judged after the revocation admits nobody. Decisions persist in the validator's state
+  (namespace `approval`, one row per hotkey); a pending request of a hotkey that deregistered is dropped. A
+  hotkey that already held a key when the validator moved to manual approval is kept as approved
+  (`by: grandfathered`), so the operator sees it and can revoke it. `--key-approval auto` keeps the self-serve rule:
+  any registered hotkey gets a key.
 
 ## 3. Jobs: one miner each, client briefs only
 
@@ -202,6 +215,14 @@ passing job:   I = 0.5 + 0.3·E + 0.2·T            immediate: passed the gate, 
   *mean*.
 - The vector is proportional to the weight over registered, admitted miners seen in the last 24 hours, and is set
   **every hour**. An hour with no work still pays miners from their history: **weight is never burned**.
+- **Only admitted hotkeys are weighted**, by every rule and every fallback below: a miner whose admission was
+  dropped (its key revoked, disabled, deregistered) is out from the next vector on, whatever its decayed history
+  and whatever the last vector held.
+- **Launch** (`--launch-equal-until <ISO time>`): before that time, equal weight **per hotkey** among the admitted,
+  registered, reachable miners (each one approved by hand and through the entry test), history and the last
+  vector ignored; with none reachable, equal among the admitted ones (never empty). From that time on, the rules
+  below apply with no restart. The report names the rule ("launch: equal among admitted miners until ...") and
+  carries `launch_until_ms`, which `cadmind-recompute` follows.
 - **Genesis** (no admitted miner has history in the window), `--genesis`:
   - `delivered` (default): equal weight **per coldkey** among admitted, registered, reachable miners that have
     delivered at least one scored client job (ever), each coldkey's share split among its hotkeys. Admission is a
@@ -212,7 +233,7 @@ passing job:   I = 0.5 + 0.3·E + 0.2·T            immediate: passed the gate, 
   Each report publishes the rule, the admitted miners' coldkeys and the hotkeys with a delivered job, and
   `cadmind-recompute` follows them (a report without a `genesis` field was made by the `hotkey` rule).
 - **Never an empty vector** (section 10). When the rules above weight nobody, the last non-empty vector is sent
-  again (its hotkeys still registered); before any vector was ever set, equal shares per coldkey among the
+  again (its hotkeys still registered and admitted); before any vector was ever set, equal shares per coldkey among the
   admitted, reachable miners. A vector is empty, and nothing is sent, only when no miner is admitted at all. Each
   report publishes the vector it kept (`last_vector`) and its own (`vector_by_hotkey`).
 - **The subnet owner's hotkey is never weighted** (weighting it would burn miner emission, and the chain scales a
@@ -251,10 +272,13 @@ scratch, throwing the first builder's work away; after two or four tries the job
 
 ## 6. Admission and routing
 
-- **Admission.** Before any client job, a miner passes an entry test: `POST /v1/miners/admission` creates a job
-  assigned to it alone ("make this project deliverable"; Watt's worked example will do), at most once a day.
-  Passing the gate admits it. It proves the miner's agent can drive Watt end to end; it is never scored. Only
-  admitted miners get client jobs and count at genesis.
+- **Admission.** Before any client job, an approved key holder passes an entry test: `POST /v1/miners/admission`
+  creates a job assigned to it alone, at most once a day. It is a real small device built from a client-style
+  brief (`--admission-brief-file`; a generic built-in brief otherwise), at `--admission-effort` (`high` by default)
+  with that effort's deadline. There is no client, so the job carries `no_questions`: the builder decides every
+  open question. It passes only through the client jobs' gate -- deliverable on the validator's own guard run, no
+  unproven must, no client decision left open -- and only when submitted before its deadline. Passing admits the
+  miner; it is never scored. Only admitted miners get client jobs and weight.
 - **Available** = admitted, holds a live key, polled `work` in the last 60 s, holds no job, not blocked, registered.
 - **Router.** A client job goes to the job's previous miner if it is free (a later round of the same project);
   else, 10% of the time, uniformly to a newcomer (fewer than 5 jobs) or a low scorer (quality under half the best),

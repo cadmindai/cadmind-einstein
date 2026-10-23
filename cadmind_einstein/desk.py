@@ -71,6 +71,12 @@ validator's hotkeys are never disabled.
 platform's operator route; retried until the platform takes it), its admission, and its job, which
 goes to another miner without scoring anyone. The subnet owner's and the validator's own
 hotkeys never mine.
+
+**Onboarding** (``key_approval="manual"``, the validator's default). A registered hotkey gets its
+agent key only once the operator approved it (:meth:`approve`); until then its asks are recorded as
+pending (:class:`KeyRequest`, store namespace ``approval``). The operator may refuse a request or
+revoke a key (:meth:`revoke`: key deleted, admission dropped, its job reassigned unscored). An
+approved key holder passes the entry test once (:meth:`admission`) before any job or weight.
 """
 
 from __future__ import annotations
@@ -108,9 +114,10 @@ CATEGORIES = ("not-allowed", "not-capable", "needs-client")
 """What an agent may reject a job as (:meth:`Desk.reject`)."""
 SUBSTANTIVE = ("reject", "gate")
 """attempt kinds that are an opinion on the job (it cannot or should not be done)"""
-UNCOUNTED = ("dereg", "disabled", "stale", "ours", "lost")
+UNCOUNTED = ("dereg", "disabled", "revoked", "stale", "ours", "lost")
 """attempt kinds that do not count toward a job's attempt cap and score nobody: the miner left the
-subnet, or was disabled for abuse while it held the job (``dereg``, ``disabled``); the first
+subnet, was disabled for abuse, or had its key revoked by the operator while it held the job
+(``dereg``, ``disabled``, ``revoked``); the first
 assignment after a cancel was not accepted in time because the miner was still stopping the
 cancelled job (``stale``); the validator could not judge it, on its own side (``ours``); the
 platform took the job back when the validator's lease lapsed (``lost``: its miner may take it
@@ -158,6 +165,18 @@ MINT_PER_HOUR = 40
 platform freezes the validator's key role"""
 MINT_PER_COLDKEY_HOUR = 12
 MINT_FRESH_S = 600.0
+KEY_APPROVAL = ("manual", "auto")
+"""How a registered hotkey gets its agent key (:meth:`Desk.agent_key`): ``manual`` -- only once the
+operator approved it (:meth:`Desk.approve`), its asks recorded as pending until then -- or ``auto``,
+any registered hotkey (the self-serve rule before 0.4.8)."""
+PENDING_RETRY_S = 900
+"""how long a miner whose key request is pending is told to wait before asking again"""
+NOTE_MAX = 300
+"""the miner's contact note on a key request, at most (characters)"""
+REASON_MAX = 500
+"""an operator's reason for a refusal or a revocation, at most (characters)"""
+ADMISSION_EFFORT = "high"
+"""the entry test's effort, and so its deadline (``DEADLINE_S``)"""
 """a hotkey whose live key was minted less than this ago gets no new one"""
 
 
@@ -442,14 +461,51 @@ class Miner:
     minted_ms: int = 0
 
 
-ADMISSION_BRIEF = """Admission to the einstein subnet (no client): make this project deliverable.
+@dataclass
+class KeyRequest:
+    """A hotkey's standing for its agent key under manual approval (``key_approval="manual"``): its
+    asks, recorded while pending, and the operator's decision. Persisted (store namespace
+    ``approval``, one row per hotkey)."""
 
-Any device will do; the simplest is Watt's worked example -- run `watt example`, bring its project
-into this
-workspace (its spec/, src/ and tests/, and its sources fetched into assets/), then `watt test
---mutate` until
-`watt status` says deliverable, and submit. This proves your agent can drive Watt end to end; it is
-not scored.
+    hotkey: str
+    state: str = "pending"
+    """pending | approved | refused | revoked"""
+    coldkey: str = ""
+    """its coldkey at its last ask (from the metagraph; '' when unknown)"""
+    first_ms: int = 0
+    last_ms: int = 0
+    """its first and last ask"""
+    asks: int = 0
+    ip: str = ""
+    """the client address of its last ask"""
+    note: str = ""
+    """the miner's own contact or note, from its last ask that gave one"""
+    decided_ms: int = 0
+    reason: str = ""
+    """a refusal's or a revocation's reason, said to the miner on its next ask"""
+    approved_coldkey: str = ""
+    """the coldkey the approval was given to: a hotkey under another coldkey asks anew"""
+    by: str = ""
+    """operator | grandfathered (held a key before manual approval)"""
+
+
+def _clean(text: Any, limit: int) -> str:
+    """One line of printable text, at most ``limit`` characters (a note or a reason)."""
+    words = " ".join(str(text or "").split())
+    return "".join(ch for ch in words if ch.isprintable())[:limit]
+
+
+ADMISSION_BRIEF = """Entry test to the einstein subnet. There is no client: nobody answers
+questions, so decide every open question yourself and record each decision with its reason.
+
+The device: a small stand that holds a phone upright on a desk, in portrait or in landscape, with a
+way through for its charging cable. It must not tip over when the phone is tapped, and the phone
+must come out with one hand.
+
+Choose the sizes, the material and the way it is made, and state where each figure comes from.
+Make the project deliverable -- `watt status` deliverable, every must proven -- and submit it before
+the deadline. The validator then runs its own guard on it, as on a client's job. The test is not
+scored.
 """
 
 
@@ -462,6 +518,8 @@ class Desk:
         registered: Callable[[], Iterable[str]],
         accept_s: float = 120.0,
         admission_brief: str = ADMISSION_BRIEF,
+        admission_effort: str = ADMISSION_EFFORT,
+        key_approval: str = "auto",
         deadlines: Mapping[str, int] | None = None,
         max_attempts: int = 4,
         max_inflight: int = 8,
@@ -505,6 +563,14 @@ class Desk:
         self.log = log or (lambda _line: None)
         self.admission_brief = admission_brief
         self.accept_s, self.deadlines = accept_s, dict(deadlines or DEADLINE_S)
+        if admission_effort not in self.deadlines:
+            raise ValueError(f"admission_effort is one of {tuple(self.deadlines)}")
+        self.admission_effort = admission_effort
+        if key_approval not in KEY_APPROVAL:
+            raise ValueError(f"key_approval is one of {KEY_APPROVAL}")
+        self.key_approval = key_approval
+        self.approvals: dict[str, KeyRequest] = {}
+        """hotkey -> its key request and the operator's decision (manual approval)"""
         self.max_attempts, self.max_inflight = max_attempts, max_inflight
         self.lease_every_s, self._leased_ms = lease_every_s, 0
         self._lease_lock = threading.Lock()
@@ -580,6 +646,8 @@ class Desk:
             row = asdict(m)
             row["last_seen_ms"] = m.last_seen_ms // 30_000 * 30_000  # a poll is not a write
             yield "miner", m.hotkey, row
+        for r in self.approvals.values():
+            yield "approval", r.hotkey, asdict(r)
         yield (
             "meta",
             "desk",
@@ -632,6 +700,9 @@ class Desk:
         for k, row in self.store.items("miner").items():
             self.miners[k] = Miner(**row)
             self._saved[("miner", k)] = json.dumps(row, sort_keys=True)
+        for k, row in self.store.items("approval").items():
+            self.approvals[k] = KeyRequest(**row)
+            self._saved[("approval", k)] = json.dumps(row, sort_keys=True)
         meta = self.store.get("meta", "desk") or {}
         self.assigned = dict(meta.get("assigned") or {})
         self.rejected = dict(meta.get("rejected") or {})
@@ -669,6 +740,16 @@ class Desk:
         with self._mut():
             for m in self.miners.values():
                 m.job = ""
+                if (m.key_id or m.admitted) and m.hotkey not in self.approvals:
+                    # held a key before manual approval existed: approved as it stands (listed
+                    # with ``by: grandfathered``; the operator may revoke it)
+                    self.approvals[m.hotkey] = KeyRequest(
+                        m.hotkey,
+                        state="approved",
+                        decided_ms=self.now_ms(),
+                        approved_coldkey=self._real_coldkey(m.hotkey),
+                        by="grandfathered",
+                    )
             for job in self.jobs.values():
                 if job.state == "assigning":
                     job.state = "queued"
@@ -773,9 +854,67 @@ class Desk:
         m.last_seen_ms = self.now_ms()
         return m
 
-    def agent_key(self, hotkey: str, x25519_public: bytes) -> dict[str, Any]:
+    def _real_coldkey(self, hotkey: str) -> str:
+        """The hotkey's coldkey from the last metagraph read, '' when unknown."""
+        return str(self._cmap().get(hotkey) or "")
+
+    def approved(self, hotkey: str) -> bool:
+        """Whether ``hotkey`` may hold an agent key: always under ``auto``; under ``manual`` only
+        once the operator approved it (and not since refused or revoked)."""
+        if self.key_approval == "auto":
+            return True
+        r = self.approvals.get(hotkey)
+        return r is not None and r.state == "approved"
+
+    def _ask(self, hotkey: str, *, ip: str, note: str) -> dict[str, Any] | None:
+        """Inside the lock, under manual approval: record this ask. None when the hotkey is
+        approved (its key is minted); a pending answer while it waits; a refusal (403, with the
+        operator's reason) when it was refused or revoked."""
+        now, cold = self.now_ms(), self._real_coldkey(hotkey)
+        r = self.approvals.get(hotkey)
+        if r is None:
+            r = self.approvals[hotkey] = KeyRequest(hotkey, first_ms=now)
+        r.last_ms, r.asks, r.coldkey = now, r.asks + 1, cold
+        r.ip = _clean(ip, 64)
+        if note:
+            r.note = _clean(note, NOTE_MAX)
+        if r.state == "approved" and r.approved_coldkey and cold and cold != r.approved_coldkey:
+            # the approval was given to another owner: this one asks anew
+            r.state, r.decided_ms, r.reason, r.by = "pending", 0, "", ""
+            self.log(f"key request: {hotkey} now under another coldkey: pending again")
+        if r.state == "approved":
+            if not r.approved_coldkey:
+                r.approved_coldkey = cold
+            return None
+        if r.state == "refused":
+            raise DeskError(f"your key request was refused: {r.reason}", 403)
+        if r.state == "revoked":
+            raise DeskError(f"your agent key was revoked: {r.reason}", 403)
+        if r.asks == 1:
+            self.log(f"key request: {hotkey} asks for an agent key (pending approval)")
+        return {
+            "pending": True,
+            "message": (
+                "Your request for an agent key is recorded and waits for the subnet team's "
+                "approval. Ask again later with the same call: once approved, it answers your "
+                "key. Then pass the entry test once (POST /v1/miners/admission) before any job "
+                "or weight."
+            ),
+            "retry_after_s": PENDING_RETRY_S,
+            "first_ms": r.first_ms,
+        }
+
+    def agent_key(
+        self, hotkey: str, x25519_public: bytes, *, ip: str = "", note: str = ""
+    ) -> dict[str, Any]:
         """Mint (or rotate) the miner's hotkey-bound agent key and answer it sealed to the
         miner's ephemeral key.
+
+        **Manual approval** (``key_approval="manual"``): a hotkey the operator has not approved
+        gets no key; its ask is recorded (hotkey, coldkey, first and last ask, client address
+        ``ip`` and the miner's ``note``) and answered ``{"pending": true, ...}``; a refused or
+        revoked hotkey is refused (403) with the operator's reason. Once approved, the same call
+        mints as below.
 
         Checked before the platform is asked: the public key must be a valid X25519 key; a hotkey
         whose live key was minted less than ``mint_fresh_s`` ago gets none (it uses that one); and
@@ -789,6 +928,11 @@ class Desk:
             now = self.now_ms()
             if m.blocked_until_ms > now:
                 raise DeskError("this hotkey's key is disabled for now", 403)
+            if self.key_approval == "manual":
+                with self._mut():
+                    pending = self._ask(hotkey, ip=ip, note=note)
+                if pending is not None:
+                    return pending
             if m.key_id and m.minted_ms and now - m.minted_ms < self.mint_fresh_s * 1000:
                 raise DeskError("your key was just minted; use it", 429)
             cold = self.coldkey(hotkey)
@@ -813,6 +957,9 @@ class Desk:
             if hotkey not in set(self.registered()):  # deregistered while the key was minted
                 self._queue_revoke(hotkey)
                 raise DeskError("hotkey is not registered on the subnet", 403)
+            if not self.approved(hotkey):  # revoked while the key was minted
+                self._queue_revoke(hotkey)
+                raise DeskError("your agent key was revoked", 403)
             m.key_id = str(made["key_id"])
             m.minted_ms = self.now_ms()
             if hotkey in self._revoke:
@@ -1009,9 +1156,123 @@ class Desk:
                     self._fail(job, a, "the miner deregistered", kind="dereg")
                 elif job is None or job.state != "judging":
                     m.job = ""
+            # a pending key request of a hotkey that left is dropped (it asks again if it comes
+            # back); a decision (approved, refused, revoked) is kept: a hotkey keeps its coldkey
+            for hk in [h for h, r in self.approvals.items() if r.state == "pending"]:
+                if hk not in reg:
+                    del self.approvals[hk]
         if gone:
             self._spawn(self._revoke_keys)
         return gone
+
+    # -- manual key approval (the operator) --------------------------------------------------------
+
+    def key_requests(self, state: str = "pending") -> list[dict[str, Any]]:
+        """The key requests in ``state`` (pending | approved | refused | revoked | all), oldest ask
+        first, each with whether the hotkey holds a key now, is admitted and is registered."""
+        if state not in ("pending", "approved", "refused", "revoked", "all"):
+            raise DeskError("state is pending, approved, refused, revoked or all")
+        reg = set(self.registered())
+        with self._lock:
+            rows = []
+            for r in sorted(self.approvals.values(), key=lambda r: (r.first_ms, r.hotkey)):
+                if state != "all" and r.state != state:
+                    continue
+                m = self.miners.get(r.hotkey)
+                rows.append(
+                    {
+                        **asdict(r),
+                        "registered": r.hotkey in reg,
+                        "keyed": bool(m and m.key_id),
+                        "admitted": bool(m and m.admitted),
+                    }
+                )
+            return rows
+
+    def _request(self, hotkey: str) -> KeyRequest:
+        """Inside the lock: the hotkey's request, made for a registered hotkey that never asked (an
+        operator may decide before the ask)."""
+        hotkey = str(hotkey or "").strip()
+        if not hotkey:
+            raise DeskError("hotkey required")
+        if hotkey in self.excluded:
+            raise DeskError("the subnet owner's and the validator's hotkeys do not mine")
+        r = self.approvals.get(hotkey)
+        if r is None:
+            if hotkey not in set(self.registered()):
+                raise DeskError("no key request from this hotkey, and it is not registered", 404)
+            r = self.approvals[hotkey] = KeyRequest(hotkey)
+        return r
+
+    def approve(self, hotkey: str) -> dict[str, Any]:
+        """The operator approves ``hotkey``: its next ``agent_key`` call mints its key. The
+        approval is bound to its coldkey now (or at its first mint, when unknown yet). It still
+        passes the entry test before any job or weight."""
+        with self._mut():
+            r = self._request(hotkey)
+            r.state, r.reason, r.decided_ms, r.by = "approved", "", self.now_ms(), "operator"
+            r.approved_coldkey = self._real_coldkey(r.hotkey) or r.coldkey
+            self.log(f"key request: {r.hotkey} approved by the operator")
+            return asdict(r)
+
+    def refuse(self, hotkey: str, reason: str) -> dict[str, Any]:
+        """The operator refuses ``hotkey``'s request; the miner reads ``reason`` on its next ask.
+        A hotkey that holds a key or an admission is revoked instead (:meth:`revoke`)."""
+        why = _clean(reason, REASON_MAX)
+        if not why:
+            raise DeskError("a refusal says why, for the miner")
+        with self._mut():
+            r = self._request(hotkey)
+            m = self.miners.get(r.hotkey)
+            if m is not None and (m.key_id or m.admitted):
+                raise DeskError("this hotkey holds a key or an admission: revoke it", 409)
+            r.state, r.reason, r.decided_ms, r.by = "refused", why, self.now_ms(), "operator"
+            self.log(f"key request: {r.hotkey} refused by the operator: {why}")
+            return asdict(r)
+
+    def revoke(self, hotkey: str, reason: str) -> dict[str, Any]:
+        """The operator revokes ``hotkey``: its key is deleted on the platform (queued and retried,
+        as for a deregistration), its admission dropped, and the job it holds ends for it without
+        scoring anyone (``revoked``, uncounted) and goes to another miner; an entry test it holds
+        or waits for ends "not admitted" (not counted as a failed test). It is out of the weight
+        vector from the next one on. It gets no key until approved again, and then takes the entry
+        test again (at once: the daily limit restarts)."""
+        why = _clean(reason, REASON_MAX)
+        if not why:
+            raise DeskError("a revocation says why, for the miner")
+        with self._mut():
+            r = self._request(hotkey)
+            r.state, r.reason, r.decided_ms, r.by = "revoked", why, self.now_ms(), "operator"
+            m = self.miners.get(r.hotkey)
+            freed = ""
+            if m is not None:
+                m.key_id, m.admitted, m.admission_ms, m.minted_ms = "", False, 0, 0
+                freed = self._free_job(m, "the operator revoked the miner's key", "revoked")
+            self._queue_revoke(r.hotkey)
+            for job in self.jobs.values():
+                if job.kind == "admission" and job.target == r.hotkey and job.state == "queued":
+                    job.state = "done"
+                    job.result = {"label": "not admitted", "charge": False, "why": "revoked"}
+            self.log(f"key revoked by the operator: {r.hotkey}: {why}")
+            out = asdict(r)
+            out["freed_job"] = freed
+        self._spawn(self._revoke_keys)
+        return out
+
+    def _free_job(self, m: Miner, why: str, kind: str) -> str:
+        """Inside a mutation: the job ``m`` holds ends for it without scoring anyone (``kind``,
+        uncounted) and goes back to the queue for another miner (the way a deregistration does); a
+        grant still being made is dropped by :meth:`_assign`; a verdict being reached at its
+        deadline releases it. Answers the job's id ('' when it held none)."""
+        job = self.jobs.get(m.job)
+        a = job.current if job else None
+        held = m.job
+        if job is not None and a is not None and a.hotkey == m.hotkey:
+            self._spawn(self._freeze_quietly, a.workspace)
+            self._fail(job, a, why, kind=kind)
+        elif job is None or job.state != "judging":
+            m.job = ""
+        return held
 
     def _freeze_quietly(self, ws: str) -> None:
         with contextlib.suppress(PlatformError):
@@ -1363,12 +1624,17 @@ class Desk:
         return self.status(job_id)
 
     def admission(self, hotkey: str) -> dict[str, Any]:
-        """A miner's entry test: a job assigned to it alone (the worked example will do), once a
-        day. Passing the
-        Watt gate admits it; only admitted miners get client jobs, and only they count at
-        genesis."""
+        """A miner's entry test: a job assigned to it alone, once a day -- a small device from a
+        client-style brief (``admission_brief``), at ``admission_effort`` with that effort's
+        deadline, and with no client to ask (``no_questions``: the builder decides every open
+        question). It passes only through the client jobs' gate (:meth:`_gate`: deliverable on the
+        validator's own guard run, no unproven must; and :meth:`_answers_gate`: no client decision
+        left open), submitted before its deadline. Passing admits the miner; only admitted miners
+        get client jobs and weight. Under manual approval only an approved key holder may ask."""
         with self._mut():
             m = self._miner(hotkey)
+            if not self.approved(hotkey):
+                raise DeskError("your agent key is not approved yet: ask for it first", 403)
             if not m.key_id:
                 raise DeskError("ask for your agent key first")
             if m.admitted:
@@ -1386,8 +1652,9 @@ class Desk:
             self.jobs[job_id] = Job(
                 job=job_id,
                 brief=self.admission_brief,
-                effort="low",
+                effort=self.admission_effort,
                 kind="admission",
+                no_questions=True,
                 target=hotkey,
                 created_ms=now,
                 queued_ms=now,
@@ -1498,7 +1765,9 @@ class Desk:
 
     def admitted(self) -> list[str]:
         with self._lock:
-            return [m.hotkey for m in self.miners.values() if m.admitted]
+            return [
+                m.hotkey for m in self.miners.values() if m.admitted and self.approved(m.hotkey)
+            ]
 
     def reachable(self, within_s: float = 86_400.0) -> list[str]:
         now = self.now_ms()
@@ -2425,7 +2694,8 @@ class Desk:
             verdict = self._gate(fork, job, a)
             if verdict["deliverable"]:
                 export = self.platform.export(fork)
-                if job.kind == "client":
+                if job.kind in ("client", "admission"):
+                    # an entry test has no client: no_questions, so no client decision left open
                     kept_open = self._settled_open(job)
                     verdict = self._read_export(
                         verdict, lambda: self._answers_gate(job, a, verdict, export, kept_open)
@@ -2524,8 +2794,26 @@ class Desk:
                 outcome.copy_of = str(copy["job"]) if copy else ""
                 if copy:
                     self.copied[a.hotkey] = self.copied.get(a.hotkey, 0) + 1
+            if job.kind == "admission" and verdict["deliverable"] and not on_time:
+                verdict = {
+                    **verdict,
+                    "deliverable": False,
+                    "error": "the entry test was not submitted before its deadline",
+                }
+            m = self.miners.get(a.hotkey)
+            if (
+                job.kind == "admission"
+                and verdict["deliverable"]
+                and (m is None or not m.key_id or not self.approved(a.hotkey))
+            ):
+                # its key was revoked (or it deregistered) while the test was judged
+                self._release(a.hotkey, job.job)
+                self._drop_gate(job.job, a)
+                a.outcome, a.kind = "the miner's key was revoked while it was judged", "revoked"
+                job.state = "done"
+                job.result = {"label": "not admitted", "charge": False, "why": "revoked"}
+                return
             if job.kind == "admission" and verdict["deliverable"]:
-                m = self.miners.get(a.hotkey)
                 if m is not None:
                     m.admitted = True
                 a.outcome, a.kind = "admitted", "pass"

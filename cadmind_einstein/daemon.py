@@ -36,6 +36,14 @@ Second opinions (``--second-opinion-*``, :class:`~.desk.SecondOpinion`): a rejec
 goes to another coldkey (``--second-opinion-wait-s`` 1800 before any other miner may take it), and
 only ``--second-opinion-coldkeys`` (2) distinct coldkeys end it declined or out of reach. Genesis
 (``--genesis``, :func:`~.scoring.vector`): ``delivered`` (default), ``coldkey`` or ``hotkey``.
+``--launch-equal-until ISO_TIME``: until then, equal weight per admitted, registered, reachable
+hotkey (the hourly report names the rule); after it, the usual rules, with no restart.
+
+Onboarding (``--key-approval``, default ``manual``): a registered hotkey's agent key request is
+recorded as pending until the operator approves it (``cadmind-einstein-operator``, over the
+Bearer routes ``/v1/operator/...``); ``auto`` keeps the self-serve rule. An approved key holder
+passes the entry test once (``--admission-brief-file``, ``--admission-effort``, default high, with
+that effort's deadline) before any job or weight.
 Every answer on a miner's route is signed with the validator's hotkey.
 
 The platform's operator credential is split by role (:mod:`.platform`): ``--operator-key-file``
@@ -89,10 +97,13 @@ from .cli import (
     wallet_kwargs,
 )
 from .desk import (
+    ADMISSION_EFFORT,
     CANCEL_COOLOFF_S,
+    DEADLINE_S,
     GATE_RUN_S,
     JUDGE_GIVE_UP_S,
     JUDGE_MAX_RETRIES,
+    KEY_APPROVAL,
     MINT_PER_COLDKEY_HOUR,
     MINT_PER_HOUR,
     AbusePolicy,
@@ -101,7 +112,7 @@ from .desk import (
 )
 from .models import Prices, Spend, model_from
 from .platform import OperatorClient, PlatformError
-from .scoring import GENESIS, HOUR_MS, WINDOW_H, Ledger
+from .scoring import GENESIS, HOUR_MS, WINDOW_H, Ledger, iso_ms, parse_iso_ms
 from .service import serve
 from .similarity import CopyPolicy, load_corpus
 from .stats import MinerStats
@@ -175,6 +186,26 @@ def parser() -> argparse.ArgumentParser:
     ap.add_argument("--sync-s", type=float, default=300.0, help="metagraph re-read interval")
     ap.add_argument(
         "--admission-brief-file", type=Path, help="the entry test's brief (default: built in)"
+    )
+    ap.add_argument(
+        "--admission-effort",
+        choices=tuple(DEADLINE_S),
+        default=ADMISSION_EFFORT,
+        help="the entry test's effort, and so its deadline (default: high)",
+    )
+    ap.add_argument(
+        "--key-approval",
+        choices=KEY_APPROVAL,
+        default="manual",
+        help="manual (default): a registered hotkey gets its agent key only once the operator"
+        " approved it (cadmind-einstein-operator); auto: any registered hotkey (self-serve)",
+    )
+    ap.add_argument(
+        "--launch-equal-until",
+        default="",
+        metavar="ISO_TIME",
+        help="before this time (ISO 8601, UTC unless it names a zone), equal weight per admitted,"
+        " registered, reachable hotkey, whatever its history; after it, the usual rules",
     )
     ap.add_argument("--abuse-copies", type=int, default=AbusePolicy.copies, help="0: off")
     ap.add_argument("--abuse-suspensions", type=int, default=AbusePolicy.suspensions, help="0: off")
@@ -323,7 +354,14 @@ def version_watch(say: Callable[[str], None], every_s: float = 86400.0) -> None:
 
 
 def main(argv: list[str] | None = None) -> int:
-    a = parser().parse_args(argv)
+    ap = parser()
+    a = ap.parse_args(argv)
+    launch_until_ms = 0
+    if a.launch_equal_until:
+        try:
+            launch_until_ms = parse_iso_ms(a.launch_equal_until)
+        except ValueError:
+            ap.error(f"--launch-equal-until is an ISO 8601 time, not {a.launch_equal_until!r}")
     setup_logging(a, prefix="[cadmind-einstein]")
     _log(f"cadmind-einstein {__version__} (spec {__spec_version__})")
     if not a.no_version_check:
@@ -424,7 +462,18 @@ def main(argv: list[str] | None = None) -> int:
         judge_give_up_s=a.judge_give_up_s,
         mint_per_hour=a.mint_per_hour,
         mint_per_coldkey_hour=a.mint_per_coldkey_hour,
+        admission_effort=a.admission_effort,
+        key_approval=a.key_approval,
         **extra,
+    )
+    _log(
+        f"onboarding: key approval {a.key_approval}; entry test at {a.admission_effort} effort"
+        + (" (brief from file)" if a.admission_brief_file else " (built-in brief)")
+        + (
+            f"; launch: equal among admitted miners until {iso_ms(launch_until_ms)}"
+            if launch_until_ms
+            else ""
+        )
     )
 
     reviewer = None
@@ -529,6 +578,7 @@ def main(argv: list[str] | None = None) -> int:
             coldkeys=chain.state.coldkey_by_hotkey,
             proven=desk.proven(),
             votes=votes,
+            launch_until_ms=launch_until_ms,
         )
         desk.clear_watch(len(watch["copy_pairs"]))
         try:

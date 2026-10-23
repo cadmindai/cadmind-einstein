@@ -138,7 +138,7 @@ commercial use). An efficient harness -- fewer, better model calls and less Watt
 | Document | For |
 |---|---|
 | [`DESIGN.md`](DESIGN.md) | how einstein works and why: jobs, the gate, reassignment, scoring, weights, abuse, auditability |
-| [`docs/MINER.md`](docs/MINER.md) | miners: registering, the sealed agent key, admission, the job protocol, scoring, your stats, copying, running an agent |
+| [`docs/MINER.md`](docs/MINER.md) | miners: registering, the sealed agent key and its approval, the entry test, the job protocol, scoring, your stats, copying, running an agent |
 | [`docs/VALIDATOR.md`](docs/VALIDATOR.md) | validators: staking, the review bundle, the rubric and its prompt, the vote protocol, cost, calibration |
 | [`CHANGELOG.md`](CHANGELOG.md) | what changed in each release |
 | [`CONTRIBUTING.md`](CONTRIBUTING.md) | development setup and pull requests |
@@ -208,6 +208,14 @@ cadmind-einstein --state-dir ~/.local/share/cadmind-einstein \
   `--copy-corpus PATH`, repeatable: public example projects whose features never count as evidence);
   `--second-opinion-coldkeys` (2) and `--second-opinion-wait-s` (1800) the second-opinion rule; `--genesis`
   (`delivered`, `coldkey` or `hotkey`) who is weighted before anyone has history.
+- **Onboarding.** `--key-approval` (`manual` by default): a registered hotkey's key request waits as *pending*
+  until you approve it with `cadmind-einstein-operator` (below); `auto` keeps the self-serve key. An approved key
+  holder passes the entry test once before any job or weight: `--admission-brief-file` (a client-style brief for a
+  small device; a generic built-in one otherwise) at `--admission-effort` (`high` by default, with that effort's
+  deadline), with no client questions, through the same gate as a client job.
+- **Launch.** `--launch-equal-until 2026-11-01T00:00:00Z`: until then, equal weight per admitted, registered,
+  reachable hotkey, whatever its history (the report's rule says "launch: equal among admitted miners until ...");
+  after it, the usual rules, with no restart.
 - `--gate-run-s` (1800) bounds one validator guard run (past it the run is stopped and counted as a gate timeout;
   two fail the attempt); `--judge-max-retries` (20) and `--judge-give-up-s` (14400) bound the retries of a judgement
   that fails on the validator's side, after which the job ends "didn't finish", not charged; `--cancel-cooloff-s`
@@ -225,6 +233,22 @@ cadmind-einstein --state-dir ~/.local/share/cadmind-einstein \
   (`medium`), `--review-daily-usd` (10; an ALERT when reached) and `--review-usd-per-mtok-in/out/cached` (the
   provider's prices, for the cap). Without `--review-model` deliveries are queued, not reviewed.
 
+### Approving miners
+
+```bash
+cadmind-einstein-operator --validator http://127.0.0.1:8793 --token-file ~/.config/cadmind-einstein/desk.token \
+    pending
+cadmind-einstein-operator ... approve MINER_SS58
+cadmind-einstein-operator ... refuse MINER_SS58 --reason "words the miner reads"
+cadmind-einstein-operator ... revoke MINER_SS58 --reason "words the miner reads"
+```
+
+`pending` lists the requests (hotkey, coldkey, first and last ask, address, the miner's note; `--state all` lists
+every decision too). `approve` lets the hotkey's next key request mint its key; `refuse` answers its asks with the
+reason; `revoke` deletes its key, drops its admission, sends the job it holds to another miner without scoring
+anyone, and takes it out of the next weight vector. A revoked hotkey approved again takes the entry test again.
+Approvals are kept in the validator's state. The token is read from its file (0600) and never printed.
+
 A local stack needs no chain: `--dev-uri //Validator --metagraph-file hotkeys.json` (a JSON list of hotkeys, or
 `{"neurons": [...], "owner_hotkey": ..., "hyper": {...}}`) runs with a development key and is always a dry run.
 
@@ -240,7 +264,8 @@ cadmind-einstein-miner --wallet.name MINER_WALLET --wallet.hotkey MINER_HOTKEY_N
     [--agent-cli claude] [--model MODEL] [--agent-command '...']
 ```
 
-It asks for its sealed agent key, takes the admission test, then polls for jobs and runs your agent CLI on each,
+It asks for its sealed agent key (and, until the subnet team approves the hotkey, waits and asks again; pass
+`--contact` with a short note on how to reach you), takes the entry test once, then polls for jobs and runs your agent CLI on each,
 restricted to the Watt MCP server and one local tool, `fetch_to_workspace`, which downloads a source from your own
 connection (many sites refuse the platform's address) and uploads it into the job's workspace
 (`cadmind_einstein/fetch_mcp.py`; fenced to public http(s) addresses, 20 s and 8 MB a download; `--no-local-fetch`
@@ -343,8 +368,8 @@ Every answer on these routes is signed by the validator's hotkey (`X-Einstein-Va
 
 | Route | Body | Answer |
 |---|---|---|
-| `POST /v1/miners/agent_key` | `{x25519_public}` | `{key_id, sealed}`: the hotkey-bound agent key, sealed to that X25519 key (rate-limited) |
-| `POST /v1/miners/admission` | `{}` | the entry test: a job assigned to this miner alone (once a day) |
+| `POST /v1/miners/agent_key` | `{x25519_public, contact?}` | `{key_id, sealed}`: the hotkey-bound agent key, sealed to that X25519 key (rate-limited); `202 {pending: true, message, retry_after_s}` until the subnet team approves the hotkey; 403 with the reason when refused or revoked |
+| `POST /v1/miners/admission` | `{}` | the entry test (approved key holders only): a small device from a client-style brief, assigned to this miner alone, no client questions, the client jobs' gate, within its deadline (once a day) |
 | `POST /v1/jobs/work` | `{}` | `{job, workspace, brief, effort, accepted, accept_by_ms, deadline_ms, no_questions, subprojects?}` or `{job: null}`, plus `cancelled: <job>` when the client cancelled the miner's last job; also the liveness poll |
 | `POST /v1/jobs/accept` | `{job}` | `{job, workspace, deadline_ms}`; 410 for a job its client cancelled (also `submit` and `reject`) |
 | `POST /v1/jobs/submit` | `{job, workspace, digest, summary?}` | `{job, state: "judging"}` |
@@ -364,6 +389,10 @@ Every answer on these routes is signed by the validator's hotkey (`X-Einstein-Va
 | `GET /v1/scores` | scores, weights, quality, miners, rejection telemetry |
 | `GET /v1/chain` | the validator's stake share, `kappa`, the weights path |
 | `POST /v1/weights/close` | close the hour now (dry runs, tests) |
+| `GET /v1/operator/key_requests?state=pending` | key requests (`pending`, `approved`, `refused`, `revoked` or `all`) |
+| `POST /v1/operator/approve {hotkey}` | approve a hotkey's key request |
+| `POST /v1/operator/refuse {hotkey, reason}` | refuse it; the miner reads the reason |
+| `POST /v1/operator/revoke {hotkey, reason}` | delete its key, drop its admission, reassign its job unscored |
 
 ### Public routes (no auth)
 
@@ -412,7 +441,9 @@ s = 0.4·I + 0.6·(w·C + (1 - w)·B)       the client's reaction C, weighted by
 where `E` compares the job's compute and wall time with the median of similar passing jobs, and `C`/`w` come from
 the client's stars, download, re-run, change request or quality refund (one star), weighted by account trust
 (paid 1, free 0.1). The vote counts with `u = 0.4`, so a client's stars clearly dominate it; in shadow (`u = 0`) an unrated job scores exactly `I`. A miner's weight is the sum of its job scores decayed with a 24-hour half-life (7-day
-window); the hourly vector is proportional to it over registered, admitted, recently seen miners. Weight is never
+window); the hourly vector is proportional to it over registered, admitted, recently seen miners (at the mainnet
+launch, until `--launch-equal-until`, it is equal per admitted hotkey instead). Only admitted miners are ever
+weighted, by every rule and fallback. Weight is never
 burned and the subnet owner's hotkey is never weighted; at genesis (nobody has history) the weight is split
 equally per coldkey among admitted miners that have delivered a scored client job. The vector is **never empty**
 while a miner is admitted (under Null consensus an empty one spreads emission over every UID): the last non-empty
@@ -479,6 +510,7 @@ signature and value, and compares the newest report's hash with the validator's 
 | `cadmind_einstein/fetch_mcp.py` | `cadmind-einstein-fetch-mcp`: the miner's local fetch tool (stdio MCP), a fenced download uploaded to the job workspace |
 | `cadmind_einstein/cli.py` | the shared Bittensor-style flags and logging setup |
 | `cadmind_einstein/version.py` | the spec version and the release check |
+| `cadmind_einstein/onboarding.py` | `cadmind-einstein-operator`: list, approve, refuse and revoke miners' key requests |
 | `cadmind_einstein/fake_miner.py` | `cadmind-einstein-fake-miner`: scripted miner (no model) for local end-to-end runs |
 | `deploy/` | systemd units (validator, miner, opt-in updater), an nginx TLS front, pm2 and Docker Compose examples |
 | `scripts/auto_update.sh` | the opt-in updater |

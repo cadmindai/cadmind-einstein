@@ -7,6 +7,45 @@ All notable changes to this project are listed here. The format follows
 
 ## [Unreleased]
 
+## [0.4.8] - unreleased
+
+### Added
+- **Manual miner onboarding** (`--key-approval manual`, the new default; `auto` keeps the self-serve key). A
+  registered hotkey that the subnet team has not approved gets no agent key: `POST /v1/miners/agent_key` records
+  the request (hotkey, coldkey, first and last ask, client address, and an optional `contact` note from the miner)
+  and answers `202 {"pending": true, "message", "retry_after_s"}`. Once approved, the same call mints the sealed key
+  as before. A refused or revoked hotkey is answered 403 with the team's reason. An approval is bound to the
+  hotkey's coldkey. Decisions persist in the validator's state (namespace `approval`); a pending request of a
+  hotkey that deregistered is dropped; a hotkey that already held a key when the validator moved to manual
+  approval is kept as approved (`by: grandfathered`).
+- **Operator routes and CLI.** `GET /v1/operator/key_requests?state=...`, `POST /v1/operator/approve {hotkey}`,
+  `POST /v1/operator/refuse {hotkey, reason}`, `POST /v1/operator/revoke {hotkey, reason}` (Bearer), and
+  `cadmind-einstein-operator pending|approve|refuse|revoke` over them (the token read from a 0600 file, never
+  printed). Revoking deletes the key, drops the admission, ends the miner's job for it without scoring anyone
+  (`revoked`, uncounted) and sends it to another miner; a revoked hotkey approved again takes the entry test again.
+- **Launch-equal weights** (`--launch-equal-until <ISO time>`). Until then, equal weight per admitted, registered,
+  reachable hotkey, history ignored, never the owner's, never empty while a miner is admitted; after it, the usual
+  rules, with no restart. The report names the rule ("launch: equal among admitted miners until ...") and carries
+  `launch_until_ms`, which `cadmind-recompute` follows.
+- **A real entry test.** `--admission-effort` (`high` by default) sets the entry test's effort and so its deadline.
+  The entry test carries `no_questions` (no client to ask: the builder decides every open question), passes only
+  through the client jobs' gate (the validator's own guard run, no unproven must, and the client-answers check: no
+  client decision left open), and only when submitted before its deadline. The built-in brief is now a generic
+  small device instead of "bring in Watt's worked example"; deployments pass their own with
+  `--admission-brief-file`. Still once a day.
+- The reference miners wait while their key request is pending and ask again (`--contact` sends a note).
+
+### Changed
+- **Only approved key holders take the entry test**, and only admitted miners are weighted under every rule and
+  fallback.
+
+### Fixed
+- **The "kept" fallback re-sent hotkeys no longer admitted.** When the rules weighted nobody, the last non-empty
+  vector was sent again for every hotkey still registered, so a revoked, disabled or deregistered-and-returned
+  miner kept its share. It now keeps only the hotkeys still admitted.
+
+## [0.4.7] - unreleased
+
 ### Fixed
 - **A gate refusal names every must the validator's guard refused.** Besides the survivors' `unguarded` musts, the
   words now name the musts whose per-requirement guard verdict is `unproven` (W0825), `read` or `excused`, which

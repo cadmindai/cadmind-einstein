@@ -3,7 +3,10 @@
 Miners (``btauth/1``, signed by the miner's hotkey and addressed to the validator's; registered on
 the metagraph):
 
-- ``POST /v1/miners/agent_key {x25519_public}`` -- the hotkey-bound agent key, sealed to that key;
+- ``POST /v1/miners/agent_key {x25519_public, contact?}`` -- the hotkey-bound agent key, sealed to
+  that key; under manual approval (the default) a hotkey the operator has not approved gets ``202
+  {"pending": true, "message", "retry_after_s"}`` instead (its ask recorded, with ``contact``, an
+  optional note for the operator), and a refused or revoked one 403 with the operator's reason;
 - ``POST /v1/jobs/work`` -- the miner's assignment, if any (poll every few seconds: it is also how
   the validator knows the miner is alive), and ``cancelled``: the id of its last job when the
   client cancelled it (stop working on it; said until the miner accepts another job);
@@ -23,7 +26,11 @@ median job time: the platform's single queue computes positions and ETAs), ``POS
 download, stars or change request), ``GET /v1/jobs/{job}``, ``GET /v1/scores``,
 ``POST /v1/weights/close`` (the hour's report now: dry runs), ``GET /v1/chain`` (our stake
 share, kappa, the weights path), ``GET /v1/stats/miners?hotkeys=a,b`` (the stats of up to 20
-hotkeys: the platform's miner dashboard). Jobs are not posted here: the validator CLAIMS them
+hotkeys: the platform's miner dashboard). Onboarding (the operator; ``cadmind-einstein-operator``):
+``GET /v1/operator/key_requests?state=pending|approved|refused|revoked|all``, ``POST
+/v1/operator/approve {hotkey}``, ``POST /v1/operator/refuse {hotkey, reason}`` and ``POST
+/v1/operator/revoke {hotkey, reason}`` (the key deleted, the admission dropped, its job sent to
+another miner unscored). Jobs are not posted here: the validator CLAIMS them
 from the platform's queue when it has a free admitted miner (``platform.claim``).
 
 Public (no auth): ``GET /v1/reports`` (every hourly report's name and SHA-256, and the block its
@@ -78,7 +85,14 @@ MAX_BODY = 4 * 1024 * 1024
 REPORT = re.compile(r"^hour-(\d{1,12})(?:-\d{1,6})?\.(json|sha256)$")
 SIGNED = ("/v1/miners/", "/v1/jobs/")
 """routes a miner signs (``btauth/1``)"""
-BEARER = ("/v1/cancel", "/v1/signals", "/v1/weights/close")
+BEARER = (
+    "/v1/cancel",
+    "/v1/signals",
+    "/v1/weights/close",
+    "/v1/operator/approve",
+    "/v1/operator/refuse",
+    "/v1/operator/revoke",
+)
 """POST routes for the platform and the operator"""
 MAX_STATS_HOTKEYS = 20
 SIGNATURE_HEADERS = ("X-Bittensor-Hotkey", "X-Bittensor-Nonce", "X-Bittensor-Signature")
@@ -470,6 +484,13 @@ def serve(
             try:
                 if self.path == "/v1/chain" and chain_info is not None:
                     self._send(200, dict(chain_info()))
+                elif self.path.startswith("/v1/operator/key_requests"):
+                    _, _, query = self.path.partition("?")
+                    state = dict(parse_qsl(query)).get("state", "pending")
+                    self._send(
+                        200,
+                        {"key_approval": desk.key_approval, "requests": desk.key_requests(state)},
+                    )
                 elif self.path == "/v1/capacity":
                     self._send(200, desk.capacity())
                 elif self.path.startswith("/v1/jobs/"):
@@ -574,7 +595,14 @@ def serve(
                         if not key_by_hotkey.allow(hk):
                             self._send(429, {"error": "too many agent key requests: retry later"})
                             return
-                        self._send(200, desk.agent_key(hk, pub))
+                        got = desk.agent_key(
+                            hk,
+                            pub,
+                            ip=self._client_ip(),
+                            note=str(body.get("contact") or body.get("note") or ""),
+                        )
+                        # pending the operator's approval: recorded, no key yet
+                        self._send(202 if got.get("pending") else 200, got)
                     elif self.path == "/v1/jobs/work":
                         self._send(200, desk.work(hk))
                     elif self.path == "/v1/jobs/accept":
@@ -630,6 +658,14 @@ def serve(
                     self._send(200, desk.signal(str(body.get("job") or ""), body))
                 elif self.path == "/v1/weights/close":
                     self._send(200, dict(close_hour() or {"closed": False}))
+                elif self.path == "/v1/operator/approve":
+                    self._send(200, desk.approve(str(body.get("hotkey") or "")))
+                elif self.path == "/v1/operator/refuse":
+                    hk = str(body.get("hotkey") or "")
+                    self._send(200, desk.refuse(hk, str(body.get("reason") or "")))
+                elif self.path == "/v1/operator/revoke":
+                    hk = str(body.get("hotkey") or "")
+                    self._send(200, desk.revoke(hk, str(body.get("reason") or "")))
                 else:
                     self._send(404, {"error": "no such route"})
             except DeskError as e:

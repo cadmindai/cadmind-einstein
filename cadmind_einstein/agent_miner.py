@@ -46,7 +46,9 @@ are kept in the job's log.
 A submit or a reject the validator did not take (no answer, 429 or 5xx) is sent again with a
 backoff (:func:`send`). While idle, the miner checks every hour that its agent key still works and
 that it is admitted: a key the validator revoked (abuse, deregistration) is minted again, and a
-dropped admission is requested again (:func:`keep_admitted`).
+dropped admission is requested again (:func:`keep_admitted`). A key request the subnet team has
+not approved yet is answered "pending" (202): the miner waits and asks again
+(:func:`.fake_miner.ask_key`), with ``--contact`` sent as a note for the team.
 
 The agent also gets one local tool, ``fetch_to_workspace`` (:mod:`.fetch_mcp`, a stdio MCP server
 named ``cadmind-fetch``): it downloads a public document from the miner's own connection (many sites
@@ -64,7 +66,6 @@ reads the metagraph once at startup and warns when its hotkey is not registered 
 from __future__ import annotations
 
 import argparse
-import base64
 import contextlib
 import json
 import logging
@@ -93,7 +94,7 @@ from .cli import (
     setup_logging,
     wallet_kwargs,
 )
-from .fake_miner import signed
+from .fake_miner import ask_key, signed
 from .fetch_mcp import SERVER_NAME as FETCH_SERVER
 from .fetch_mcp import TIME_TOOL
 from .fetch_mcp import TOOL as FETCH_TOOL
@@ -698,6 +699,11 @@ def parser() -> argparse.ArgumentParser:
     ap.add_argument("--prompt-file", type=Path, help="a prompt template replacing the built-in one")
     ap.add_argument("--max-jobs", type=int, default=0, help="0: run forever")
     ap.add_argument(
+        "--contact",
+        default="",
+        help="a short note for the subnet team with your key request (how to reach you)",
+    )
+    ap.add_argument(
         "--no-local-fetch",
         dest="local_fetch",
         action="store_false",
@@ -755,7 +761,8 @@ def main(argv: list[str] | None = None) -> int:
     def mint() -> bool:
         """A new agent key from the validator, stored with the MCP config that carries it."""
         priv, pub = new_keypair()
-        code, got = call("/v1/miners/agent_key", {"x25519_public": base64.b64encode(pub).decode()})
+        # waits while the request is pending the subnet team's approval
+        code, got = ask_key(call, pub, contact=a.contact, log=log)
         if code != 200:
             log(f"agent_key refused: {code} {got}")
             return False

@@ -1,6 +1,7 @@
 # Mining einstein
 
-How to mine CADmind's einstein engine on its Bittensor subnet: registering, getting your agent key, the job
+How to mine CADmind's einstein engine on its Bittensor subnet: registering, asking for your agent key and waiting
+for its approval, passing the entry test once, the job
 protocol, how a job is scored, what counts as copying, and how to run an agent CLI (or any MCP client) as your miner.
 The design behind it is in [`../DESIGN.md`](../DESIGN.md).
 
@@ -21,6 +22,17 @@ bench only through the platform's agent API: MCP, or the same tools over REST. Y
   poll and wait, and your weight comes from your recent history (see [Weights](#weights)).
 - **One job at a time per hotkey.**
 
+## Joining, in four steps
+
+1. **Register** a hotkey on the subnet (section 1).
+2. **Ask for your agent key** (section 2). Miners are let in by hand: the subnet team reads your request and
+   approves it. Until then the validator answers *pending* and gives you no key. Ask again every 15 minutes or so;
+   the reference miner does this for you. You can add a short note on how to reach you (`contact`).
+3. **Pass the entry test once** (section 3): a small real device, built from a client-style brief.
+4. **Work**: only then do you get client jobs and a share of the weights.
+
+Until step 3 is done you are registered but not admitted: no jobs and no weight.
+
 ## Your model provider's terms are your responsibility
 
 You choose and pay for your own inference, and you must follow your model provider's terms. Many consumer plans do
@@ -37,7 +49,8 @@ btcli subnet register --netuid "$NETUID" --subtensor.network "$NETWORK" --wallet
 
 Only registered hotkeys are served. Each request is checked against the validator's metagraph, which it re-reads
 every few minutes. **If your hotkey deregisters, its agent key is revoked**, its admission is dropped, and the job it
-holds goes to another miner without scoring you. If you register again, ask for a new key and pass admission again.
+holds goes to another miner without scoring you. If you register again, ask for a new key and pass admission again
+(an approval is kept for the same hotkey and coldkey; you do not need to be approved again).
 The subnet owner's hotkey and the validator's own hotkey cannot mine.
 
 ## 2. Get your agent key (hotkey-bound, sealed to you)
@@ -54,7 +67,18 @@ reference miners' `signed()` does) and drop an answer that does not verify: it w
 another request or meant for another miner.
 
 `POST $VALIDATOR_URL/v1/miners/agent_key` with body `{"x25519_public": "<base64 of a fresh 32-byte X25519 public
-key>"}` answers:
+key>", "contact": "<optional: how the subnet team can reach you, up to 300 characters>"}`.
+
+**Until the subnet team approves your hotkey**, it answers `202` with no key:
+
+```json
+{"pending": true, "message": "...", "retry_after_s": 900, "first_ms": 1761000000000}
+```
+
+Your request is recorded (your hotkey, its coldkey, when you first and last asked, your address and your note). Ask
+again after `retry_after_s` with the same call. A refused request answers `403` with the team's reason; so does a
+key the team revoked. An approval is for your hotkey under its coldkey: a hotkey that moves to another coldkey asks
+again. Once approved, the same call answers:
 
 ```json
 {"key_id": "...", "sealed": {"scheme": "x25519-hkdf-sha256-aes256gcm/1",
@@ -83,14 +107,25 @@ Asking again rotates the key and the old key stops working. Key requests are rat
 compute quota and each job workspace a per-job compute cap on the platform (`usage` shows yours); quota storms or
 secrecy refusals can suspend a key automatically. The validator also disables a hotkey for a day (longer on a
 repeat) on copies, a suspension, repeated failed admission tests, or a pattern of rejections that other miners
-overturn: its key is revoked, its admission dropped and its open job given to another miner.
+overturn: its key is revoked, its admission dropped and its open job given to another miner. The subnet team can
+also revoke a key by hand: the same happens, the hotkey is out of the next weight vector, and it gets no key until
+it is approved again; then it takes the entry test again.
 
 ## 3. Pass admission (once)
 
-`POST /v1/miners/admission` (signed, empty body) creates a job assigned to you alone: *make this project
-deliverable*. Watt's worked example will do: `watt example`, bring it into the workspace, then `watt test --mutate`
-until `watt status` says deliverable, then submit. Passing admits you. Admission is never scored, and you can try
-once a day. Only admitted miners get client jobs.
+Only an approved key holder can ask for it. `POST /v1/miners/admission` (signed, empty body) creates a job assigned
+to you alone. It is **a real small device built from a client-style brief**, worked like any client job:
+
+- **No client questions.** There is no client to answer, so the job says `no_questions: true`: decide every open
+  question yourself (a decision `by = "agent"`, `status = "decided"`, with its reason). An open client decision
+  fails the test.
+- **The same gate as a client job.** `watt status` must say deliverable, and the validator then runs its own
+  mutation guard on its copy of your project: every must proven, **no unproven requirement**.
+- **Within the deadline.** The test runs at the validator's entry-test effort (high by default, 120 minutes from
+  your accept). Submit before the deadline: a test judged at its deadline does not admit you.
+
+Passing admits you. Admission is never scored, and you can try once a day. Only admitted miners get client jobs
+and weight.
 
 ## 4. The job protocol
 
@@ -281,6 +316,12 @@ the client's device. Details: [`../DESIGN.md`](../DESIGN.md) section 9.
   (a 7-day window). Your **quality** is the decayed mean of your job scores, which the router uses: jobs go to
   available admitted miners drawn with weight `(quality + 0.05)²`, 10% of jobs go to newcomers and low scorers so
   they can earn a score, and a client's next round goes to the miner who did the previous one if it is free.
+- **At the mainnet launch**, until a time the validator announces (`--launch-equal-until`), the weight is split
+  **equally per hotkey among the admitted miners** (registered, seen in the last 24 hours): every hotkey that was
+  approved and passed the entry test gets the same share, whatever its history. After that time the rules below
+  apply on their own. The hourly report names the rule in force ("launch: equal among admitted miners until ...").
+- **Only admitted miners are weighted**, by every rule: a hotkey whose key was revoked, or that was disabled or
+  deregistered, is out of the next vector, whatever its history.
 - The vector covers registered, admitted miners seen in the last 24 hours. **Weight is never burned:** an hour with
   no jobs still pays miners from their history, and the vector is never empty while a miner is admitted (the last
   vector is sent again, or equal shares per coldkey among admitted miners before the first delivery). Before anyone has any history (genesis), it is split equally per
@@ -389,7 +430,8 @@ time left). To give it to another MCP client:
 This repository ships two miners:
 
 - **`cadmind-einstein-miner`** (`cadmind_einstein/agent_miner.py`): a complete reference miner. It gets and stores
-  the key (mode 0600), writes the MCP config, requests admission, polls, accepts, runs your agent CLI in an empty
+  the key (mode 0600) -- waiting and asking again while the request is pending approval, with `--contact` sent as
+  your note to the team -- writes the MCP config, requests admission, polls, accepts, runs your agent CLI in an empty
   directory restricted to the Watt MCP server and the local `fetch_to_workspace` and `time_left` tools, keeps polling while the agent
   works -- stopping it, its whole process group, when the job is cancelled -- and submits `DONE <digest>` or sends
   `REJECT <category>: <message>`. Its prompt says there is no hand-over: when the remaining work looks too large,

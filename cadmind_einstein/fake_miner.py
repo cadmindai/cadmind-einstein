@@ -28,6 +28,38 @@ from typing import Any
 from .sealing import new_keypair, open_sealed
 
 
+def ask_key(
+    call: Any,
+    x25519_public: bytes,
+    *,
+    contact: str = "",
+    log: Any = print,
+    sleep: Any = time.sleep,
+    max_wait_s: float = 0.0,
+    clock: Any = time.monotonic,
+) -> tuple[int, Any]:
+    """Ask the validator for the agent key (``call(path, body) -> (status, answer)``) and wait
+    while the request is pending the operator's approval (202 ``{"pending": true}``): asked again
+    every ``retry_after_s`` the validator names, at most ``max_wait_s`` in all (0: no limit).
+    Answers the last (status, answer): 200 with the sealed key once approved."""
+    body: dict[str, Any] = {"x25519_public": base64.b64encode(x25519_public).decode()}
+    if contact:
+        body["contact"] = contact
+    start = clock()
+    said = False
+    while True:
+        code, got = call("/v1/miners/agent_key", body)
+        if code != 202 or not isinstance(got, dict) or not got.get("pending"):
+            return code, got
+        if not said:
+            log(f"agent key: pending approval -- {got.get('message') or 'ask again later'}")
+            said = True
+        wait = max(60.0, float(got.get("retry_after_s") or 900))
+        if max_wait_s and clock() - start + wait > max_wait_s:
+            return code, got
+        sleep(wait)
+
+
 def signed(
     keypair: Any,
     base: str,
@@ -191,6 +223,7 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--platform", required=True)
     ap.add_argument("--project", type=Path, required=True, help="the reference project to rebuild")
     ap.add_argument("--jobs", type=int, default=1)
+    ap.add_argument("--contact", default="", help="a note for the operator with the key request")
     ap.add_argument("--idle-s", type=float, default=900.0)
     ap.add_argument("--fail", action="store_true", help="accept, then submit without building")
     ap.add_argument("--reject", default="", help="reject every job with this message (not-allowed)")
@@ -202,12 +235,12 @@ def main(argv: list[str] | None = None) -> int:
         print(f"[fake-miner {me[:8]}] {msg}", file=sys.stderr, flush=True)  # noqa: T201
 
     priv, pub = new_keypair()
-    code, got = signed(
-        kp,
-        a.validator,
-        "/v1/miners/agent_key",
-        {"x25519_public": base64.b64encode(pub).decode()},
-        a.validator_hotkey,
+    code, got = ask_key(
+        lambda path, body: signed(kp, a.validator, path, body, a.validator_hotkey),
+        pub,
+        contact=a.contact,
+        log=log,
+        max_wait_s=a.idle_s,
     )
     if code != 200:
         log(f"agent_key refused: {code} {got}")
