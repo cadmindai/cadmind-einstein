@@ -579,8 +579,11 @@ class Desk:
         message = " ".join(str(pending_message or "").split())[:2000]
         self.pending_message = message or PENDING_MESSAGE
         self.launch_equal = False
-        """the launch rule (equal weight per admitted hotkey) is on: the daemon's ``--launch-equal``
-        at startup, the operator's route after (:meth:`set_launch_equal`); persisted"""
+        """the launch rule (equal weight per admitted hotkey) is on: set and saved by the daemon's
+        ``--launch-equal on|off`` or the operator's route (:meth:`set_launch_equal`), and kept
+        across restarts otherwise"""
+        self.launch_saved = False
+        """whether the state held a launch switch when this desk loaded it"""
         self.approvals: dict[str, KeyRequest] = {}
         """hotkey -> its key request and the operator's decision (manual approval)"""
         self.max_attempts, self.max_inflight = max_attempts, max_inflight
@@ -732,7 +735,9 @@ class Desk:
         self.abuse_seen = {k: dict(v) for k, v in (meta.get("abuse_seen") or {}).items()}
         self.disabled_log = list(meta.get("disabled_log") or [])
         self.delivery_refusals = list(meta.get("delivery_refusals") or [])
-        self.launch_equal = (self.store.get("meta", "launch") or {}).get("launch_equal") is True
+        launch = self.store.get("meta", "launch")
+        self.launch_saved = launch is not None
+        self.launch_equal = (launch or {}).get("launch_equal") is True
         watch = self.store.get("meta", "watch") or {}
         self.watch_pairs = list(watch.get("pairs") or [])
         self.watch_dropped = int(watch.get("dropped") or 0)

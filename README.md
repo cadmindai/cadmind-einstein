@@ -215,10 +215,11 @@ cadmind-einstein --state-dir ~/.local/share/cadmind-einstein \
   sets what a pending miner reads (for example, where to reach the team). The entry test:
   `--admission-brief-file` (a client-style brief for a small device; a generic built-in one otherwise) at `--admission-effort` (`high` by default, with that effort's
   deadline), with no client questions, through the same gate as a client job.
-- **Launch.** `--launch-equal` (off by default): equal weight per admitted, registered, reachable hotkey, whatever
-  its history (the report records `launch_equal` and its rule says "launch: equal among admitted miners"). The
-  flag sets the switch at each start; `cadmind-einstein-operator launch-equal on|off` changes it at runtime
-  (persisted until the next start). Off, the usual rules.
+- **Launch.** `--launch-equal on|off`: equal weight per admitted, registered, reachable hotkey, whatever its
+  history, while on (the report records `launch_equal` and its rule says "launch: equal among admitted miners").
+  The switch is saved in the state: the flag sets and saves it; without the flag the saved value is kept across
+  restarts (off when none); `cadmind-einstein-operator launch-equal on|off` changes it at runtime. The startup log
+  names the value and its source (flag, saved or default). Off, the usual rules.
 - `--gate-run-s` (1800) bounds one validator guard run (past it the run is stopped and counted as a gate timeout;
   two fail the attempt); `--judge-max-retries` (20) and `--judge-give-up-s` (14400) bound the retries of a judgement
   that fails on the validator's side, after which the job ends "didn't finish", not charged; `--cancel-cooloff-s`

@@ -80,15 +80,15 @@ class TestDaemonFlags(unittest.TestCase):
         a = self.parse()
         self.assertEqual(
             (a.key_approval, a.admission_effort, a.launch_equal, a.pending_message_file),
-            ("manual", "high", False, None),
+            ("manual", "high", None, None),
         )
         a = self.parse(
-            "--key-approval", "auto", "--admission-effort", "max", "--launch-equal",
+            "--key-approval", "auto", "--admission-effort", "max", "--launch-equal", "on",
             "--pending-message-file", "M",
         )  # fmt: skip
         self.assertEqual(
             (a.key_approval, a.admission_effort, a.launch_equal, str(a.pending_message_file)),
-            ("auto", "max", True, "M"),
+            ("auto", "max", "on", "M"),
         )
         with self.assertRaises(SystemExit), contextlib.redirect_stderr(io.StringIO()):
             self.parse("--key-approval", "open")

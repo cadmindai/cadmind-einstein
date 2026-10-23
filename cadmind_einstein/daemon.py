@@ -36,9 +36,10 @@ Second opinions (``--second-opinion-*``, :class:`~.desk.SecondOpinion`): a rejec
 goes to another coldkey (``--second-opinion-wait-s`` 1800 before any other miner may take it), and
 only ``--second-opinion-coldkeys`` (2) distinct coldkeys end it declined or out of reach. Genesis
 (``--genesis``, :func:`~.scoring.vector`): ``delivered`` (default), ``coldkey`` or ``hotkey``.
-``--launch-equal``: equal weight per admitted, registered, reachable hotkey (the hourly report
-names the rule) while it is on; it sets the switch at startup (off without it), and the operator's
-route (``cadmind-einstein-operator launch-equal on|off``) changes it at runtime (persisted).
+``--launch-equal on|off``: the launch rule, equal weight per admitted, registered, reachable hotkey
+(the hourly report names the rule). Given, it sets and saves the switch; not given, the saved value
+is kept (off when there is none), so a regenerated unit never changes it. The operator's route
+(``cadmind-einstein-operator launch-equal on|off``) changes it at runtime, saved the same way.
 
 Onboarding (``--key-approval``, default ``manual``): a registered hotkey's agent key request is
 recorded as pending until the operator approves it (``--pending-message-file``: what the miner reads
@@ -204,9 +205,10 @@ def parser() -> argparse.ArgumentParser:
     )
     ap.add_argument(
         "--launch-equal",
-        action="store_true",
-        help="the launch rule: equal weight per admitted, registered, reachable hotkey, whatever"
-        " its history (off without it; the operator's route switches it at runtime)",
+        choices=("on", "off"),
+        default=None,
+        help="the launch rule (equal weight per admitted, registered, reachable hotkey, whatever"
+        " its history): sets and saves it; not given, the saved value is kept (off when none)",
     )
     ap.add_argument(
         "--pending-message-file",
@@ -347,6 +349,16 @@ def parser() -> argparse.ArgumentParser:
     return ap
 
 
+def apply_launch_flag(desk: Desk, flag: str | None) -> str:
+    """The launch switch at startup: ``--launch-equal on|off`` sets and saves it; without the flag
+    the saved value is kept (off when none was ever saved). Answers its source: flag, saved or
+    default."""
+    if flag is not None:
+        desk.set_launch_equal(flag == "on", by="the --launch-equal flag at startup")
+        return "flag"
+    return "saved" if desk.launch_saved else "default"
+
+
 def version_watch(say: Callable[[str], None], every_s: float = 86400.0) -> None:
     """Read the latest release now and every ``every_s`` after (a daemon thread); a newer release
     is said as a WARNING. Reads a version string only -- it never downloads or runs anything."""
@@ -467,16 +479,11 @@ def main(argv: list[str] | None = None) -> int:
         key_approval=a.key_approval,
         **extra,
     )
-    launch = desk.set_launch_equal(a.launch_equal, by="the --launch-equal flag at startup")
+    source = apply_launch_flag(desk, a.launch_equal)
     _log(
         f"onboarding: key approval {a.key_approval}; entry test at {a.admission_effort} effort"
         + (" (brief from file)" if a.admission_brief_file else " (built-in brief)")
-        + f"; launch-equal {'ON' if launch['launch_equal'] else 'off'}"
-        + (
-            f" (was {'on' if launch['was'] else 'off'} before this start)"
-            if launch["was"] != launch["launch_equal"]
-            else ""
-        )
+        + f"; launch-equal {'ON' if desk.launch_equal else 'off'} (source: {source})"
     )
 
     reviewer = None

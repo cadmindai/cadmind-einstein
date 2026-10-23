@@ -600,10 +600,32 @@ class TestLaunchSwitch(_Case):
         self.desk.stop()
         self.desk = self.make()
         self.assertTrue(self.desk.launch_equal)  # persisted
+        self.assertTrue(self.desk.launch_saved)
         self.desk.set_launch_equal(False)
         self.desk.stop()
         self.desk = self.make()
         self.assertFalse(self.desk.launch_equal)
+
+    def test_a_fresh_state_has_no_saved_switch(self) -> None:
+        self.assertFalse(self.desk.launch_saved or self.desk.launch_equal)
+
+    def test_the_startup_flag_sets_and_saves_and_its_absence_keeps_the_saved_value(self) -> None:
+        from cadmind_einstein.daemon import apply_launch_flag
+
+        self.assertEqual(apply_launch_flag(self.desk, None), "default")
+        self.assertFalse(self.desk.launch_equal)
+        self.assertEqual(apply_launch_flag(self.desk, "on"), "flag")
+        self.desk.stop()
+        self.desk = self.make()  # a deploy regenerated the unit, without the flag
+        self.assertEqual(apply_launch_flag(self.desk, None), "saved")
+        self.assertTrue(self.desk.launch_equal)  # kept, never switched off silently
+        self.desk.set_launch_equal(False)  # the operator's route
+        self.desk.stop()
+        self.desk = self.make()
+        self.assertEqual(apply_launch_flag(self.desk, None), "saved")
+        self.assertFalse(self.desk.launch_equal)
+        self.assertEqual(apply_launch_flag(self.desk, "on"), "flag")
+        self.assertTrue(self.desk.launch_equal)
 
 
 class TestAskKey(unittest.TestCase):

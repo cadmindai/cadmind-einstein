@@ -11,7 +11,7 @@
 miner's note); ``approve`` lets the hotkey's next ``agent_key`` call mint its key; ``refuse``
 answers its asks with the reason; ``revoke`` deletes its key, drops its admission and sends the job
 it holds to another miner unscored; ``launch-equal`` turns the launch rule (equal weight per
-admitted hotkey) on or off at runtime, until the next restart sets it from ``--launch-equal``. An
+admitted hotkey) on or off at runtime, saved across restarts (unless ``--launch-equal`` sets it). An
 approved miner still passes the entry test once before any job or weight. The token file (the
 validator's ``--token-file``, mode 0600) is read, never printed.
 """

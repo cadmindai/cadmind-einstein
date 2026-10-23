@@ -219,8 +219,9 @@ passing job:   I = 0.5 + 0.3·E + 0.2·T            immediate: passed the gate, 
 - **Only admitted hotkeys are weighted**, by every rule and every fallback below: a miner whose admission was
   dropped (its key revoked, disabled, deregistered) is out from the next vector on, whatever its decayed history
   and whatever the last vector held.
-- **Launch** (a manual switch: `--launch-equal` sets it at each start, the operator's route
-  `/v1/operator/launch_equal` changes it at runtime, persisted until the next start): while on, equal weight **per
+- **Launch** (a manual switch saved in the state: `--launch-equal on|off` sets and saves it, the operator's route
+  `/v1/operator/launch_equal` changes it at runtime; without the flag a restart keeps the saved value, off when
+  none): while on, equal weight **per
   hotkey** among the admitted, registered, reachable miners (each one approved by hand and through the entry
   test), history and the last vector ignored; with none reachable, equal among the admitted ones (never empty).
   Off, the rules below. The report records `launch_equal` and names the rule ("launch: equal among admitted

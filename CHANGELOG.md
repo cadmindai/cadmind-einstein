@@ -25,8 +25,10 @@ All notable changes to this project are listed here. The format follows
   `cadmind-einstein-operator pending|approve|refuse|revoke|launch-equal` over them (the token read from a 0600 file, never
   printed). Revoking deletes the key, drops the admission, ends the miner's job for it without scoring anyone
   (`revoked`, uncounted) and sends it to another miner; a revoked hotkey approved again takes the entry test again.
-- **Launch-equal weights**, a manual switch: `--launch-equal` (off by default) sets it at each start, and the
-  operator's route changes it at runtime (persisted until the next start). While on, equal weight per admitted,
+- **Launch-equal weights**, a manual switch saved in the validator's state: `--launch-equal on|off` sets and saves
+  it; without the flag the saved value is kept across restarts (off when none was ever saved), so a regenerated
+  unit never switches it silently; the operator's route changes it at runtime, saved the same way. The startup
+  log names the value and its source (flag, saved or default). While on, equal weight per admitted,
   registered, reachable hotkey, history ignored, never the owner's, never empty while a miner is admitted; off,
   the usual rules. The report records `launch_equal` and names the rule ("launch: equal among admitted miners");
   `cadmind-recompute` follows the record.

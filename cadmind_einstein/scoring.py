@@ -48,7 +48,7 @@ window -- follows ``genesis``:
 - ``hotkey``: equal per hotkey among them (an earlier rule; a report without ``genesis`` was made
   by it).
 
-**Launch** (the validator's ``--launch-equal`` switch, or the operator's route at runtime): while
+**Launch** (the validator's saved switch: ``--launch-equal on|off``, or the operator's route): while
 it is on, equal weight per hotkey among the admitted, registered, reachable miners -- each one
 onboarded by hand -- whatever their history; off, the rules above. Each report records whether it
 was on (``launch_equal``) and recompute follows that record.
