@@ -79,22 +79,19 @@ class TestDaemonFlags(unittest.TestCase):
     def test_onboarding_flags(self) -> None:
         a = self.parse()
         self.assertEqual(
-            (a.key_approval, a.admission_effort, a.launch_equal_until), ("manual", "high", "")
+            (a.key_approval, a.admission_effort, a.launch_equal, a.pending_message_file),
+            ("manual", "high", False, None),
         )
         a = self.parse(
-            "--key-approval", "auto", "--admission-effort", "max",
-            "--launch-equal-until", "2026-11-01T00:00:00Z",
+            "--key-approval", "auto", "--admission-effort", "max", "--launch-equal",
+            "--pending-message-file", "M",
         )  # fmt: skip
         self.assertEqual(
-            (a.key_approval, a.admission_effort, a.launch_equal_until),
-            ("auto", "max", "2026-11-01T00:00:00Z"),
+            (a.key_approval, a.admission_effort, a.launch_equal, str(a.pending_message_file)),
+            ("auto", "max", True, "M"),
         )
         with self.assertRaises(SystemExit), contextlib.redirect_stderr(io.StringIO()):
             self.parse("--key-approval", "open")
-
-    def test_a_bad_launch_time_stops_the_daemon_before_it_starts(self) -> None:
-        with self.assertRaises(SystemExit), contextlib.redirect_stderr(io.StringIO()):
-            daemon.main([*DAEMON_BASE, "--launch-equal-until", "next week"])
 
     def test_logging_flags(self) -> None:
         self.assertTrue(self.parse("--logging.debug").logging_debug)

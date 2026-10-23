@@ -30,7 +30,8 @@ hotkeys: the platform's miner dashboard). Onboarding (the operator; ``cadmind-ei
 ``GET /v1/operator/key_requests?state=pending|approved|refused|revoked|all``, ``POST
 /v1/operator/approve {hotkey}``, ``POST /v1/operator/refuse {hotkey, reason}`` and ``POST
 /v1/operator/revoke {hotkey, reason}`` (the key deleted, the admission dropped, its job sent to
-another miner unscored). Jobs are not posted here: the validator CLAIMS them
+another miner unscored); ``GET /v1/operator/launch_equal`` and ``POST /v1/operator/launch_equal
+{on}`` (the launch rule, on or off at runtime). Jobs are not posted here: the validator CLAIMS them
 from the platform's queue when it has a free admitted miner (``platform.claim``).
 
 Public (no auth): ``GET /v1/reports`` (every hourly report's name and SHA-256, and the block its
@@ -92,6 +93,7 @@ BEARER = (
     "/v1/operator/approve",
     "/v1/operator/refuse",
     "/v1/operator/revoke",
+    "/v1/operator/launch_equal",
 )
 """POST routes for the platform and the operator"""
 MAX_STATS_HOTKEYS = 20
@@ -491,6 +493,8 @@ def serve(
                         200,
                         {"key_approval": desk.key_approval, "requests": desk.key_requests(state)},
                     )
+                elif self.path == "/v1/operator/launch_equal":
+                    self._send(200, {"launch_equal": desk.launch_equal})
                 elif self.path == "/v1/capacity":
                     self._send(200, desk.capacity())
                 elif self.path.startswith("/v1/jobs/"):
@@ -663,6 +667,12 @@ def serve(
                 elif self.path == "/v1/operator/refuse":
                     hk = str(body.get("hotkey") or "")
                     self._send(200, desk.refuse(hk, str(body.get("reason") or "")))
+                elif self.path == "/v1/operator/launch_equal":
+                    on = body.get("on")
+                    if not isinstance(on, bool):
+                        self._send(400, {"error": "on is true or false"})
+                    else:
+                        self._send(200, desk.set_launch_equal(on))
                 elif self.path == "/v1/operator/revoke":
                     hk = str(body.get("hotkey") or "")
                     self._send(200, desk.revoke(hk, str(body.get("reason") or "")))

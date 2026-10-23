@@ -75,8 +75,9 @@ key>", "contact": "<optional: how the subnet team can reach you, up to 300 chara
 {"pending": true, "message": "...", "retry_after_s": 900, "first_ms": 1761000000000}
 ```
 
-Your request is recorded (your hotkey, its coldkey, when you first and last asked, your address and your note). Ask
-again after `retry_after_s` with the same call. A refused request answers `403` with the team's reason; so does a
+Your request is recorded (your hotkey, its coldkey, when you first and last asked, your address and your note).
+`message` says where to reach the team, when the validator names it. Ask again after `retry_after_s` with the same
+call. A hotkey that already held a key under the earlier self-serve rule has it revoked and starts here too. A refused request answers `403` with the team's reason; so does a
 key the team revoked. An approval is for your hotkey under its coldkey: a hotkey that moves to another coldkey asks
 again. Once approved, the same call answers:
 
@@ -316,10 +317,10 @@ the client's device. Details: [`../DESIGN.md`](../DESIGN.md) section 9.
   (a 7-day window). Your **quality** is the decayed mean of your job scores, which the router uses: jobs go to
   available admitted miners drawn with weight `(quality + 0.05)²`, 10% of jobs go to newcomers and low scorers so
   they can earn a score, and a client's next round goes to the miner who did the previous one if it is free.
-- **At the mainnet launch**, until a time the validator announces (`--launch-equal-until`), the weight is split
-  **equally per hotkey among the admitted miners** (registered, seen in the last 24 hours): every hotkey that was
-  approved and passed the entry test gets the same share, whatever its history. After that time the rules below
-  apply on their own. The hourly report names the rule in force ("launch: equal among admitted miners until ...").
+- **At the mainnet launch**, while the subnet team keeps the launch rule on, the weight is split **equally per
+  hotkey among the admitted miners** (registered, seen in the last 24 hours): every hotkey that was approved and
+  passed the entry test gets the same share, whatever its history. When the team turns it off, the rules below
+  apply. Each hourly report records whether it was on and names the rule ("launch: equal among admitted miners").
 - **Only admitted miners are weighted**, by every rule: a hotkey whose key was revoked, or that was disabled or
   deregistered, is out of the next vector, whatever its history.
 - The vector covers registered, admitted miners seen in the last 24 hours. **Weight is never burned:** an hour with

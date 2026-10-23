@@ -38,9 +38,8 @@ from cadmind_einstein.scoring import (
     HOUR_MS,
     JobOutcome,
     Ledger,
-    iso_ms,
-    parse_iso_ms,
     recompute,
+    report_order,
     score_all,
     standing,
     vector,
@@ -197,19 +196,58 @@ class TestKeyApproval(_Case):
         self.assertEqual(self.desk.key_requests()[0]["note"], "hi")
         self.assertIn("key_id", self.key(B))
 
-    def test_a_miner_keyed_before_manual_approval_is_grandfathered(self) -> None:
+    def test_a_key_held_before_manual_approval_is_revoked_and_its_hotkey_pending(self) -> None:
         self.desk.stop()
         self.approval = "auto"
         self.desk = self.make()
-        self.key(A)
+        for hk in (A, B):
+            self.key(hk)
         with self.desk._mut():  # persisted, as a passed test would be
             self.desk.miners[A].admitted = True
+        self.desk.work(A)
+        self.desk.work(B)
+        self.p.queue.append({"job": "g1", "brief": "A wall hook."})
+        self.desk.tick()
+        self.assertTrue(self.desk.wait_idle())
+        holder = next(h for h in (A, B) if self.desk.work(h)["job"] == "g1")
+        self.assertEqual(holder, A)  # the only admitted miner
         self.desk.stop()
         self.approval = "manual"
-        self.desk = self.make()
-        [row] = self.desk.key_requests("approved")
-        self.assertEqual((row["hotkey"], row["by"]), (A, "grandfathered"))
+        self.desk = self.make()  # the validator restarts under manual approval
+        self.assertTrue(self.desk.wait_idle())
+        self.assertEqual(self.desk.admitted(), [])
+        self.assertEqual(
+            {r["hotkey"]: (r["state"], r["by"]) for r in self.desk.key_requests("all")},
+            {A: ("pending", ""), B: ("pending", "")},
+        )
+        for hk in (A, B):
+            self.assertEqual(self.desk.miners[hk].key_id, "")
+        self.desk.tick()
+        self.assertTrue(self.desk.wait_idle())
+        self.assertEqual(self.p.keys, {})  # deleted on the platform
+        st = self.desk.status("g1")
+        self.assertEqual((st["state"], st["attempts"][-1]["kind"]), ("queued", "revoked"))
+        self.assertEqual(self.ledger.outcomes, [])
+        self.assertTrue(self.key(A)["pending"])  # asks like anyone else
+        self.desk.approve(A)
+        self.assertIn("key_id", self.key(A))
+        self.assertEqual(self.desk.admitted(), [])  # and passes the entry test first
+        self.pass_test(A)
         self.assertEqual(self.desk.admitted(), [A])
+
+    def test_the_pending_message_is_the_operators(self) -> None:
+        self.assertIn("approval", self.key(A)["message"])
+        d = Desk(
+            self.p,
+            Ledger(),
+            registered=lambda: [B],
+            key_approval="manual",
+            pending_message="Ask on the  official\nchannel.",
+        )
+        self.assertEqual(
+            d.agent_key(B, new_keypair()[1])["message"], "Ask on the official channel."
+        )
+        d.stop()
 
     def test_a_pending_request_of_a_hotkey_that_left_is_dropped(self) -> None:
         self.key(A)
@@ -500,9 +538,8 @@ class TestVectorOnlyAdmitted(unittest.TestCase):
 
 class TestLaunchEqual(unittest.TestCase):
     uids = UIDS
-    until = parse_iso_ms("2026-11-01T00:00:00Z")
 
-    def launch(self, now: int, **kw: Any) -> tuple[list[tuple[int, int]], str]:
+    def launch(self, on: bool, **kw: Any) -> tuple[list[tuple[int, int]], str]:
         args: dict[str, Any] = {
             "owner_hotkey": OWNER,
             "admitted": [A, B, OWNER],
@@ -510,65 +547,63 @@ class TestLaunchEqual(unittest.TestCase):
             "coldkeys": {A: "same", B: "same"},
             **kw,
         }
-        weight = _weight(A)
-        return vector(weight, self.uids, now_ms=now, launch_until_ms=self.until, **args)
+        return vector(_weight(A), self.uids, launch_equal=on, **args)
 
-    def test_before_the_time_equal_per_hotkey_whatever_the_history(self) -> None:
-        vec, rule = self.launch(self.until - 1)
+    def test_on_equal_per_hotkey_whatever_the_history(self) -> None:
+        vec, rule = self.launch(True)
         self.assertEqual(vec, [(1, 65_535), (2, 65_535)])  # per hotkey, never the owner
-        self.assertEqual(rule, "launch: equal among admitted miners until 2026-11-01T00:00:00Z")
+        self.assertEqual(rule, "launch: equal among admitted miners")
 
-    def test_from_the_time_on_the_usual_rules(self) -> None:
-        vec, rule = self.launch(self.until)
-        self.assertEqual((vec, rule), ([(1, 65_535)], "history"))
+    def test_off_the_usual_rules(self) -> None:
+        self.assertEqual(self.launch(False), ([(1, 65_535)], "history"))
 
     def test_never_empty_and_admitted_only(self) -> None:
-        vec, rule = self.launch(self.until - 1, reachable=[], last={C: 1.0})
+        vec, rule = self.launch(True, reachable=[], last={C: 1.0})
         self.assertEqual(vec, [(1, 65_535), (2, 65_535)])
         self.assertIn("never empty", rule)
-        vec, rule = self.launch(self.until - 1, admitted=[], reachable=[A], last={A: 1.0})
+        vec, rule = self.launch(True, admitted=[], reachable=[A], last={A: 1.0})
         self.assertEqual(vec, [])
-        vec, _ = self.launch(self.until - 1, admitted=[B], reachable=[A, B, C])
+        vec, _ = self.launch(True, admitted=[B], reachable=[A, B, C])
         self.assertEqual(vec, [(2, 65_535)])  # a revoked (not admitted) miner gets nothing
 
-    def test_iso_times(self) -> None:
-        self.assertEqual(iso_ms(self.until), "2026-11-01T00:00:00Z")
-        self.assertEqual(parse_iso_ms("2026-11-01T00:00:00"), self.until)  # no zone: UTC
-        self.assertEqual(parse_iso_ms("2026-11-01T01:00:00+01:00"), self.until)
-        with self.assertRaises(ValueError):
-            parse_iso_ms("soon")
-
-    def test_the_report_names_the_rule_and_recompute_reproduces_it(self) -> None:
+    def test_the_report_records_the_switch_and_recompute_follows_it(self) -> None:
         with tempfile.TemporaryDirectory() as d:
             ledger = Ledger(report_dir=Path(d))
-            ledger.add(_passing("1", A, self.until - 2 * HOUR_MS))
-            rep = ledger.report(
-                self.until - HOUR_MS,
-                self.uids,
-                owner_hotkey=OWNER,
-                admitted=[A, B],
-                reachable=[A, B],
-                launch_until_ms=self.until,
-            )
-            self.assertTrue(rep["rule"].startswith("launch: equal among admitted miners until"))
-            self.assertEqual(rep["vector"], [[1, 65_535], [2, 65_535]])
-            self.assertEqual(rep["launch_until_ms"], self.until)
-            published = json.loads(next(Path(d).glob("hour-*.json")).read_text())
-            again = recompute(published)
-            self.assertTrue(again["matches_published"])
-            self.assertEqual(again["rule"], rep["rule"])
-            # after the time, the same history: the usual rule, reproduced too
-            rep2 = ledger.report(
-                self.until + HOUR_MS,
-                self.uids,
-                owner_hotkey=OWNER,
-                admitted=[A, B],
-                reachable=[A, B],
-                launch_until_ms=self.until,
-            )
-            self.assertEqual(rep2["rule"], "history")
-            files = sorted(Path(d).glob("hour-*.json"))
-            self.assertTrue(recompute(json.loads(files[-1].read_text()))["matches_published"])
+            ledger.add(_passing("1", A, 8 * HOUR_MS))
+            for on, rule in ((True, "launch: equal among admitted miners"), (False, "history")):
+                rep = ledger.report(
+                    9 * HOUR_MS,
+                    self.uids,
+                    owner_hotkey=OWNER,
+                    admitted=[A, B],
+                    reachable=[A, B],
+                    launch_equal=on,
+                )
+                self.assertEqual((rep["rule"], rep["launch_equal"]), (rule, on))
+            files = sorted(Path(d).glob("hour-*.json"), key=report_order)
+            self.assertEqual(len(files), 2)
+            for f in files:
+                published = json.loads(f.read_text())
+                again = recompute(published)
+                self.assertTrue(again["matches_published"], f.name)
+                self.assertEqual(again["rule"], published["rule"])
+            # a report from before the switch existed (no field) is recomputed with it off
+            old = json.loads(files[-1].read_text())
+            del old["launch_equal"]
+            self.assertTrue(recompute(old)["matches_published"])
+
+
+class TestLaunchSwitch(_Case):
+    def test_the_switch_is_persisted_and_changed_at_runtime(self) -> None:
+        self.assertFalse(self.desk.launch_equal)
+        self.assertEqual(self.desk.set_launch_equal(True), {"launch_equal": True, "was": False})
+        self.desk.stop()
+        self.desk = self.make()
+        self.assertTrue(self.desk.launch_equal)  # persisted
+        self.desk.set_launch_equal(False)
+        self.desk.stop()
+        self.desk = self.make()
+        self.assertFalse(self.desk.launch_equal)
 
 
 class TestAskKey(unittest.TestCase):
@@ -699,17 +734,35 @@ class TestHttpAndCli(unittest.TestCase):
         self.assertEqual(rc, 1)
         self.assertIn("not registered", err)
 
+    def test_the_launch_switch_over_the_cli(self) -> None:
+        rc, out, _ = self.cli("launch-equal", "status")
+        self.assertEqual((rc, json.loads(out)), (0, {"launch_equal": False}))
+        rc, out, _ = self.cli("launch-equal", "on")
+        self.assertEqual((rc, json.loads(out)["launch_equal"]), (0, True))
+        self.assertTrue(self.desk.launch_equal)
+        self.cli("launch-equal", "off")
+        self.assertFalse(self.desk.launch_equal)
+        req = urllib.request.Request(  # noqa: S310 -- loopback
+            self.base + "/v1/operator/launch_equal",
+            data=json.dumps({"on": "yes"}).encode(),
+            headers={"Authorization": f"Bearer {TOKEN}"},
+        )
+        with self.assertRaises(urllib.error.HTTPError) as e:
+            urllib.request.urlopen(req, timeout=10)  # noqa: S310
+        self.assertEqual(e.exception.code, 400)
+
     def test_the_operator_routes_need_the_token(self) -> None:
         for path, data in (
             ("/v1/operator/key_requests", None),
             ("/v1/operator/approve", json.dumps({"hotkey": A}).encode()),
             ("/v1/operator/revoke", json.dumps({"hotkey": A, "reason": "x"}).encode()),
+            ("/v1/operator/launch_equal", json.dumps({"on": True}).encode()),
         ):
             req = urllib.request.Request(self.base + path, data=data)  # noqa: S310 -- loopback
             with self.assertRaises(urllib.error.HTTPError) as e:
                 urllib.request.urlopen(req, timeout=10)  # noqa: S310
             self.assertEqual(e.exception.code, 401, path)
-        self.assertFalse(self.desk.approved(A))
+        self.assertFalse(self.desk.approved(A) or self.desk.launch_equal)
 
     def test_the_cli_refuses_a_token_file_others_can_read(self) -> None:
         os.chmod(self.token_file, 0o644)  # noqa: PTH101

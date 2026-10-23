@@ -78,10 +78,11 @@ validator: freeze on submit, fork, read Watt's verdict (the gate), copy check, s
   as for a deregistration), drops the admission, ends the job the miner holds without scoring anyone (`revoked`,
   uncounted) and sends it to another miner; an entry test it holds ends "not admitted" without counting as a
   failure, and one judged after the revocation admits nobody. Decisions persist in the validator's state
-  (namespace `approval`, one row per hotkey); a pending request of a hotkey that deregistered is dropped. A
-  hotkey that already held a key when the validator moved to manual approval is kept as approved
-  (`by: grandfathered`), so the operator sees it and can revoke it. `--key-approval auto` keeps the self-serve rule:
-  any registered hotkey gets a key.
+  (namespace `approval`, one row per hotkey); a pending request of a hotkey that deregistered is dropped. When a
+  validator starts under manual approval, every hotkey holding a key or an admission it was never approved for (a
+  key from the self-serve rule) is revoked the same way and goes back to pending: it asks, is approved and passes
+  the entry test like anyone else. What a pending miner reads is the operator's (`--pending-message-file`).
+  `--key-approval auto` keeps the self-serve rule: any registered hotkey gets a key.
 
 ## 3. Jobs: one miner each, client briefs only
 
@@ -218,11 +219,12 @@ passing job:   I = 0.5 + 0.3·E + 0.2·T            immediate: passed the gate, 
 - **Only admitted hotkeys are weighted**, by every rule and every fallback below: a miner whose admission was
   dropped (its key revoked, disabled, deregistered) is out from the next vector on, whatever its decayed history
   and whatever the last vector held.
-- **Launch** (`--launch-equal-until <ISO time>`): before that time, equal weight **per hotkey** among the admitted,
-  registered, reachable miners (each one approved by hand and through the entry test), history and the last
-  vector ignored; with none reachable, equal among the admitted ones (never empty). From that time on, the rules
-  below apply with no restart. The report names the rule ("launch: equal among admitted miners until ...") and
-  carries `launch_until_ms`, which `cadmind-recompute` follows.
+- **Launch** (a manual switch: `--launch-equal` sets it at each start, the operator's route
+  `/v1/operator/launch_equal` changes it at runtime, persisted until the next start): while on, equal weight **per
+  hotkey** among the admitted, registered, reachable miners (each one approved by hand and through the entry
+  test), history and the last vector ignored; with none reachable, equal among the admitted ones (never empty).
+  Off, the rules below. The report records `launch_equal` and names the rule ("launch: equal among admitted
+  miners"); `cadmind-recompute` follows the record (a report without it was made with the switch off).
 - **Genesis** (no admitted miner has history in the window), `--genesis`:
   - `delivered` (default): equal weight **per coldkey** among admitted, registered, reachable miners that have
     delivered at least one scored client job (ever), each coldkey's share split among its hotkeys. Admission is a

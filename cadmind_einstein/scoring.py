@@ -48,9 +48,10 @@ window -- follows ``genesis``:
 - ``hotkey``: equal per hotkey among them (an earlier rule; a report without ``genesis`` was made
   by it).
 
-**Launch** (the validator's ``--launch-equal-until``): before that time, equal weight per hotkey
-among the admitted, registered, reachable miners -- each one onboarded by hand -- whatever their
-history; from it on, the rules above. Reports carry ``launch_until_ms`` and recompute follows it.
+**Launch** (the validator's ``--launch-equal`` switch, or the operator's route at runtime): while
+it is on, equal weight per hotkey among the admitted, registered, reachable miners -- each one
+onboarded by hand -- whatever their history; off, the rules above. Each report records whether it
+was on (``launch_equal``) and recompute follows that record.
 
 **The subnet owner's hotkey is never weighted**: weighting it burns miner emission. **Only admitted
 hotkeys are ever weighted**, by every rule and fallback: a revoked, disabled or deregistered miner
@@ -76,7 +77,6 @@ import threading
 from collections import defaultdict
 from collections.abc import Iterable, Mapping
 from dataclasses import asdict, dataclass, field
-from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -221,6 +221,7 @@ def standing(jobs: Iterable[JobOutcome], now_ms: int) -> tuple[dict[str, float],
 
 
 GENESIS = ("delivered", "coldkey", "hotkey")
+LAUNCH_RULE = "launch: equal among admitted miners"
 
 
 def vector(
@@ -234,8 +235,7 @@ def vector(
     coldkeys: Mapping[str, str] | None = None,
     proven: Iterable[str] = (),
     last: Mapping[str, float] | None = None,
-    now_ms: int = 0,
-    launch_until_ms: int = 0,
+    launch_equal: bool = False,
 ) -> tuple[list[tuple[int, int]], str]:
     """The weights and the rule that made them. Never the subnet owner's hotkey; never burned.
     ``coldkeys`` (hotkey -> coldkey; a hotkey with none stands alone) and ``proven`` (hotkeys with
@@ -251,25 +251,20 @@ def vector(
     a miner whose admission was dropped -- its key revoked, disabled, deregistered -- is out of the
     vector from the next one on, its history and the last vector notwithstanding.
 
-    **Launch** (``now_ms < launch_until_ms``): equal weight per hotkey among the admitted,
-    registered, reachable miners (each one onboarded by hand); history and the last vector are
-    ignored; with none reachable, equal among the admitted ones (never empty). From
-    ``launch_until_ms`` on, the rules above apply."""
+    **Launch** (``launch_equal``): equal weight per hotkey among the admitted, registered,
+    reachable miners (each one onboarded by hand); history and the last vector are ignored; with
+    none reachable, equal among the admitted ones (never empty). Off, the rules above apply."""
     if genesis not in GENESIS:
         raise ValueError(f"genesis is one of {GENESIS}")
     adm = {h for h in admitted if h in uid_by_hotkey and h != owner_hotkey}
     live = adm & set(reachable)
-    if launch_until_ms and now_ms < launch_until_ms:
-        until = iso_ms(launch_until_ms)
+    if launch_equal:
         if live:
-            return (
-                sorted((uid_by_hotkey[h], 65_535) for h in live),
-                f"launch: equal among admitted miners until {until}",
-            )
+            return sorted((uid_by_hotkey[h], 65_535) for h in live), LAUNCH_RULE
         if adm:
             return (
                 sorted((uid_by_hotkey[h], 65_535) for h in adm),
-                f"launch: equal among admitted miners until {until} (none reachable; never empty)",
+                f"{LAUNCH_RULE} (none reachable; never empty)",
             )
         return [], "no admitted miner: nothing to weight"
 
@@ -313,23 +308,6 @@ def vector(
             ),
         )
     return [], "no admitted miner: nothing to weight"
-
-
-def iso_ms(ms: int) -> str:
-    """Epoch milliseconds as an ISO 8601 UTC time (``2026-11-01T00:00:00Z``)."""
-    return (
-        datetime.fromtimestamp(ms / 1000, tz=UTC)
-        .isoformat(timespec="seconds")
-        .replace("+00:00", "Z")
-    )
-
-
-def parse_iso_ms(text: str) -> int:
-    """An ISO 8601 time as epoch milliseconds; a time without a zone is UTC."""
-    t = datetime.fromisoformat(str(text).strip().replace("Z", "+00:00"))
-    if t.tzinfo is None:
-        t = t.replace(tzinfo=UTC)
-    return int(t.timestamp() * 1000)
 
 
 def report_bytes(rep: Mapping[str, Any]) -> bytes:
@@ -491,7 +469,7 @@ class Ledger:
         coldkeys: Mapping[str, str] | None = None,
         proven: Iterable[str] = (),
         votes: Mapping[str, Any] | None = None,
-        launch_until_ms: int = 0,
+        launch_equal: bool = False,
     ) -> dict[str, Any]:
         """The hour's report, written as its canonical bytes (``hour-N.json``) beside its SHA-256
         (``hour-N.sha256``), both atomically. ``chain`` (the block, our stake share, the weights
@@ -514,8 +492,7 @@ class Ledger:
             coldkeys=cold,
             proven=prov,
             last=last,
-            now_ms=now_ms,
-            launch_until_ms=launch_until_ms,
+            launch_equal=launch_equal,
         )
         hotkey_of = {u: h for h, u in uid_by_hotkey.items()}
         by_hotkey = {hotkey_of[u]: w for u, w in vec if u in hotkey_of}
@@ -531,7 +508,7 @@ class Ledger:
             "admitted": adm,
             "reachable": reach,
             "genesis": genesis,
-            "launch_until_ms": int(launch_until_ms or 0),
+            "launch_equal": bool(launch_equal),
             "coldkeys": cold,
             "proven": prov,
             "vector": [list(x) for x in vec],
@@ -605,8 +582,7 @@ def recompute(report: Mapping[str, Any]) -> dict[str, Any]:
         coldkeys=report.get("coldkeys") or {},
         proven=report.get("proven") or (),
         last=report.get("last_vector") or {},
-        now_ms=int(report["at_ms"]),
-        launch_until_ms=int(report.get("launch_until_ms") or 0),
+        launch_equal=report.get("launch_equal") is True,
     )
     same = [list(x) for x in vec] == [list(x) for x in report["vector"]]
     return {"vector": vec, "rule": rule, "matches_published": same, "mismatches": mismatches}

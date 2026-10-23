@@ -16,17 +16,20 @@ All notable changes to this project are listed here. The format follows
   and answers `202 {"pending": true, "message", "retry_after_s"}`. Once approved, the same call mints the sealed key
   as before. A refused or revoked hotkey is answered 403 with the team's reason. An approval is bound to the
   hotkey's coldkey. Decisions persist in the validator's state (namespace `approval`); a pending request of a
-  hotkey that deregistered is dropped; a hotkey that already held a key when the validator moved to manual
-  approval is kept as approved (`by: grandfathered`).
+  hotkey that deregistered is dropped. Starting under manual approval revokes every key that was never approved
+  (as a revocation: deleted on the platform, job reassigned unscored) and puts its hotkey back to pending.
+  `--pending-message-file` sets what a pending miner reads.
 - **Operator routes and CLI.** `GET /v1/operator/key_requests?state=...`, `POST /v1/operator/approve {hotkey}`,
-  `POST /v1/operator/refuse {hotkey, reason}`, `POST /v1/operator/revoke {hotkey, reason}` (Bearer), and
-  `cadmind-einstein-operator pending|approve|refuse|revoke` over them (the token read from a 0600 file, never
+  `POST /v1/operator/refuse {hotkey, reason}`, `POST /v1/operator/revoke {hotkey, reason}`,
+  `GET`/`POST /v1/operator/launch_equal {on}` (Bearer), and
+  `cadmind-einstein-operator pending|approve|refuse|revoke|launch-equal` over them (the token read from a 0600 file, never
   printed). Revoking deletes the key, drops the admission, ends the miner's job for it without scoring anyone
   (`revoked`, uncounted) and sends it to another miner; a revoked hotkey approved again takes the entry test again.
-- **Launch-equal weights** (`--launch-equal-until <ISO time>`). Until then, equal weight per admitted, registered,
-  reachable hotkey, history ignored, never the owner's, never empty while a miner is admitted; after it, the usual
-  rules, with no restart. The report names the rule ("launch: equal among admitted miners until ...") and carries
-  `launch_until_ms`, which `cadmind-recompute` follows.
+- **Launch-equal weights**, a manual switch: `--launch-equal` (off by default) sets it at each start, and the
+  operator's route changes it at runtime (persisted until the next start). While on, equal weight per admitted,
+  registered, reachable hotkey, history ignored, never the owner's, never empty while a miner is admitted; off,
+  the usual rules. The report records `launch_equal` and names the rule ("launch: equal among admitted miners");
+  `cadmind-recompute` follows the record.
 - **A real entry test.** `--admission-effort` (`high` by default) sets the entry test's effort and so its deadline.
   The entry test carries `no_questions` (no client to ask: the builder decides every open question), passes only
   through the client jobs' gate (the validator's own guard run, no unproven must, and the client-answers check: no

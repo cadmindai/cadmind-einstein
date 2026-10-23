@@ -5,12 +5,15 @@
     cadmind-einstein-operator ... approve HOTKEY
     cadmind-einstein-operator ... refuse HOTKEY --reason "WORDS THE MINER READS"
     cadmind-einstein-operator ... revoke HOTKEY --reason "WORDS THE MINER READS"
+    cadmind-einstein-operator ... launch-equal on|off|status
 
 ``pending`` lists the key requests (hotkey, coldkey, first and last ask, client address, the
 miner's note); ``approve`` lets the hotkey's next ``agent_key`` call mint its key; ``refuse``
 answers its asks with the reason; ``revoke`` deletes its key, drops its admission and sends the job
-it holds to another miner unscored. An approved miner still passes the entry test once before any
-job or weight. The token file (the validator's ``--token-file``, mode 0600) is read, never printed.
+it holds to another miner unscored; ``launch-equal`` turns the launch rule (equal weight per
+admitted hotkey) on or off at runtime, until the next restart sets it from ``--launch-equal``. An
+approved miner still passes the entry test once before any job or weight. The token file (the
+validator's ``--token-file``, mode 0600) is read, never printed.
 """
 
 from __future__ import annotations
@@ -66,7 +69,8 @@ def call(
 def parser() -> argparse.ArgumentParser:
     ap = argparse.ArgumentParser(
         prog="cadmind-einstein-operator",
-        description="manual miner onboarding: list, approve, refuse and revoke agent keys",
+        description="manual miner onboarding: list, approve, refuse and revoke agent keys; the"
+        " launch rule",
     )
     ap.add_argument("--validator", default="http://127.0.0.1:8793", help="the validator's URL")
     ap.add_argument("--token-file", type=Path, required=True, help="the validator's Bearer token")
@@ -83,6 +87,8 @@ def parser() -> argparse.ArgumentParser:
         p = sub.add_parser(name, help=f"{name} a hotkey (the miner reads the reason)")
         p.add_argument("hotkey")
         p.add_argument("--reason", required=True)
+    p = sub.add_parser("launch-equal", help="the launch rule: on, off, or its status")
+    p.add_argument("switch", choices=("on", "off", "status"))
     return ap
 
 
@@ -92,6 +98,13 @@ def main(argv: list[str] | None = None) -> int:
     if a.command == "pending":
         q = urllib.parse.urlencode({"state": a.state})
         code, out = call(a.validator, token, "GET", f"/v1/operator/key_requests?{q}")
+    elif a.command == "launch-equal":
+        if a.switch == "status":
+            code, out = call(a.validator, token, "GET", "/v1/operator/launch_equal")
+        else:
+            code, out = call(
+                a.validator, token, "POST", "/v1/operator/launch_equal", {"on": a.switch == "on"}
+            )
     elif a.command == "approve":
         code, out = call(a.validator, token, "POST", "/v1/operator/approve", {"hotkey": a.hotkey})
     else:

@@ -175,6 +175,12 @@ NOTE_MAX = 300
 """the miner's contact note on a key request, at most (characters)"""
 REASON_MAX = 500
 """an operator's reason for a refusal or a revocation, at most (characters)"""
+PENDING_MESSAGE = (
+    "Your request for an agent key is recorded and waits for the subnet team's approval. Ask "
+    "again later with the same call: once approved, it answers your key. Then pass the entry "
+    "test once (POST /v1/miners/admission) before any job or weight."
+)
+"""what a miner whose key request is pending reads (the validator's ``--pending-message-file``)"""
 ADMISSION_EFFORT = "high"
 """the entry test's effort, and so its deadline (``DEADLINE_S``)"""
 """a hotkey whose live key was minted less than this ago gets no new one"""
@@ -486,7 +492,7 @@ class KeyRequest:
     approved_coldkey: str = ""
     """the coldkey the approval was given to: a hotkey under another coldkey asks anew"""
     by: str = ""
-    """operator | grandfathered (held a key before manual approval)"""
+    """who decided: operator ('' while pending)"""
 
 
 def _clean(text: Any, limit: int) -> str:
@@ -520,6 +526,7 @@ class Desk:
         admission_brief: str = ADMISSION_BRIEF,
         admission_effort: str = ADMISSION_EFFORT,
         key_approval: str = "auto",
+        pending_message: str = PENDING_MESSAGE,
         deadlines: Mapping[str, int] | None = None,
         max_attempts: int = 4,
         max_inflight: int = 8,
@@ -569,6 +576,11 @@ class Desk:
         if key_approval not in KEY_APPROVAL:
             raise ValueError(f"key_approval is one of {KEY_APPROVAL}")
         self.key_approval = key_approval
+        message = " ".join(str(pending_message or "").split())[:2000]
+        self.pending_message = message or PENDING_MESSAGE
+        self.launch_equal = False
+        """the launch rule (equal weight per admitted hotkey) is on: the daemon's ``--launch-equal``
+        at startup, the operator's route after (:meth:`set_launch_equal`); persisted"""
         self.approvals: dict[str, KeyRequest] = {}
         """hotkey -> its key request and the operator's decision (manual approval)"""
         self.max_attempts, self.max_inflight = max_attempts, max_inflight
@@ -670,6 +682,7 @@ class Desk:
             },
         )
         yield "meta", "watch", {"pairs": self.watch_pairs, "dropped": self.watch_dropped}
+        yield "meta", "launch", {"launch_equal": self.launch_equal}
 
     def _persist(self) -> None:
         """Write the rows that changed since the last write (called inside the transaction)."""
@@ -719,6 +732,7 @@ class Desk:
         self.abuse_seen = {k: dict(v) for k, v in (meta.get("abuse_seen") or {}).items()}
         self.disabled_log = list(meta.get("disabled_log") or [])
         self.delivery_refusals = list(meta.get("delivery_refusals") or [])
+        self.launch_equal = (self.store.get("meta", "launch") or {}).get("launch_equal") is True
         watch = self.store.get("meta", "watch") or {}
         self.watch_pairs = list(watch.get("pairs") or [])
         self.watch_dropped = int(watch.get("dropped") or 0)
@@ -740,16 +754,6 @@ class Desk:
         with self._mut():
             for m in self.miners.values():
                 m.job = ""
-                if (m.key_id or m.admitted) and m.hotkey not in self.approvals:
-                    # held a key before manual approval existed: approved as it stands (listed
-                    # with ``by: grandfathered``; the operator may revoke it)
-                    self.approvals[m.hotkey] = KeyRequest(
-                        m.hotkey,
-                        state="approved",
-                        decided_ms=self.now_ms(),
-                        approved_coldkey=self._real_coldkey(m.hotkey),
-                        by="grandfathered",
-                    )
             for job in self.jobs.values():
                 if job.state == "assigning":
                     job.state = "queued"
@@ -760,6 +764,32 @@ class Desk:
                     holder = self.miners.get(last.hotkey)
                     if holder is not None:
                         holder.job = job.job
+            if self.key_approval == "manual":
+                self._unapproved_out()
+
+    def _unapproved_out(self) -> None:
+        """Inside a mutation, under manual approval: every hotkey holding a key or an admission
+        it was never approved for (one keyed under the self-serve rule) loses both -- its key
+        deleted on the platform, its job reassigned unscored, as a revocation -- and goes back to
+        pending: it asks, is approved and passes the entry test like anyone else."""
+        out = []
+        for m in self.miners.values():
+            if not (m.key_id or m.admitted) or self.approved(m.hotkey):
+                continue
+            out.append(m.hotkey)
+            m.key_id, m.admitted, m.admission_ms, m.minted_ms = "", False, 0, 0
+            self._free_job(m, "manual approval: the key was never approved", "revoked")
+            self._queue_revoke(m.hotkey)
+            r = self.approvals.get(m.hotkey)
+            if r is None:
+                self.approvals[m.hotkey] = KeyRequest(m.hotkey, first_ms=self.now_ms())
+            elif r.state not in ("refused", "revoked"):
+                r.state, r.decided_ms, r.reason, r.by = "pending", 0, "", ""
+        if out:
+            self.log(
+                f"manual approval: {len(out)} hotkey(s) held a key never approved: revoked, back "
+                "to pending"
+            )
 
     def _remember_copy(self, e: Entry) -> None:
         if self.store is None:
@@ -894,12 +924,7 @@ class Desk:
             self.log(f"key request: {hotkey} asks for an agent key (pending approval)")
         return {
             "pending": True,
-            "message": (
-                "Your request for an agent key is recorded and waits for the subnet team's "
-                "approval. Ask again later with the same call: once approved, it answers your "
-                "key. Then pass the entry test once (POST /v1/miners/admission) before any job "
-                "or weight."
-            ),
+            "message": self.pending_message,
             "retry_after_s": PENDING_RETRY_S,
             "first_ms": r.first_ms,
         }
@@ -1188,6 +1213,15 @@ class Desk:
                     }
                 )
             return rows
+
+    def set_launch_equal(self, on: bool, *, by: str = "operator") -> dict[str, Any]:
+        """Turn the launch rule on or off (persisted); the next hourly vector follows it. Answers
+        the value before and after."""
+        with self._mut():
+            was, self.launch_equal = self.launch_equal, bool(on)
+        if was != self.launch_equal:
+            self.log(f"launch-equal {'on' if self.launch_equal else 'off'} (by {by})")
+        return {"launch_equal": self.launch_equal, "was": was}
 
     def _request(self, hotkey: str) -> KeyRequest:
         """Inside the lock: the hotkey's request, made for a registered hotkey that never asked (an

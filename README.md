@@ -210,12 +210,15 @@ cadmind-einstein --state-dir ~/.local/share/cadmind-einstein \
   (`delivered`, `coldkey` or `hotkey`) who is weighted before anyone has history.
 - **Onboarding.** `--key-approval` (`manual` by default): a registered hotkey's key request waits as *pending*
   until you approve it with `cadmind-einstein-operator` (below); `auto` keeps the self-serve key. An approved key
-  holder passes the entry test once before any job or weight: `--admission-brief-file` (a client-style brief for a
-  small device; a generic built-in one otherwise) at `--admission-effort` (`high` by default, with that effort's
+  holder passes the entry test once before any job or weight. Switching a validator from `auto` to `manual`
+  revokes every key it never approved: those hotkeys go back to pending and start over. `--pending-message-file`
+  sets what a pending miner reads (for example, where to reach the team). The entry test:
+  `--admission-brief-file` (a client-style brief for a small device; a generic built-in one otherwise) at `--admission-effort` (`high` by default, with that effort's
   deadline), with no client questions, through the same gate as a client job.
-- **Launch.** `--launch-equal-until 2026-11-01T00:00:00Z`: until then, equal weight per admitted, registered,
-  reachable hotkey, whatever its history (the report's rule says "launch: equal among admitted miners until ...");
-  after it, the usual rules, with no restart.
+- **Launch.** `--launch-equal` (off by default): equal weight per admitted, registered, reachable hotkey, whatever
+  its history (the report records `launch_equal` and its rule says "launch: equal among admitted miners"). The
+  flag sets the switch at each start; `cadmind-einstein-operator launch-equal on|off` changes it at runtime
+  (persisted until the next start). Off, the usual rules.
 - `--gate-run-s` (1800) bounds one validator guard run (past it the run is stopped and counted as a gate timeout;
   two fail the attempt); `--judge-max-retries` (20) and `--judge-give-up-s` (14400) bound the retries of a judgement
   that fails on the validator's side, after which the job ends "didn't finish", not charged; `--cancel-cooloff-s`
@@ -241,6 +244,7 @@ cadmind-einstein-operator --validator http://127.0.0.1:8793 --token-file ~/.conf
 cadmind-einstein-operator ... approve MINER_SS58
 cadmind-einstein-operator ... refuse MINER_SS58 --reason "words the miner reads"
 cadmind-einstein-operator ... revoke MINER_SS58 --reason "words the miner reads"
+cadmind-einstein-operator ... launch-equal on|off|status
 ```
 
 `pending` lists the requests (hotkey, coldkey, first and last ask, address, the miner's note; `--state all` lists
@@ -393,6 +397,7 @@ Every answer on these routes is signed by the validator's hotkey (`X-Einstein-Va
 | `POST /v1/operator/approve {hotkey}` | approve a hotkey's key request |
 | `POST /v1/operator/refuse {hotkey, reason}` | refuse it; the miner reads the reason |
 | `POST /v1/operator/revoke {hotkey, reason}` | delete its key, drop its admission, reassign its job unscored |
+| `GET`/`POST /v1/operator/launch_equal {on}` | the launch rule's switch, read or set at runtime |
 
 ### Public routes (no auth)
 
@@ -442,7 +447,7 @@ where `E` compares the job's compute and wall time with the median of similar pa
 the client's stars, download, re-run, change request or quality refund (one star), weighted by account trust
 (paid 1, free 0.1). The vote counts with `u = 0.4`, so a client's stars clearly dominate it; in shadow (`u = 0`) an unrated job scores exactly `I`. A miner's weight is the sum of its job scores decayed with a 24-hour half-life (7-day
 window); the hourly vector is proportional to it over registered, admitted, recently seen miners (at the mainnet
-launch, until `--launch-equal-until`, it is equal per admitted hotkey instead). Only admitted miners are ever
+launch, while the operator's launch switch is on, it is equal per admitted hotkey instead). Only admitted miners are ever
 weighted, by every rule and fallback. Weight is never
 burned and the subnet owner's hotkey is never weighted; at genesis (nobody has history) the weight is split
 equally per coldkey among admitted miners that have delivered a scored client job. The vector is **never empty**
