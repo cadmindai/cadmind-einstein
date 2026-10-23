@@ -7,7 +7,7 @@ All notable changes to this project are listed here. The format follows
 
 ## [Unreleased]
 
-## [0.4.8] - unreleased
+## [0.4.8] - 2026-10-23
 
 ### Added
 - **Manual miner onboarding** (`--key-approval manual`, the new default; `auto` keeps the self-serve key). A
@@ -49,7 +49,7 @@ All notable changes to this project are listed here. The format follows
   vector was sent again for every hotkey still registered, so a revoked, disabled or deregistered-and-returned
   miner kept its share. It now keeps only the hotkeys still admitted.
 
-## [0.4.7] - unreleased
+## [0.4.7] - 2026-10-23
 
 ### Fixed
 - **A gate refusal names every must the validator's guard refused.** Besides the survivors' `unguarded` musts, the
