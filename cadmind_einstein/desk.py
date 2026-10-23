@@ -199,19 +199,31 @@ def job_event(event: str, job: str, **fields: Any) -> str:
     return "job-event " + json.dumps(row, separators=(",", ":"), default=str)
 
 
+_NAMED_VERDICTS = ("unguarded", "unproven", "read", "excused")
+"""The guard verdicts of a must that refuse it, in the order the verdict's words name them:
+``unguarded`` (a survivor its tests missed), ``unproven`` (refused only by rules not about it,
+W0825), ``read`` (its mutants only read by a measure) and ``excused`` (only harmless or equivalent
+mutants reached it)."""
+
+
 def _survivors(guard: Any) -> str:
-    """The must requirements a refused guard run names unguarded, for the verdict's words."""
+    """The must requirements a refused guard run names unguarded, unproven, read or excused, for the
+    verdict's words: the unguarded ones from its ``survivors``, every one from its per-requirement
+    ``requirements`` verdicts (a guard older than those carries only ``survivors``). The words only
+    name the musts; the refusal itself is the run's, never this."""
     if not isinstance(guard, dict):
         return ""
-    reqs = sorted(
-        {
-            str(r)
-            for s in guard.get("survivors") or []
-            if isinstance(s, dict)
-            for r in s.get("requirements") or []
-        }
-    )
-    return f": unguarded {', '.join('R.' + r for r in reqs)}" if reqs else ""
+    named: dict[str, set[str]] = {k: set() for k in _NAMED_VERDICTS}
+    for s in guard.get("survivors") or []:
+        if isinstance(s, dict):
+            named["unguarded"].update(str(r) for r in s.get("requirements") or [])
+    for v in guard.get("requirements") or []:
+        if isinstance(v, dict) and v.get("status") in named and v.get("requirement"):
+            named[str(v["status"])].add(str(v["requirement"]))
+    words = [
+        f"{k} {', '.join('R.' + r for r in sorted(named[k]))}" for k in _NAMED_VERDICTS if named[k]
+    ]
+    return f": {'; '.join(words)}" if words else ""
 
 
 @dataclass(frozen=True)

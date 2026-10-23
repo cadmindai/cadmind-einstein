@@ -7,6 +7,12 @@ All notable changes to this project are listed here. The format follows
 
 ## [Unreleased]
 
+### Fixed
+- **A gate refusal names every must the validator's guard refused.** Besides the survivors' `unguarded` musts, the
+  words now name the musts whose per-requirement guard verdict is `unproven` (W0825), `read` or `excused`, which
+  `watt-guard 9` refuses with no survivor to name (they used to say only "did not pass"). A guard without
+  per-requirement verdicts still names its survivors; the words never decide the refusal.
+
 ## [0.4.6] - 2026-10-22
 
 ### Added

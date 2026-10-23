@@ -21,7 +21,7 @@ from typing import Any
 import bittensor.http_auth as btauth
 from bittensor.sp_core import Keypair
 
-from cadmind_einstein.desk import GATE_RUN_S, Desk, DeskError
+from cadmind_einstein.desk import GATE_RUN_S, Desk, DeskError, _survivors
 from cadmind_einstein.platform import PlatformError
 from cadmind_einstein.scoring import (
     HOUR_MS,
@@ -152,6 +152,11 @@ class FakePlatform:
                     "digest": digest,
                     "sampled": {"seed": "sha256:validator"},
                     "survivors": [{"label": "drop hook", "requirements": ["holds"]}],
+                    "requirements": [
+                        {"requirement": "holds", "status": "unguarded"},
+                        {"requirement": "fits", "status": "unproven"},
+                        {"requirement": "mounts", "status": "killed"},
+                    ],
                 }
                 return {"state": "done", "ok": False, "data": {"guard": guard}}
             if w.get("report_fails"):  # the guard passes but the delivery's files cannot be made
@@ -712,7 +717,8 @@ class TestGateDraw(unittest.TestCase):
         a = self.desk.jobs["r1"].attempts[0]
         self.assertEqual((a.hotkey, a.kind), (hk, "gate"))
         self.assertIn("validator's own mutation guard did not pass", a.outcome)
-        self.assertIn("unguarded R.holds", a.outcome)
+        self.assertIn("unguarded R.holds; unproven R.fits", a.outcome)
+        self.assertNotIn("R.mounts", a.outcome)  # killed: guarded, not named
         self.assertEqual(self.p.completed["r1"]["charge"], False)
         # held, then counted (0) at the ending: one owner's opinion only
         self.assertEqual([o.s for o in self.ledger.outcomes], [0.0])
@@ -812,6 +818,50 @@ class TestGateDraw(unittest.TestCase):
         self.assertEqual(a.kind, "gate")
         self.assertIn("did not finish within the validator's budget", a.outcome)
         self.assertNotIn(a.fork, self.p.deleted)  # its fork is the project kept
+
+
+class TestSurvivorsWords(unittest.TestCase):
+    """The gate's refusal names each must the validator's guard refused, by its verdict: the
+    survivors' unguarded musts, and the per-requirement ``unproven``, ``read`` and ``excused`` ones
+    (watt-guard 9 refuses those too, with no survivor to name)."""
+
+    def test_a_refusal_with_no_survivor_names_its_unproven_read_and_excused_musts(self) -> None:
+        guard = {
+            "survivors": [],
+            "requirements": [
+                {"requirement": "seals", "status": "excused"},
+                {"requirement": "fits", "status": "unproven"},
+                {"requirement": "grips", "status": "read"},
+                {"requirement": "bears", "status": "unproven"},
+                {"requirement": "holds", "status": "killed"},
+                {"requirement": "rests", "status": "checked"},
+                {"requirement": "joins", "status": "pending interface"},
+            ],
+        }
+        self.assertEqual(
+            _survivors(guard), ": unproven R.bears, R.fits; read R.grips; excused R.seals"
+        )
+
+    def test_unguarded_musts_come_from_survivors_and_verdicts_once_each(self) -> None:
+        guard = {
+            "survivors": [
+                {"label": "drop hook", "requirements": ["holds"]},
+                {"label": "thin wall", "requirements": ["holds"]},
+            ],
+            "requirements": [
+                {"requirement": "holds", "status": "unguarded"},
+                {"requirement": "spans", "status": "unguarded"},
+            ],
+        }
+        self.assertEqual(_survivors(guard), ": unguarded R.holds, R.spans")
+
+    def test_a_guard_older_than_per_requirement_verdicts_names_its_survivors(self) -> None:
+        guard = {"survivors": [{"label": "drop hook", "requirements": ["holds"]}]}
+        self.assertEqual(_survivors(guard), ": unguarded R.holds")
+
+    def test_nothing_to_name_says_nothing(self) -> None:
+        for guard in (None, {}, [], {"survivors": [], "requirements": []}, {"requirements": [1]}):
+            self.assertEqual(_survivors(guard), "")
 
 
 class TestService(unittest.TestCase):
