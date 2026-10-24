@@ -562,6 +562,8 @@ class TestOneRule(unittest.TestCase):
     def test_the_prompts_say_one_rule_for_a_missed_need_and_when_to_split(self) -> None:
         said = " ".join(PROMPT.split())
         self.assertIn("watt_guide` (brief, then primer, then scope)", said)
+        self.assertIn("each topic your device needs", said)
+        self.assertIn("primer's Topics table", said)
         self.assertIn("only the client trades a need away", said)
         self.assertIn(
             "When the client can be asked, it stays open and you deliver the rest (DONE)", said

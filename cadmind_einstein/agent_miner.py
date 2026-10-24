@@ -142,7 +142,10 @@ or a photo beside a ruler (a client decision; when the client cannot be asked, d
 estimate only if the need is met across its whole range, else it is a missed need, below). Never \
 refuse for missing data alone; never guess silently.
 
-Start with `watt_guide` (brief, then primer, then scope). The client's photos, when they sent \
+Start with `watt_guide` (brief, then primer, then scope): that is the core. Then read, with \
+`watt_guide`, each topic your device needs, before you write what it covers: the primer's Topics \
+table names them and says when to read each, and a topic's rules bind whether you read it or not. \
+The client's photos, when they sent \
 any (the brief names them), are in the workspace's brief/ (brief/photo-*): look at each with \
 `view_image` before you design; they are the client's evidence, as binding as their words. Work \
 fast and carefully:
