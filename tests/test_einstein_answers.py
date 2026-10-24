@@ -188,33 +188,19 @@ class TestCheck(unittest.TestCase):
         # without the flag an open question is the client's to answer, and passes
         self.assertEqual(check(exported({"spec/decisions.toml": OPEN})), "")
 
-    def test_a_missed_need_with_no_one_to_ask_is_never_delivered(self) -> None:
-        """Watt's W0240 (ADR-027): only the client trades a need away. A no-questions job whose
-        decision misses a need fails the gate, which tells the builder to reject the job
-        (needs-client) with the decision's question -- not to decide it itself."""
+    def test_a_missed_need_recorded_as_the_builders_own_is_delivered(self) -> None:
+        """Owner 2026-10-24: no questions -- the builder assumes and records. A no-questions job's
+        need no option keeps is the builder's own decided decision with `misses` (Watt's W0240
+        accepts it on such a job), and passes the gate; left open, it is an open client decision."""
         files = {"spec/needs.toml": NEEDS, "spec/decisions.toml": TRADED}
-        why = check(exported(files), no_questions=True)
-        self.assertIn("decision charge_path leaves need(s) charge unmet", why)
-        self.assertIn("reject it with category needs-client", why)
-        self.assertIn("Charge the phone through a role-swap part", why)
+        self.assertEqual(check(exported(files), no_questions=True), "")
         opened = TRADED.replace(
             'by = "agent"\nstatus = "decided"\nchoice = "leave"',
             'by = "client"\nstatus = "open"\nassumption = "leave"',
         )
         why = check(exported({**files, "spec/decisions.toml": opened}), no_questions=True)
-        self.assertIn("needs-client", why)
-        self.assertNotIn("decide each yourself", why)
-        # a need the client accepted as a wish may be missed; and with questions allowed, it is
-        # Watt's W0240 (and the client's answer), not this check
-        wish = NEEDS + 'wish = "charging would be nice"\n'
-        self.assertEqual(check(exported({**files, "spec/needs.toml": wish}), no_questions=True), "")
-        accepted = TRADED.replace(
-            'by = "agent"\nstatus = "decided"\nchoice = "leave"',
-            'by = "client"\nstatus = "answered"\nchoice = "accept"',
-        ).replace('affects = ["R.charge"]', 'affects = ["R.charge", "needs.charge"]')
-        self.assertEqual(
-            check(exported({**files, "spec/decisions.toml": accepted}), no_questions=True), ""
-        )
+        self.assertIn("decide each yourself", why)
+        self.assertNotIn("needs-client", why)
         self.assertEqual(check(exported(files)), "")
 
     def test_an_unreadable_export_fails_closed(self) -> None:
@@ -338,7 +324,7 @@ class TestMinerPrompt(unittest.TestCase):
         decide = questions_rule({"no_questions": True}, "ag-1")
         self.assertIn("NOT to be asked questions", decide)
         self.assertIn('by = "agent", status = "decided"', decide)
-        self.assertIn("REJECT needs-client: <the decision's question>", decide)
+        self.assertIn("do not REJECT for it", decide)
         self.assertIn('misses = ["<need>"]', decide)
         one = questions_rule({"subprojects": False}, "ag-1")
         self.assertIn("NOT allowed for this job", one)

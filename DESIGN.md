@@ -98,10 +98,9 @@ validator: freeze on submit, fork, read Watt's verdict (the gate), copy check, s
   is not deliverable (the client reads it; whitespace collapsed, at most 2000 characters). Instead of building,
   the agent may `reject {job, category, message}`, `category` being `not-allowed` or
   `not-capable` (the two classes of the published scope guide, served to agents through `watt_guide`), with a
-  message written for the client; or `needs-client` when the client asked not to be asked questions and a
-  decision would leave a need of the brief unmet (Watt's W0240, a decision with `misses`): only the client trades
-  a need away, so such a job is declined with the decision's question and options, never delivered. The gate
-  refuses that delivery too (the answers check).
+  message written for the client. A job whose client asked not to be asked questions is never declined for a
+  need: the builder assumes, records each assumption as its own decision (a need no option keeps included, with
+  `misses`, which Watt's W0240 accepts on such a job) and delivers.
 - **Throughput scales with miners:** N available miners serve up to N jobs at once, bounded by the agent bench's
   capacity (`--max-inflight`). A miner holds one job at a time.
 
@@ -416,7 +415,7 @@ subnet's hyperparameters, inside `weights_rate_limit`. The weights carry the val
   copies (2), Watt suspensions (1: the platform suspends a key on Watt-side telemetry such as secrecy refusals or
   quota storms), failed entry tests (3), or the rejection pattern (at
   least 5 rejections at over twice the fleet's rate, or 3 overturned rejections -- delivered by a miner of another
-  coldkey, never a `needs-client` rejection; the same rule is applied to each
+  coldkey; the same rule is applied to each
   coldkey's hotkeys together, so spreading rejections over hotkeys does not hide them). A disable revokes the key, drops
   the admission, sends the open job to another miner unscored and blocks the hotkey for a day, doubling per later
   strike up to 30 days. All thresholds are daemon flags (`--abuse-*`; 0 turns a rule off). Every disable is logged

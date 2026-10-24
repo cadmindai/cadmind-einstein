@@ -110,7 +110,7 @@ EXPLORE = 0.10
 THIN_JOBS = 5
 DONE_KEEP_MS = 7 * 24 * 3_600_000
 """how long a finished job stays queryable (and in the store)"""
-CATEGORIES = ("not-allowed", "not-capable", "needs-client")
+CATEGORIES = ("not-allowed", "not-capable")
 """What an agent may reject a job as (:meth:`Desk.reject`)."""
 SUBSTANTIVE = ("reject", "gate")
 """attempt kinds that are an opinion on the job (it cannot or should not be done)"""
@@ -264,8 +264,8 @@ class AbusePolicy:
     """entry tests that did not pass the gate (one a day at most)"""
     rejections: bool = True
     """the rejection telemetry's flag: ``rejections_min`` rejections at over ``rejection_ratio``
-    times the fleet's rate, or ``overturned`` rejections a miner of another coldkey then passed (a
-    ``needs-client`` rejection is never overturned: :meth:`Desk._overturns`)"""
+    times the fleet's rate, or ``overturned`` rejections a miner of another coldkey then passed
+    (:meth:`Desk._overturns`)"""
     rejections_min: int = 5
     rejection_ratio: float = 2.0
     overturned: int = 3
@@ -329,7 +329,7 @@ class Attempt:
     """'' while open; pass | reject | gate | timeout | copy"""
     category: str = ""
     message: str = ""
-    """a rejection's category (not-allowed | not-capable | needs-client) and the agent's message to
+    """a rejection's category (not-allowed | not-capable) and the agent's message to
     the client"""
     fork: str = ""
     """the validator's fork being gated, kept across a judgement retried on our side (its guard
@@ -1440,18 +1440,13 @@ class Desk:
         self._spawn(self._judge, job, a)
 
     def reject(self, hotkey: str, job_id: str, category: str, message: str) -> dict[str, Any]:
-        """The agent declines the assignment (the scope guide: not allowed, or not capable; or
-        ``needs-client``: the client asked not to be asked questions, and a need of the brief can
-        only be met or traded away by the client's decision -- Watt's W0240, a decision that
-        ``misses`` a need -- whose question and options are the message), with a message the
-        client reads if the job ends declined. The job goes to a second miner, which decides on its
-        own and is not shown the first one's message. A ``needs-client`` rejection counts in the
-        miner's rejection rate like the others, but another miner delivering the job does not
-        overturn it: on a no-questions job, missing a need is the client's decision alone, so the
-        rejection was honest even when another builder traded the need away itself
-        (:meth:`_overturns`)."""
+        """The agent declines the assignment (the scope guide: not allowed, or not capable), with
+        a message the client reads if the job ends declined. The job goes to a second miner, which
+        decides on its own and is not shown the first one's message. A job whose client asked not
+        to be asked questions is never declined for a need: the builder assumes, records it and
+        delivers (owner 2026-10-24)."""
         if category not in CATEGORIES:
-            raise DeskError("category is not-allowed, not-capable or needs-client")
+            raise DeskError("category is not-allowed or not-capable")
         text = " ".join(str(message or "").split())[:2000]
         if not text:
             raise DeskError("a rejection says why, for the client")
@@ -2910,18 +2905,15 @@ class Desk:
             self._event("ended", job.job, label="delivered", hotkey=a.hotkey, score=s)
 
     def _overturns(
-        self, job: Job, rejecter: str, deliverer: str, cmap: Mapping[str, str] | None = None
+        self,
+        job: Job,  # noqa: ARG002 -- kept for its callers
+        rejecter: str,
+        deliverer: str,
+        cmap: Mapping[str, str] | None = None,
     ) -> bool:
         """Whether ``deliverer`` passing ``job`` overturns ``rejecter``'s rejection of it (the
-        abuse policy's ``overturned`` count). Not when the rejection was ``needs-client`` (on a
-        no-questions job, missing a need is the client's decision alone: the rejection was honest
-        even if another builder traded the need away), nor when both hotkeys are one owner's (one
+        abuse policy's ``overturned`` count). Not when both hotkeys are one owner's (one
         coldkey: no independent opinion). The held 0 the rejection scores is unchanged."""
-        category = next(
-            (x.category for x in job.attempts if x.hotkey == rejecter and x.kind == "reject"), ""
-        )
-        if category == "needs-client":
-            return False
         cmap = self._cmap() if cmap is None else cmap
         return self.coldkey(rejecter, cmap) != self.coldkey(deliverer, cmap)
 

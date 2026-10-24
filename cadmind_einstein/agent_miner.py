@@ -29,7 +29,7 @@ questions and answers: check
 ``client_answers`` after each ``watt`` step, record each answer in its decision -- or, when the
 client asked not to be asked questions, decide every one) and ``{no_questions}`` (``yes``/``no``).
 The agent's last line must be ``DONE <digest>``, or it ends with
-``REJECT <not-allowed|not-capable|needs-client>: <message for the client>`` (the message runs to the
+``REJECT <not-allowed|not-capable>: <message for the client>`` (the message runs to the
 end of its output, over several lines if it says more).
 
 There is no hand-over: an agent that ends without either while more than 10 minutes remain is
@@ -173,9 +173,9 @@ A `watt` run far longer than usual: stop it with `watt_cancel` and change the de
 Deliver what you can; only the client trades a need away. When part of the request cannot be \
 delivered, build everything that can be delivered without giving up a need, and make the missing \
 part an open client decision whose option leaves it out (misses = ["<need>"]). When the client can \
-be asked, it stays open and you deliver the rest (DONE). When the client asked not to be asked, it \
-ends the job instead, once you have checked that no option you can build keeps the need: `REJECT \
-needs-client`, as the questions rule says, never DONE. A client's \
+be asked, it stays open and you deliver the rest (DONE). When the client asked not to be asked, \
+you decide it yourself, once you have checked that no option you can build keeps the need, as the \
+questions rule says, and deliver (DONE). A client's \
 "you may quit if it is impossible" does not change that.
 A device too big for one round (more parts, controls and tests than your time builds and guards): \
 decide at the walk-through to split it into sub-projects (`watt describe subproject`). This \
@@ -226,27 +226,24 @@ do what it asks; a photo they send (kind photo, brief/photo-*) is theirs: look a
 `view_image`. The validator refuses a delivery that leaves an answer unrecorded. Use \
 `wait_for_answer` only when no useful work can go on under the assumptions (it waits briefly). \
 If `client_answers` says `no_questions: true`, the client asked not to be asked: decide every \
-would-be question yourself instead (by = "agent", status = "decided", choice, because), save one \
-that trades a need away: it ends the job with `REJECT needs-client` (the deliver-what-you-can \
-rule). """
+would-be question yourself instead (by = "agent", status = "decided", choice, because), a missed \
+need included (misses = ["<need>"]), and say each assumption in your final lines. """
     + PARTS
 )
 
 NO_QUESTIONS = (
-    """The client asked NOT to be asked questions: leave no client decision open. \
-Decide every would-be question yourself as an agent decision (by = "agent", status = "decided", \
-choice = the option you build on, because = why), so the client sees it as an assumption on the \
-result. \
-The validator refuses a delivery with an open client decision. Still call `client_answers` after \
-each `watt` command: a change the client sends mid-job arrives there (brief/change-*.md), and \
-so does a photo (brief/photo-*: look at it with `view_image`). \
-One exception: a decision whose option you would build on leaves a need of the brief unmet \
-(record it with misses = ["<need>"]; Watt's W0240 refuses it as yours to take). Trading a need \
-away is the client's alone, and this client cannot be asked: do not decide it and do not \
-deliver. Every other would-be question is decided and built as usual; a missed need ends the job \
-once you have checked that no option you can build keeps the need. End with: REJECT \
-needs-client: <the decision's question>; options: <id: its \
-consequence>; ... (written for the client). """
+    """The client asked NOT to be asked questions: this is a feature, not a limit. Leave no \
+client decision open: every would-be question is yours to decide. Assume, and record each \
+assumption as an agent decision (by = "agent", status = "decided", choice = the option you build \
+on, because = why; for a size, count or position you could not source, the range you designed \
+for), and build it. The client sees each one on the result and can always ask for a change, so \
+your final lines name every assumption plainly. Never write by = "client", an answer or a quote \
+the client did not send. An uncertainty stays in the model as the range you assumed, never \
+deleted to clear a check. A need that no option you can build keeps is decided the same way: \
+build the option closest to it, record the decision with misses = ["<need>"] and its reason, and \
+say so first in your final lines; do not REJECT for it. Still call `client_answers` after each \
+`watt` command: a change the client sends mid-job arrives there (brief/change-*.md), and so does \
+a photo (brief/photo-*: look at it with `view_image`). """
     + PARTS
 )
 
@@ -427,7 +424,7 @@ SUMMARY_CHARS = 2000
 """the most of the agent's final text sent as ``summary`` (the validator keeps as many)"""
 
 _DONE = re.compile(r"^DONE\s+(\S+)\s*$", re.MULTILINE)
-_REJECT = re.compile(r"^REJECT (not-allowed|not-capable|needs-client):[ \t]*(\S.*)?$", re.MULTILINE)
+_REJECT = re.compile(r"^REJECT (not-allowed|not-capable):[ \t]*(\S.*)?$", re.MULTILINE)
 _UNFINISHED = re.compile(r"^UNFINISHED:\s*(.+)$", re.MULTILINE)
 _NO_RESPONSE = "No response requested."
 """What Claude Code's CLI answers when a resumed session does not call the model at all (2026-10-21:

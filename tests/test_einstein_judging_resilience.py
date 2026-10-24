@@ -8,8 +8,7 @@
   the validator judges at once, and a job's end frees its miner of that job only;
 - every job event is one structured log line, with no brief or client message in it, and the
   retry reason is kept on the attempt;
-- a ``needs-client`` rejection, or one delivered by the same owner's other hotkey, is never an
-  overturned rejection."""
+- a rejection delivered by the same owner's other hotkey is never an overturned rejection."""
 
 from __future__ import annotations
 
@@ -503,19 +502,6 @@ class TestOverturned(unittest.TestCase):
                 desk.miners[h].blocked_until_ms = 0
             clock.t += 3600
 
-    def test_repro_r2_needs_client_rejections_by_one_owner_disable_nobody(self) -> None:
-        desk, p, clock = self.rig({A: "owner", B: "owner", C: "other"})
-        self.overturn(desk, p, clock, A, B, 3, "needs-client")
-        self.assertEqual(desk._abuse_counts(A)["overturned"], 0)
-        self.assertEqual(desk.enforce(), [])
-        self.assertFalse(desk.telemetry()[A]["flagged"])
-
-    def test_a_needs_client_rejection_another_owner_delivered_is_not_overturned(self) -> None:
-        desk, p, clock = self.rig({A: "a", B: "b", C: "c"})
-        self.overturn(desk, p, clock, A, C, 3, "needs-client")
-        self.assertEqual(desk.overturned.get(A, 0), 0)
-        self.assertEqual(desk.enforce(), [])
-
     def test_the_same_owners_delivery_overturns_nothing(self) -> None:
         desk, p, clock = self.rig({A: "owner", B: "owner", C: "other"})
         self.overturn(desk, p, clock, A, B, 3, "not-capable")
@@ -531,9 +517,9 @@ class TestOverturned(unittest.TestCase):
         self.assertIn("3 overturned", acted[0]["reason"])
 
     def test_a_withdrawn_delivery_takes_back_only_what_it_counted(self) -> None:
-        desk, p, clock = self.rig({A: "a", B: "b", C: "c"})
+        desk, p, clock = self.rig({A: "a", B: "c", C: "c"})
         self.overturn(desk, p, clock, A, C, 1, "not-capable")
-        self.overturn(desk, p, clock, B, C, 1, "needs-client")
+        self.overturn(desk, p, clock, B, C, 1, "not-capable")  # one owner's: not counted
         desk.overturned[B] = 5  # an earlier, counted overturn of B's must stay counted
         self.assertEqual(desk.overturned[A], 1)
         for job in [j for j in desk.jobs if desk.jobs[j].result.get("label") == "delivered"]:

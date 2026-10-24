@@ -473,10 +473,8 @@ class TestNoHandOver(unittest.TestCase):
             (kind, body["category"], body["message"]), ("reject", "not-allowed", "a weapon")
         )
         self.assertEqual(outcome("admission-1", "w", "REJECT not-allowed: x")[0], "submit")
-        # a no-questions job whose design would miss a need of the brief is the client's to decide
-        said = "REJECT needs-client: charge the phone? options: a: no; b: a PD chip"
-        kind, body = outcome("j", "w", said)
-        self.assertEqual((kind, body["category"]), ("reject", "needs-client"))
+        # no questions: the builder assumes and records (owner 2026-10-24); no needs-client
+        self.assertFalse(agent_miner.ended("REJECT needs-client: charge it? options: a: no"))
 
     def test_a_reject_message_is_kept_whole(self) -> None:
         """2026-10-21: only the first line reached the client, and the builder's offer to fix the
@@ -491,7 +489,7 @@ class TestNoHandOver(unittest.TestCase):
             body["message"],
             "the camera position is unpublished. I can still fix: - the dimensions - the lip",
         )
-        body = outcome("j", "w", "REJECT needs-client:\nWhich phone? options: a: 10; b: 10 Pro")[1]
+        body = outcome("j", "w", "REJECT not-capable:\nWhich phone? options: a: 10; b: 10 Pro")[1]
         self.assertEqual(body["message"], "Which phone? options: a: 10; b: 10 Pro")
 
 
@@ -568,12 +566,16 @@ class TestOneRule(unittest.TestCase):
         self.assertIn(
             "When the client can be asked, it stays open and you deliver the rest (DONE)", said
         )
-        self.assertIn("`REJECT needs-client`, as the questions rule says, never DONE", said)
+        self.assertIn("as the questions rule says, and deliver (DONE)", said)
+        self.assertNotIn("needs-client", said)
         self.assertIn("A device too big for one round", said)
         self.assertIn("`watt describe subproject`", said)
         self.assertIn("brief/parent.md", said)
         nq = " ".join(agent_miner.NO_QUESTIONS.split())
-        self.assertIn("Every other would-be question is decided and built as usual", nq)
+        self.assertIn("Assume, and record each assumption as an agent decision", nq)
+        self.assertIn('record the decision with misses = ["<need>"]', nq)
+        self.assertIn("do not REJECT for it", nq)
+        self.assertNotIn("needs-client", nq + " ".join(agent_miner.QUESTIONS.split()))
         q = " ".join(agent_miner.QUESTIONS.split())
         self.assertIn("keep its assumption line", q)
         self.assertIn("a `watt` answer also says when the client wrote", q)

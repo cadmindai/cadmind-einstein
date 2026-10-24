@@ -7,6 +7,16 @@ All notable changes to this project are listed here. The format follows
 
 ## [Unreleased]
 
+### Removed
+- **The `needs-client` rejection** (owner 2026-10-24: "no questions: the miner assumes and records"). On a job
+  whose client asked not to be asked questions, a need no option keeps is the builder's own decided decision with
+  `misses` (Watt's W0240 accepts it on such a job) and the job is delivered: the gate no longer refuses it, the
+  desk takes `not-allowed` and `not-capable` only, and the reference miner's prompt says assume, record and deliver.
+
+### Changed
+- **The reference miner reads Watt's guide topics**: the core (brief, primer, scope), then each topic the device
+  needs (`watt_guide <topic>`; the primer's Topics table says when).
+
 ## [0.4.8] - 2026-10-23
 
 ### Added

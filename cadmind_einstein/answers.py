@@ -22,9 +22,8 @@ the project's own files (the export), trusting nothing the builder says:
   next round's.
 - a job whose client asked not to be asked questions (``no_questions``) leaves no client decision
   open: each would-be question is the builder's own decision (``by = "agent"``, ``status =
-  "decided"``) -- except a decision whose option leaves a need unmet (``misses``, Watt's W0240) that
-  the client did not accept as a wish: only the client trades a need away, so such a job is never
-  delivered; the builder rejects it (``needs-client``) with the decision's question.
+  "decided"``), a need no option keeps included (``misses``: Watt's W0240 accepts it on such a job,
+  owner 2026-10-24: "the miner can assume, given that the user can always run an update").
 
 Pure: the caller hands in the export's bytes, so the reading is tested apart from any platform.
 """
@@ -158,46 +157,6 @@ def open_client(decisions: Mapping[str, Mapping[str, Any]]) -> list[str]:
     )
 
 
-def wished_needs(
-    spec_files: Mapping[str, str], decisions: Mapping[str, Mapping[str, Any]]
-) -> set[str]:
-    """The needs the client accepted as wishes (Watt's ADR-019 L1): a ``[need.<id>]`` with its
-    ``wish`` words, or an answered client decision that chose ``accept`` and affects
-    ``needs.<id>``."""
-    out: set[str] = set()
-    for _, text in sorted(spec_files.items()):
-        try:
-            table = tomllib.loads(text).get("need")
-        except tomllib.TOMLDecodeError:
-            continue
-        if isinstance(table, Mapping):
-            out |= {str(i) for i, n in table.items() if isinstance(n, Mapping) and n.get("wish")}
-    for d in decisions.values():
-        if (
-            d.get("by") == "client"
-            and d.get("status") == "answered"
-            and d.get("choice") == "accept"
-        ):
-            affects = d.get("affects") if isinstance(d.get("affects"), list) else []
-            out |= {str(a)[6:] for a in affects if str(a).startswith("needs.")}
-    return out
-
-
-def trades(
-    decisions: Mapping[str, Mapping[str, Any]], wished: set[str]
-) -> list[tuple[str, list[str]]]:
-    """The decisions, not answered by the client nor superseded, whose option leaves a need unmet
-    that the client did not accept as a wish (``misses``, Watt's W0240): (id, those needs). Only
-    the client trades a need away."""
-    out: list[tuple[str, list[str]]] = []
-    for ident, d in sorted(decisions.items()):
-        misses = d.get("misses") if isinstance(d.get("misses"), list) else []
-        unmet = [str(n) for n in misses if str(n) not in wished]
-        if unmet and d.get("status") in ("open", "decided"):
-            out.append((ident, unmet))
-    return out
-
-
 def _chain(
     decisions: Mapping[str, Mapping[str, Any]], ident: str
 ) -> list[tuple[str, Mapping[str, Any]]]:
@@ -329,17 +288,7 @@ def check(
             "the client's answers are not all recorded: " + "; ".join(problems[:SAID]) + more
         )
     if no_questions:
-        traded = trades(decisions, wished_needs(specs, decisions))
-        for ident, unmet in traded[:SAID]:
-            question = " ".join(str(decisions[ident].get("question") or "").split())[:300]
-            said.append(
-                f"decision {ident} leaves need(s) {', '.join(unmet)} unmet, and only the client "
-                "may trade a need away; this client asked not to be asked questions, so the job "
-                "cannot be delivered: reject it with category needs-client and the decision's "
-                f"question and options as the message ({question})"
-            )
-        skip = {i for i, _ in traded}
-        still = [i for i in open_client(decisions) if i not in set(kept_open) and i not in skip]
+        still = [i for i in open_client(decisions) if i not in set(kept_open)]
         if still:
             said.append(
                 "the client asked not to be asked questions, and client decision(s) "
