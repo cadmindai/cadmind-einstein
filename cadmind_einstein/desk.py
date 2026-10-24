@@ -94,6 +94,7 @@ from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import asdict, dataclass, field
 from typing import Any, Protocol
 
+from . import __version__
 from .answers import check as answers_check
 from .platform import PlatformError
 from .scoring import JobOutcome, Ledger, size_class
@@ -390,6 +391,10 @@ class Job:
     """a style round (cadmind-watt ADR-020): ``baseline``, the settled contract the round began
     from, as the platform's ``watt style begin`` answered it; the gate refuses a delivery that did
     not keep it (:mod:`.style`). Empty on every other job."""
+    calibration: dict[str, Any] = field(default_factory=dict)
+    """the operator's calibration tag of the job (the claim's ``calibration``: ``{set, id,
+    generator, ...}``, e.g. a canary), kept for the archive and the operator's analysis. Never in
+    the miner's ``work``: a builder cannot tell a canary from a client's job. Empty on most jobs."""
 
     @property
     def current(self) -> Attempt | None:
@@ -406,6 +411,27 @@ def _style_of(value: Any) -> dict[str, Any]:
     if not isinstance(baseline, Mapping) or not baseline.get("contract"):
         return {}
     return {"baseline": dict(baseline)}
+
+
+CALIBRATION_MAX = 2000
+"""the longest calibration tag kept (its JSON, characters)"""
+
+
+def _calibration_of(value: Any) -> dict[str, Any]:
+    """A claim's ``calibration`` tag: an object of short scalars, kept when its JSON is small;
+    anything else is dropped (the tag is analytics, never a reason to refuse a job)."""
+    if not isinstance(value, Mapping):
+        return {}
+    out = {
+        str(k)[:40]: v if not isinstance(v, str) else v[:200]
+        for k, v in value.items()
+        if isinstance(v, (str, int, float, bool)) or v is None
+    }
+    try:
+        text = json.dumps(out, sort_keys=True)
+    except (TypeError, ValueError):
+        return {}
+    return out if len(text) <= CALIBRATION_MAX else {}
 
 
 def _continuation_of(value: Any) -> dict[str, Any]:
@@ -550,9 +576,17 @@ class Desk:
         mint_per_coldkey_hour: int = MINT_PER_COLDKEY_HOUR,
         mint_fresh_s: float = MINT_FRESH_S,
         on_delivered: Callable[[str, str], None] | None = None,
+        archive: Any = None,
+        judge: Callable[[], Mapping[str, Any]] | None = None,
     ) -> None:
         self.platform, self.ledger, self.registered = platform, ledger, registered
         self.on_delivered = on_delivered
+        self.archive = archive
+        """the calibration archive (:class:`.archive.Archive`): each job's row as it ended and as
+        the store lets it go; None keeps none"""
+        self.judge = judge
+        """the judge the deliveries are voted under (:meth:`.votes.Reviewer.judge`), for the
+        versions a result names; None when nothing votes"""
         """told (job, builder's hotkey) once the platform took a delivered, charged result: the
         reviewer's queue (:mod:`.votes`)"""
         self.cancel_cooloff_s, self.gate_run_s = cancel_cooloff_s, gate_run_s
@@ -1621,6 +1655,7 @@ class Desk:
                 old.subprojects = _flag(body.get("subprojects"))
                 old.style = _style_of(body.get("style"))
                 old.continuation = _continuation_of(body.get("continuation"))
+                old.calibration = _calibration_of(body.get("calibration"))
                 old.state, old.result = "queued", {}
                 old.queued_ms = self.now_ms()
                 if job_id in self._outbox:
@@ -1659,6 +1694,7 @@ class Desk:
                 subprojects=_flag(body.get("subprojects")),
                 style=_style_of(body.get("style")),
                 continuation=_continuation_of(body.get("continuation")),
+                calibration=_calibration_of(body.get("calibration")),
             )
         return self.status(job_id)
 
@@ -1707,6 +1743,8 @@ class Desk:
         delivery's quality -- scored as one star -- false otherwise: recorded, not scored). Late
         signals change the job's score when they arrive."""
         kind = str(body.get("kind") or "")
+        if kind == "forget":
+            return self.forget(job_id)
         if kind not in ("download", "stars", "change", "refund"):
             raise DeskError(
                 "kind is download, stars, change or refund (a re-run is a new job with rerun_of)"
@@ -1729,6 +1767,47 @@ class Desk:
         if s is None:
             raise DeskError("no delivered job by that id", 404)
         return {"job": job_id, "score": s}
+
+    def forget(self, job_id: str) -> dict[str, Any]:
+        """The platform says the job's client deleted it (the ``forget`` signal): its calibration
+        archive goes, and nothing more is archived of it (:meth:`.archive.Archive.forget`). The
+        store's own rows age out as before (``DONE_KEEP_MS``); its scores are in the reports."""
+        gone = self.archive.forget(job_id) if self.archive is not None else False
+        self._event("forgotten", job_id, archive=bool(gone))
+        return {"job": job_id, "forgotten": True}
+
+    def versions(self, job: Job) -> dict[str, Any]:
+        """What the validator knows of the versions a job was run and judged under, as
+        its result names them: this einstein, the job's deadline and the gate
+        run's budget, and the judge its delivery is voted under. Watt's own installation is the
+        platform's to stamp: the validator reaches Watt only through workspace commands."""
+        out: dict[str, Any] = {
+            "einstein": __version__,
+            "deadline_s": int(self.deadlines.get(job.effort, 0)),
+            "gate_run_s": self.gate_run_s,
+        }
+        if self.judge is not None:
+            with contextlib.suppress(Exception):
+                out["judge"] = dict(self.judge())
+        return out
+
+    def _archive_job(self, job_id: str, event: str, **extra: Any) -> None:
+        """The job's row (every attempt: timeline, rejections, gate errors, retries) into its
+        calibration archive."""
+        if self.archive is None:
+            return
+        try:
+            with self._lock:
+                job = self.jobs.get(job_id)
+                if job is None:
+                    return
+                row = asdict(job)
+                versions = self.versions(job)
+            self.archive.append(
+                job_id, "job", {"event": event, "row": row, "versions": versions, **extra}
+            )
+        except Exception as e:  # noqa: BLE001 -- the archive never stops the desk
+            self.log(f"archive: {job_id} {event}: {type(e).__name__}: {e}")
 
     def cancel(self, job_id: str, *, lost: bool = False) -> dict[str, Any]:
         """The client cancels (what it is charged is the platform's). A job in progress is frozen
@@ -1968,6 +2047,7 @@ class Desk:
                 for k, j in self.jobs.items()
                 if j.state == "done" and now - j.created_ms > DONE_KEEP_MS and k not in self._outbox
             ]:
+                self._archive_job(key, "dropped")
                 del self.jobs[key]
             want = self._want(now)
         # The claim loop: one job from the platform's queue per free admitted miner, assigned at
@@ -2139,6 +2219,9 @@ class Desk:
                     job = self.jobs.get(job_id)
                     result = dict(job.result) if job else None
                 if result is not None:
+                    with self._lock:
+                        if job is not None:
+                            result["versions"] = self.versions(job)
                     try:
                         answer = self.platform.complete(job_id, result)
                     except PlatformError as e:
@@ -2161,6 +2244,12 @@ class Desk:
                             self.on_delivered(job_id, str(result.get("hotkey") or ""))
                         except Exception as e:  # noqa: BLE001 -- a review never blocks a delivery
                             self.log(f"review queue: {type(e).__name__}: {e}")
+                    self._archive_job(
+                        job_id,
+                        "ended",
+                        answer=dict(answer) if isinstance(answer, Mapping) else None,
+                        sent=result,
+                    )
                 with self._mut():
                     if job_id in self._outbox:
                         self._outbox.remove(job_id)

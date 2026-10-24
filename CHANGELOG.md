@@ -7,6 +7,22 @@ All notable changes to this project are listed here. The format follows
 
 ## [Unreleased]
 
+### Added
+- **The calibration archive** (`<state-dir>/archive/jobs/<job>.jsonl`, one append-only file per job, 0600): what
+  the store's 7-day window used to forget. Every vote as it is recorded, with every model call made for it -- the
+  raw reply text, what it parsed to or why it was unavailable, the model that answered, tokens, dollars and latency
+  -- the judge (rubric version and digest, model, samples, mode) and the bundle read (its sha256, image set and
+  manifest); the calls that made no vote (too few valid samples, a provider error); and every job's row with all its
+  attempts (timeline, rejections, gate errors, retries) as the platform takes its result and again as the store
+  drops it. A vote recorded before the archive existed is archived as it ages out. Never served or published.
+- **Versions in a job's result** (`versions`: this einstein, the job's deadline and the gate run's budget, and the
+  judge its delivery is voted under), so the platform stamps each delivery with what it was judged under. The
+  stored vote row carries its cost (`cost`).
+- **The operator's calibration tag**: a claim's `calibration` object (a canary's set and id, a generator) is kept on
+  the job and in its archive, and never reaches the miner's `work`.
+- **`POST /v1/signals {kind: forget}`**: the platform says the client deleted the job; its archive is removed and
+  nothing more of it is archived (also after a restart).
+
 ## [0.4.8] - 2026-10-23
 
 ### Added

@@ -23,7 +23,8 @@ the metagraph):
 The platform and the operator (Bearer): ``GET /v1/capacity`` (active and free admitted miners, the
 median job time: the platform's single queue computes positions and ETAs), ``POST /v1/cancel {job}``
 (a claimed job: not charged), ``POST /v1/signals {job, kind, stars?, trust}`` (the client's
-download, stars or change request), ``GET /v1/jobs/{job}``, ``GET /v1/scores``,
+download, stars or change request; ``kind: forget`` when the client deleted the job: its
+calibration archive goes), ``GET /v1/jobs/{job}``, ``GET /v1/scores``,
 ``POST /v1/weights/close`` (the hour's report now: dry runs), ``GET /v1/chain`` (our stake
 share, kappa, the weights path), ``GET /v1/stats/miners?hotkeys=a,b`` (the stats of up to 20
 hotkeys: the platform's miner dashboard). Onboarding (the operator; ``cadmind-einstein-operator``):

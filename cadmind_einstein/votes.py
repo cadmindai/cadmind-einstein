@@ -24,6 +24,13 @@ back-off; an item older than the scoring window is dropped.
 
 **Spend.** :class:`.models.Spend` caps the model's daily spend: past it no call is made that day
 and an ALERT is logged once.
+
+**The archive** (:mod:`.archive`): every vote is also appended to the
+job's calibration archive as it is recorded -- the parsed samples, and every model call made for it
+with its raw reply, the model that answered, tokens, dollars and latency, the judge's version and
+digest and the bundle read -- and so are the calls that made no vote. :meth:`Reviewer.forget_before`
+then drops only what the archive holds (a vote recorded before the archive existed is archived as it
+is dropped).
 """
 
 from __future__ import annotations
@@ -113,6 +120,7 @@ class Reviewer:
         store: Any = None,
         clock: Callable[[], float] = time.time,
         log: Callable[[str], None] | None = None,
+        archive: Any = None,
     ) -> None:
         mode = ALIASES.get(mode, mode)
         if mode not in MODES:
@@ -122,6 +130,8 @@ class Reviewer:
         self.spend, self.clock = spend, clock
         self.log = log or (lambda _line: None)
         self.kv = _Kv(store)
+        self.archive = archive
+        """the calibration archive (:class:`.archive.Archive`), or None"""
         self.rubric = rubric_digest()
         self._busy = threading.Lock()
 
@@ -217,14 +227,28 @@ class Reviewer:
             return self._later(row, "the bundle's bytes are not the digest the platform named")
         if got.get("image_set") and got["image_set"] != bundle.image_set:
             return self._later(row, "the bundle's image set is not the one the platform named")
+        calls: list[dict[str, Any]] = []
         try:
             samples, failed = ask_samples(
-                self.model, bundle, samples=self.samples, spend=self.spend
+                self.model, bundle, samples=self.samples, spend=self.spend, calls=calls
             )
         except Exception as e:  # noqa: BLE001 -- the provider (network, quota): our side, retried
-            return self._later(row, f"model: {type(e).__name__}: {str(e)[:200]}")
+            why = f"model: {type(e).__name__}: {str(e)[:200]}"
+            self._archive(job, "vote-attempt", row, bundle, got, calls, outcome=why)
+            return self._later(row, why)
         if len(samples) < min(MIN_SAMPLES, self.samples):
             capped = any("spend cap" in f for f in failed)
+            if calls:
+                self._archive(
+                    job,
+                    "vote-attempt",
+                    row,
+                    bundle,
+                    got,
+                    calls,
+                    outcome=f"{len(samples)} valid sample(s)",
+                    unavailable=failed,
+                )
             return self._later(
                 row,
                 f"{len(samples)} valid sample(s): {'; '.join(failed)[:250]}",
@@ -242,10 +266,20 @@ class Reviewer:
         )
         if self.signer is not None:
             vote.sig = "0x" + bytes(self.signer.sign(vote.payload())).hex()
+        archived = self._archive(
+            job, "vote", row, bundle, got, calls, vote=vote.as_json(), unavailable=failed
+        )
         self.kv.put(
             "vote",
             f"{job}|{self.me}",
-            {**vote.as_json(), "job": job, "hotkey": row["hotkey"], "unavailable": failed},
+            {
+                **vote.as_json(),
+                "job": job,
+                "hotkey": row["hotkey"],
+                "unavailable": failed,
+                "cost": cost_of(calls),
+                "archived": archived,
+            },
         )
         row.update(state="done", why="", done_ms=self.now_ms())
         self.kv.put("review", job, row)
@@ -262,6 +296,58 @@ class Reviewer:
             )
         )
         return "voted"
+
+    def judge(self) -> dict[str, Any]:
+        """The judge a vote is made under: what the archive and the platform's stamp name."""
+        return {
+            "rubric_version": RUBRIC_VERSION,
+            "rubric": self.rubric,
+            "model": str(getattr(self.model, "name", "") or ""),
+            "samples": self.samples,
+            "mode": self.mode,
+        }
+
+    def _archive(
+        self,
+        job: str,
+        kind: str,
+        row: Mapping[str, Any],
+        bundle: Any,
+        got: Mapping[str, Any],
+        calls: list[dict[str, Any]],
+        **extra: Any,
+    ) -> bool:
+        """One vote (or a vote's calls that made none) into the job's calibration archive."""
+        if self.archive is None:
+            return False
+        try:
+            return bool(
+                self.archive.append(
+                    job,
+                    kind,
+                    {
+                        "validator": self.me,
+                        "hotkey": row.get("hotkey"),
+                        "tries": row.get("tries"),
+                        "queued_ms": row.get("queued_ms"),
+                        "judge": self.judge(),
+                        "bundle": {
+                            "sha256": bundle.bundle_sha256,
+                            "image_set": bundle.image_set,
+                            "manifest": bundle.manifest,
+                            "said": {
+                                k: got.get(k) for k in ("bundle_sha256", "image_set", "public")
+                            },
+                        },
+                        "calls": calls,
+                        "cost": cost_of(calls),
+                        **extra,
+                    },
+                )
+            )
+        except Exception as e:  # noqa: BLE001 -- the archive never stops a vote
+            self.log(f"archive: {job} {kind}: {type(e).__name__}: {e}")
+            return False
 
     # -- what a vote does --------------------------------------------------------------------------
 
@@ -337,10 +423,36 @@ class Reviewer:
         their votes are in the published reports)."""
         for k, row in self.kv.items("review").items():
             if int(row.get("queued_ms") or 0) < before_ms and row.get("state") != "pending":
+                if self.archive is not None and row.get("state") != "done":
+                    # a delivery that got no vote (failed, expired): the archive says why
+                    self.archive.append(str(row.get("job") or k), "review-queue", {"row": row})
                 self.kv.delete("review", k)
         for k, row in self.kv.items("vote").items():
             if int(row.get("at_ms") or 0) < before_ms:
+                if self.archive is not None and not row.get("archived"):
+                    # recorded before the archive was: kept as it is (its raw replies were never
+                    # stored), before it goes
+                    self.archive.append(
+                        str(row.get("job") or k.split("|", 1)[0]),
+                        "vote",
+                        {"vote": row, "backfill": True, "judge": {"rubric": row.get("rubric")}},
+                    )
                 self.kv.delete("vote", k)
+
+
+def cost_of(calls: Iterable[Mapping[str, Any]]) -> dict[str, Any]:
+    """A vote's model calls, summed: ``{calls, usd, input_tokens, output_tokens, cached_tokens,
+    latency_ms}`` (``usd`` None when no call was priced)."""
+    rows = list(calls)
+    priced = [float(c["usd"]) for c in rows if isinstance(c.get("usd"), (int, float))]
+    return {
+        "calls": len(rows),
+        "usd": round(sum(priced), 6) if priced else None,
+        "input_tokens": sum(int(c.get("input_tokens") or 0) for c in rows),
+        "output_tokens": sum(int(c.get("output_tokens") or 0) for c in rows),
+        "cached_tokens": sum(int(c.get("cached_tokens") or 0) for c in rows),
+        "latency_ms": sum(int(c.get("latency_ms") or 0) for c in rows),
+    }
 
 
 def full_votes(rows: Iterable[Mapping[str, Any]]) -> list[dict[str, Any]]:

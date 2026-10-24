@@ -59,6 +59,7 @@ import io
 import json
 import re
 import statistics
+import time
 import zipfile
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import asdict, dataclass, field
@@ -754,33 +755,68 @@ def ask_samples(
     samples: int = SAMPLES,
     extra_tries: int = 2,
     spend: Any = None,
+    calls: list[dict[str, Any]] | None = None,
 ) -> tuple[list[Sample], list[str]]:
     """Ask ``model`` for ``samples`` valid samples (at most ``samples + extra_tries`` calls).
     Answers the samples and the reasons of the replies that were unavailable. ``spend``, when
-    given, is asked before each call (:meth:`allow`) and told each reply's cost (:meth:`add`)."""
+    given, is asked before each call (:meth:`allow`) and told each reply's cost (:meth:`add`).
+
+    ``calls``, when given, gets one entry per model call as it is made (so a call that raises
+    leaves the earlier ones there): ``{ix, raw, parsed | None, unavailable, answered_by,
+    input_tokens, output_tokens, cached_tokens, usd, latency_ms}`` -- the calibration archive's
+    record of what the judge said (:mod:`.archive`); a call that raised is ``{ix, error,
+    latency_ms}``."""
     system, text = system_prompt(), user_text(bundle)
     images = [(name, image_media(name, raw), raw) for name, raw in bundle.images.items()]
     out: list[Sample] = []
     failed: list[str] = []
-    for _ in range(samples + max(0, extra_tries)):
+    for ix in range(samples + max(0, extra_tries)):
         if len(out) >= samples:
             break
         if spend is not None and not spend.allow():
             failed.append("the daily spend cap is reached")
             break
-        reply = model.ask(system, text, images)
-        if spend is not None:
-            spend.add(reply)
+        started = time.monotonic()
         try:
-            out.append(
-                parse_sample(
-                    reply.text,
-                    views=bundle.views(),
-                    client_text=bundle.client_text(),
+            reply = model.ask(system, text, images)
+        except Exception as e:
+            if calls is not None:
+                calls.append(
+                    {
+                        "ix": ix,
+                        "error": f"{type(e).__name__}: {str(e)[:300]}",
+                        "latency_ms": int((time.monotonic() - started) * 1000),
+                    }
                 )
+            raise
+        latency_ms = int((time.monotonic() - started) * 1000)
+        usd = spend.add(reply) if spend is not None else None
+        call: dict[str, Any] = {
+            "ix": ix,
+            "raw": str(reply.text or ""),
+            "parsed": None,
+            "unavailable": "",
+            "answered_by": str(getattr(reply, "model", "") or ""),
+            "input_tokens": int(getattr(reply, "input_tokens", 0) or 0),
+            "output_tokens": int(getattr(reply, "output_tokens", 0) or 0),
+            "cached_tokens": int(getattr(reply, "cached_tokens", 0) or 0),
+            "usd": round(float(usd), 6) if isinstance(usd, (int, float)) else None,
+            "latency_ms": latency_ms,
+        }
+        if calls is not None:
+            calls.append(call)
+        try:
+            sample = parse_sample(
+                reply.text,
+                views=bundle.views(),
+                client_text=bundle.client_text(),
             )
         except Unavailable as e:
             failed.append(str(e)[:200])
+            call["unavailable"] = str(e)[:300]
+            continue
+        out.append(sample)
+        call["parsed"] = sample.as_json()
     return out, failed
 
 
