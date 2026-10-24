@@ -80,6 +80,7 @@ from pathlib import Path
 from typing import Any
 
 from . import __spec_version__, __version__
+from .archive import Archive
 from .chain import (
     ChainCommitter,
     ChainWeights,
@@ -454,9 +455,12 @@ def main(argv: list[str] | None = None) -> int:
         f"copy policy: {copy_policy}, corpus {len(corpus)} feature(s); {second}; "
         f"genesis {a.genesis}"
     )
+    archive = Archive(a.state_dir / "archive", log=_log)
+    _log(f"calibration archive: {archive.root} (votes with their raw replies, jobs as they end)")
     desk = Desk(
         platform,
         ledger,
+        archive=archive,
         registered=lambda: chain.hotkeys,
         accept_s=a.accept_s,
         max_inflight=a.max_inflight,
@@ -520,8 +524,10 @@ def main(argv: list[str] | None = None) -> int:
             spend=spend,
             store=store,
             log=_log,
+            archive=archive,
         )
         desk.on_delivered = reviewer.enqueue
+        desk.judge = reviewer.judge
         reviewer.apply_all()  # the recorded votes, under this mode (a switch counts at once)
         _log(
             f"votes {a.votes}: "
