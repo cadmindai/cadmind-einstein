@@ -1,6 +1,11 @@
-"""Our validator's votes (DESIGN.md section 13): every delivered job is reviewed once by the
-configured vision model, on the published rubric (:mod:`.review`), from the platform's review
-bundle.
+"""Our validator's votes (DESIGN.md section 13): every delivered job is judged once by the
+configured vision model with CADmind's device judge (:mod:`.judge`, ``cadmind-judge/1.2b`` in
+``rate`` mode), from the platform's review bundle (:mod:`.review`).
+
+**The judge.** A validator votes with ``cadmind-judge/1.2b`` only: three two-turn samples, the
+lower median of their 0-3 scores, ``v = V_MAP[median]``. ``--judge 1.2b-tools`` is refused at
+start (:func:`.judge.for_validator`): that version reads the delivered project through Watt tools
+and is for CADmind's own pipeline and the miner-side reviewer.
 
 **Modes** (``--votes``):
 
@@ -17,7 +22,7 @@ A switch of mode (a restart with another ``--votes``) re-applies every recorded 
 **The queue.** The desk tells the reviewer each delivery the platform took and charged
 (:attr:`.desk.Desk.on_delivered`). One review runs at a time (:meth:`Reviewer.pass_once`, called
 by the daemon's review thread): ask the platform for the bundle (it may still be rendering: asked
-again later), fetch it from its signed link, check its digests, ask the model for its samples,
+again later), fetch it from its signed link, check its digests, ask the judge for its samples,
 sign the vote with the validator's hotkey and record it; the job's score is updated as a late
 signal's is. A failure on our side (the platform, the model, the spend cap) is retried with a
 back-off; an item older than the scoring window is dropped.
@@ -26,11 +31,12 @@ back-off; an item older than the scoring window is dropped.
 and an ALERT is logged once.
 
 **The archive** (:mod:`.archive`): every vote is also appended to the
-job's calibration archive as it is recorded -- the parsed samples, and every model call made for it
-with its raw reply, the model that answered, tokens, dollars and latency, the judge's version and
-digest and the bundle read -- and so are the calls that made no vote. :meth:`Reviewer.forget_before`
-then drops only what the archive holds (a vote recorded before the archive existed is archived as it
-is dropped).
+job's calibration archive as it is recorded -- the parsed samples, the kept nudges, and every model
+conversation made for it with its raw answers, the model that answered, tokens, dollars, latency,
+instrument calls and their Watt compute (none for 1.2b), the judge's version, digest, mode and
+samples, and the bundle read -- and so are the conversations that made no vote.
+:meth:`Reviewer.forget_before` then drops only what the archive holds (a vote recorded before the
+archive existed is archived as it is dropped).
 """
 
 from __future__ import annotations
@@ -42,18 +48,16 @@ from collections.abc import Callable, Iterable, Mapping
 from typing import Any
 
 from .desk import job_event
+from .judge import VALIDATOR_VERSION, Judge, for_validator, inputs_from_bundle
 from .platform import PlatformError
 from .review import (
     MAX_BUNDLE_BYTES,
-    RUBRIC_VERSION,
     SAMPLES,
     BundleError,
     Vote,
     Voter,
     aggregate,
-    ask_samples,
     read_bundle,
-    rubric_digest,
     vote_from,
 )
 from .scoring import HOUR_MS, WINDOW_H
@@ -62,7 +66,7 @@ MODES = ("off", "shadow", "counted")
 ALIASES = {"live": "counted"}
 """older names of a mode, still accepted"""
 MIN_SAMPLES = 2
-"""valid samples a vote needs (of :data:`.review.SAMPLES` asked)"""
+"""valid samples a vote needs (of :data:`.review.SAMPLES` asked): the 1.2b judge's own minimum"""
 MAX_TRIES = 8
 RETRY_FIRST_S = 60.0
 RETRY_MAX_S = 3600.0
@@ -121,6 +125,7 @@ class Reviewer:
         clock: Callable[[], float] = time.time,
         log: Callable[[str], None] | None = None,
         archive: Any = None,
+        judge_version: str = VALIDATOR_VERSION,
     ) -> None:
         mode = ALIASES.get(mode, mode)
         if mode not in MODES:
@@ -132,7 +137,9 @@ class Reviewer:
         self.kv = _Kv(store)
         self.archive = archive
         """the calibration archive (:class:`.archive.Archive`), or None"""
-        self.rubric = rubric_digest()
+        self.judge_cfg = Judge(for_validator(judge_version).name)
+        """the device judge votes are made with (1.2b: a validator never runs the tools judge)"""
+        self.digest = self.judge_cfg.digest()
         self._busy = threading.Lock()
 
     @property
@@ -229,14 +236,22 @@ class Reviewer:
             return self._later(row, "the bundle's image set is not the one the platform named")
         calls: list[dict[str, Any]] = []
         try:
-            samples, failed = ask_samples(
-                self.model, bundle, samples=self.samples, spend=self.spend, calls=calls
+            got_vote = self.judge_cfg.run(
+                "rate",
+                inputs_from_bundle(bundle),
+                self.model,
+                samples=self.samples,
+                spend=self.spend,
+                calls=calls,
+                parallel=False,
             )
         except Exception as e:  # noqa: BLE001 -- the provider (network, quota): our side, retried
             why = f"model: {type(e).__name__}: {str(e)[:200]}"
             self._archive(job, "vote-attempt", row, bundle, got, calls, outcome=why)
             return self._later(row, why)
-        if len(samples) < min(MIN_SAMPLES, self.samples):
+        failed = list(got_vote["unavailable"])
+        samples = list(got_vote["samples"])
+        if got_vote["abstain"] or len(samples) < min(MIN_SAMPLES, self.samples):
             capped = any("spend cap" in f for f in failed)
             if calls:
                 self._archive(
@@ -258,16 +273,27 @@ class Reviewer:
         vote = Vote(
             review=job,
             image_set=bundle.image_set,
-            rubric=self.rubric,
+            judge=self.digest,
             model=str(getattr(self.model, "name", "") or "unknown"),
             validator=self.me,
-            samples=[s.as_json() for s in samples],
+            samples=samples,
             at_ms=self.now_ms(),
+            judge_version=self.judge_cfg.version,
+            nudges=list(got_vote.get("nudges") or []),
         )
         if self.signer is not None:
             vote.sig = "0x" + bytes(self.signer.sign(vote.payload())).hex()
         archived = self._archive(
-            job, "vote", row, bundle, got, calls, vote=vote.as_json(), unavailable=failed
+            job,
+            "vote",
+            row,
+            bundle,
+            got,
+            calls,
+            vote=vote.as_json(),
+            unavailable=failed,
+            nudge_merge=got_vote.get("nudge_merge"),
+            usage=got_vote.get("usage"),
         )
         self.kv.put(
             "vote",
@@ -298,10 +324,12 @@ class Reviewer:
         return "voted"
 
     def judge(self) -> dict[str, Any]:
-        """The judge a vote is made under: what the archive and the platform's stamp name."""
+        """The judge a vote is made under: what the archive and the platform's stamp name (the
+        judge's version and digest, its mode, the samples asked, the model, the votes mode)."""
         return {
-            "rubric_version": RUBRIC_VERSION,
-            "rubric": self.rubric,
+            "judge_version": self.judge_cfg.version,
+            "judge": self.digest,
+            "judge_mode": "rate",
             "model": str(getattr(self.model, "name", "") or ""),
             "samples": self.samples,
             "mode": self.mode,
@@ -395,7 +423,7 @@ class Reviewer:
     # -- publication -------------------------------------------------------------------------------
 
     def report(self, jobs: Iterable[str]) -> dict[str, Any]:
-        """The hourly report's ``votes``: the mode, the rubric, every vote on a window job in its
+        """The hourly report's ``votes``: the mode, the judge, every vote on a window job in its
         public form (scores and signature; never the words), and each job's ``V`` and ``u``."""
         wanted = set(jobs)
         items = [
@@ -406,8 +434,8 @@ class Reviewer:
         per_job = {j: self.standing_of(j) for j in sorted({i["job"] for i in items})}
         return {
             "mode": self.mode,
-            "rubric": self.rubric,
-            "rubric_version": RUBRIC_VERSION,
+            "judge": self.digest,
+            "judge_version": self.judge_cfg.version,
             "model": str(getattr(self.model, "name", "") or ""),
             "items": sorted(items, key=lambda i: (i["at_ms"], i["job"])),
             "per_job": per_job,
@@ -435,14 +463,22 @@ class Reviewer:
                     self.archive.append(
                         str(row.get("job") or k.split("|", 1)[0]),
                         "vote",
-                        {"vote": row, "backfill": True, "judge": {"rubric": row.get("rubric")}},
+                        {
+                            "vote": row,
+                            "backfill": True,
+                            "judge": {
+                                "judge": row.get("judge") or row.get("rubric"),
+                                "judge_version": row.get("judge_version"),
+                            },
+                        },
                     )
                 self.kv.delete("vote", k)
 
 
 def cost_of(calls: Iterable[Mapping[str, Any]]) -> dict[str, Any]:
-    """A vote's model calls, summed: ``{calls, usd, input_tokens, output_tokens, cached_tokens,
-    latency_ms}`` (``usd`` None when no call was priced)."""
+    """A vote's model conversations, summed: ``{calls, usd, input_tokens, output_tokens,
+    cached_tokens, latency_ms, tool_calls, watt_compute_ms}`` (``usd`` None when none was
+    priced)."""
     rows = list(calls)
     priced = [float(c["usd"]) for c in rows if isinstance(c.get("usd"), (int, float))]
     return {
@@ -452,24 +488,29 @@ def cost_of(calls: Iterable[Mapping[str, Any]]) -> dict[str, Any]:
         "output_tokens": sum(int(c.get("output_tokens") or 0) for c in rows),
         "cached_tokens": sum(int(c.get("cached_tokens") or 0) for c in rows),
         "latency_ms": sum(int(c.get("latency_ms") or 0) for c in rows),
+        "tool_calls": sum(len(c.get("tool_calls") or []) for c in rows),
+        "watt_compute_ms": sum(int(c.get("watt_compute_ms") or 0) for c in rows),
     }
 
 
 def full_votes(rows: Iterable[Mapping[str, Any]]) -> list[dict[str, Any]]:
     """Votes as a miner sees them on its own job (``/v1/miners/stats``): every sample with its
-    evidence."""
+    evidence (the derived lines and their rulings) and the kept nudges -- the feedback a builder
+    can act on."""
     out = []
     for r in rows:
         out.append(
             {
                 "validator": r.get("validator"),
                 "model": r.get("model"),
-                "rubric": r.get("rubric"),
+                "judge": r.get("judge") or r.get("rubric"),
+                "judge_version": r.get("judge_version"),
                 "image_set": r.get("image_set"),
                 "at_ms": r.get("at_ms"),
                 "value": r.get("value"),
                 "noisy": bool(r.get("noisy")),
                 "samples": list(r.get("samples") or []),
+                "nudges": list(r.get("nudges") or []),
             }
         )
     return out

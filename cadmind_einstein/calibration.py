@@ -21,7 +21,12 @@ at least :data:`GOOD_FROM`, bad with ``expect_max`` or a lower hand score). The 
 :data:`BAD_MAX`; a repeat must land within :data:`REPEAT_NOISE` of its first value. An item
 without a value (the model gave no vote) is a no-go. Each item's distance from its hand score and
 its own bounds are reported, for information only. The same check picks our model and accepts a
-rubric change.
+judge change.
+
+**On the device judge's scale** (einstein 0.5.0: ``v`` is 0, 0.3, 0.65 or 1.0 for a median score
+of 0-3) the thresholds read: a bad item scores at most 1 (:data:`BAD_MAX` 0.6, a brief swap under
+:data:`SWAP_MAX` 0.35), a good item at least one step above every bad one, and a repeat gives the
+same score (:data:`REPEAT_NOISE` 0.15 is under one step).
 
 **Reliability** (:func:`reliability`): a validator's ``r = 1 - mean(|v - ref|)`` over its last
 scored calibration items, the measure third-party votes will be weighted by.
@@ -235,15 +240,11 @@ def run(
     said. An item with a kept ``bundle`` file is reviewed from it; one the platform refuses (no
     such delivered version) gets no vote, and the run goes on. Answers ``{go, failed, items,
     votes, skipped, spend}``."""
+    from .judge import Judge, inputs_from_bundle  # noqa: PLC0415
     from .platform import PlatformError  # noqa: PLC0415
-    from .review import (  # noqa: PLC0415
-        MAX_BUNDLE_BYTES,
-        Vote,
-        ask_samples,
-        read_bundle,
-        rubric_digest,
-    )
+    from .review import MAX_BUNDLE_BYTES, Vote, read_bundle  # noqa: PLC0415
 
+    judge = Judge()
     values: dict[str, float | None] = {}
     votes: dict[str, Any] = {}
     skipped: dict[str, str] = {}
@@ -275,17 +276,22 @@ def run(
             bundle = read_bundle(platform.fetch_bundle(str(got["bundle_url"]), MAX_BUNDLE_BYTES))
             if got.get("image_set") and got["image_set"] != bundle.image_set:
                 raise ValueError(f"{item.id}: the bundle is not the image set the platform named")
-        got_samples, failed = ask_samples(model, bundle, samples=samples, spend=spend)
+        got = judge.run(
+            "rate", inputs_from_bundle(bundle), model, samples=samples, spend=spend, parallel=False
+        )
+        got_samples, failed = got["samples"], got["unavailable"]
         vote = Vote(
             review=item.job,
             image_set=bundle.image_set,
-            rubric=rubric_digest(),
+            judge=judge.digest(),
             model=str(getattr(model, "name", "")),
             validator="",
-            samples=[x.as_json() for x in got_samples],
+            samples=got_samples,
             at_ms=int(time.time() * 1000),
+            judge_version=judge.version,
+            nudges=got.get("nudges") or [],
         )
-        values[item.id] = vote.value if len(got_samples) >= min(2, samples) else None
+        values[item.id] = vote.value if not got["abstain"] else None
         votes[item.id] = {**vote.as_json(), "unavailable": failed}
         n = len(got_samples)
         log(f"{item.id}: {values[item.id]} ({n} sample(s); {len(failed)} unavailable)")

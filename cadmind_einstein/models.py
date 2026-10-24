@@ -10,19 +10,32 @@ answers).
 **Cost.** Every reply carries its token counts; :class:`Spend` turns them into dollars with the
 prices the operator configures (per million input and output tokens) and keeps a daily total,
 refusing calls past the daily cap (an ALERT, once a day).
+
+**Conversations** (:meth:`AnthropicModel.converse`, :meth:`OpenAIModel.converse`): the device judge
+(:mod:`.judge`) holds ONE conversation of two turns per sample. Each turn is a list of blocks
+(``{"type": "text", "text"}`` or ``{"type": "image", "media", "data"}``); turn 2 is sent with turn 1
+and its answer, so the model has its own blind list in front of it. A :class:`Conversation` carries
+each turn's answer and every request's :class:`Reply` (tokens, for :class:`Spend`). OpenRouter is
+the OpenAI path (``openai:<model>`` with ``base_url https://openrouter.ai/api/v1``); a validator's
+judge runs on it by default; ``--judge-backend claude-cli`` runs it on a Claude subscription
+instead (:class:`.judge.ClaudeCLI`), whose dollars are notional (:meth:`Spend.add_usd`).
 """
 
 from __future__ import annotations
 
 import base64
+import json
 import threading
 import time
-from collections.abc import Callable, Sequence
-from dataclasses import dataclass
+from collections.abc import Callable, Mapping, Sequence
+from dataclasses import dataclass, field
 from typing import Any, Protocol
 
 MAX_TOKENS = 16_000
 EFFORT = "medium"
+TOOL_ROUNDS_SLACK = 3
+"""tool-call rounds past the instruments' budget before the tools are withdrawn (refused calls
+cost a call each, so a model that keeps asking is made to answer)"""
 
 
 @dataclass(frozen=True)
@@ -39,6 +52,66 @@ class Model(Protocol):
     name: str
 
     def ask(self, system: str, text: str, images: Sequence[tuple[str, str, bytes]]) -> Reply: ...
+
+
+Turn = Sequence[Mapping[str, Any]]
+"""One user turn: ``{"type": "text", "text"}`` and ``{"type": "image", "media", "data": bytes}``
+blocks, in order."""
+
+
+@dataclass
+class Conversation:
+    """One judge sample's conversation, as a transport answers it."""
+
+    texts: list[str]
+    """the model's final answer to each turn, in order (fewer than the turns: it stopped early)"""
+    replies: list[Reply] = field(default_factory=list)
+    """every request made, with its tokens (a turn with tool calls makes several)"""
+    seconds: float = 0.0
+    error: str = ""
+    """a transport failure that is not an exception (the CLI's exit); '' when none"""
+    usd: float | None = None
+    """the cost the transport itself reported (the CLI), or None: priced by :class:`Spend`"""
+    tool_calls: list[dict[str, Any]] = field(default_factory=list)
+    """``{turn, tool, input, ok, compute_ms}`` per instrument call (the tools judge only)"""
+
+    @property
+    def answered_by(self) -> str:
+        return next((r.model for r in reversed(self.replies) if r.model), "")
+
+
+class Converser(Protocol):
+    name: str
+
+    def converse(self, system: str, turns: Sequence[Turn], tools: Any = None) -> Conversation: ...
+
+
+def _anthropic_blocks(turn: Turn) -> list[dict[str, Any]]:
+    out: list[dict[str, Any]] = []
+    for b in turn:
+        if b["type"] == "text":
+            out.append({"type": "text", "text": str(b["text"])})
+        else:
+            data = base64.standard_b64encode(bytes(b["data"])).decode("ascii")
+            out.append(
+                {
+                    "type": "image",
+                    "source": {"type": "base64", "media_type": b["media"], "data": data},
+                }
+            )
+    return out
+
+
+def _openai_blocks(turn: Turn) -> list[dict[str, Any]]:
+    out: list[dict[str, Any]] = []
+    for b in turn:
+        if b["type"] == "text":
+            out.append({"type": "text", "text": str(b["text"])})
+        else:
+            data = base64.standard_b64encode(bytes(b["data"])).decode("ascii")
+            url = f"data:{b['media']};base64,{data}"
+            out.append({"type": "image_url", "image_url": {"url": url}})
+    return out
 
 
 class AnthropicModel:
@@ -97,6 +170,49 @@ class AnthropicModel:
             str(getattr(r, "model", "") or self.model),
         )
 
+    def converse(self, system: str, turns: Sequence[Turn], tools: Any = None) -> Conversation:
+        """The judge's two turns as two requests, the second carrying the first answer. No tools:
+        the tools judge runs on ``openai:`` (OpenRouter) or the subscription CLI."""
+        if tools is not None:
+            raise ValueError("the tools judge runs on openai:<model> (OpenRouter) or claude-cli")
+        messages: list[dict[str, Any]] = []
+        out = Conversation([])
+        t0 = time.monotonic()
+        for turn in turns:
+            content = _anthropic_blocks(turn)
+            if content:
+                content[-1]["cache_control"] = {"type": "ephemeral"}
+            messages.append({"role": "user", "content": content})
+            r = self.client.beta.messages.create(
+                model=self.model,
+                max_tokens=MAX_TOKENS,
+                system=system,
+                messages=messages,
+                output_config={"effort": self.effort},
+                betas=["server-side-fallback-2026-07-01"],
+                fallbacks="default",
+            )
+            text = (
+                ""
+                if r.stop_reason == "refusal"
+                else "".join(b.text for b in r.content if getattr(b, "type", "") == "text")
+            )
+            u = r.usage
+            out.replies.append(
+                Reply(
+                    text,
+                    int(getattr(u, "input_tokens", 0) or 0)
+                    + int(getattr(u, "cache_creation_input_tokens", 0) or 0),
+                    int(getattr(u, "output_tokens", 0) or 0),
+                    int(getattr(u, "cache_read_input_tokens", 0) or 0),
+                    str(getattr(r, "model", "") or self.model),
+                )
+            )
+            out.texts.append(text)
+            messages.append({"role": "assistant", "content": text or "{}"})
+        out.seconds = time.monotonic() - t0
+        return out
+
 
 class OpenAIModel:
     """A chat-completions vision model (OpenAI's SDK; ``base_url`` for a compatible server): the
@@ -135,6 +251,86 @@ class OpenAIModel:
             int(getattr(details, "cached_tokens", 0) or 0),
             str(getattr(r, "model", "") or self.model),
         )
+
+    def _reply(self, r: Any) -> Reply:
+        u = r.usage
+        details = getattr(u, "prompt_tokens_details", None)
+        return Reply(
+            str(r.choices[0].message.content or ""),
+            int(getattr(u, "prompt_tokens", 0) or 0),
+            int(getattr(u, "completion_tokens", 0) or 0),
+            int(getattr(details, "cached_tokens", 0) or 0),
+            str(getattr(r, "model", "") or self.model),
+        )
+
+    def converse(self, system: str, turns: Sequence[Turn], tools: Any = None) -> Conversation:
+        """The judge's two turns as chat requests (OpenRouter: the validator's path), the second
+        carrying the first answer. With ``tools`` (an :class:`.judge_tools.Instruments`, the tools
+        judge) the LAST turn may call them: they are not offered before it, and the instruments'
+        gate opens only once turn 1 is answered. A tool's image comes back as a user message right
+        after the tool results (a chat tool result carries text only)."""
+        messages: list[dict[str, Any]] = [{"role": "system", "content": system}]
+        out = Conversation([])
+        t0 = time.monotonic()
+        for k, turn in enumerate(turns):
+            last = k == len(turns) - 1
+            offer = tools is not None and last
+            if offer:
+                tools.open()
+            messages.append({"role": "user", "content": _openai_blocks(turn)})
+            rounds = 0
+            while True:
+                rounds += 1
+                if offer and rounds > tools.budget + TOOL_ROUNDS_SLACK:
+                    offer = False  # a model that keeps calling past its budget answers now
+                kw: dict[str, Any] = {"reasoning_effort": self.effort}
+                if offer:
+                    kw["tools"] = tools.functions()
+                else:
+                    kw["response_format"] = {"type": "json_object"}
+                r = self.client.chat.completions.create(model=self.model, messages=messages, **kw)
+                out.replies.append(self._reply(r))
+                msg = r.choices[0].message
+                calls = list(getattr(msg, "tool_calls", None) or []) if offer else []
+                if not calls:
+                    text = str(msg.content or "")
+                    out.texts.append(text)
+                    messages.append({"role": "assistant", "content": text or "{}"})
+                    break
+                messages.append(
+                    {
+                        "role": "assistant",
+                        "content": msg.content or "",
+                        "tool_calls": [
+                            {
+                                "id": c.id,
+                                "type": "function",
+                                "function": {
+                                    "name": c.function.name,
+                                    "arguments": c.function.arguments or "{}",
+                                },
+                            }
+                            for c in calls
+                        ],
+                    }
+                )
+                images: list[dict[str, Any]] = []
+                for c in calls:
+                    try:
+                        args = json.loads(c.function.arguments or "{}")
+                    except ValueError:
+                        args = {}
+                    got = tools.call(str(c.function.name), args if isinstance(args, dict) else {})
+                    out.tool_calls.append({"turn": k + 1, **got.record})
+                    messages.append({"role": "tool", "tool_call_id": c.id, "content": got.text})
+                    images += [
+                        {"type": "image", "media": "image/png", "data": png} for png in got.images
+                    ]
+                if images:
+                    note = {"type": "text", "text": "The images the instruments returned:"}
+                    messages.append({"role": "user", "content": _openai_blocks([note, *images])})
+        out.seconds = time.monotonic() - t0
+        return out
 
 
 PROVIDERS: dict[str, Callable[..., Any]] = {"anthropic": AnthropicModel, "openai": OpenAIModel}
@@ -219,7 +415,11 @@ class Spend:
             return False
 
     def add(self, reply: Reply) -> float:
-        cost = self.prices.cost(reply)
+        return self.add_usd(self.prices.cost(reply))
+
+    def add_usd(self, cost: float) -> float:
+        """Dollars a transport reported itself (the subscription CLI's notional list price),
+        counted toward the same daily cap."""
         with self._lock:
             row = self._row()
             row["usd"] = round(float(row["usd"]) + cost, 6)

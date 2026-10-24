@@ -37,12 +37,17 @@ cadmind-einstein-fetch-mcp = "cadmind_einstein.fetch_mcp:main"
 cadmind-miner-stats = "cadmind_einstein.stats:main"
 cadmind-review = "cadmind_einstein.review:main"
 cadmind-calibrate = "cadmind_einstein.calibration:calibrate_main"
+cadmind-judge = "cadmind_einstein.judge:main"
 
 [tool.setuptools.dynamic]
 version = { attr = "cadmind_einstein.__version__" }
 
 [tool.setuptools.packages.find]
 include = ["cadmind_einstein", "cadmind_einstein.*"]
+
+[tool.setuptools.package-data]
+# the device judge's prompt and the tools judge's instrument list: hashed into the judge digests
+cadmind_einstein = ["judge_prompt.md", "judge_instruments.md"]
 
 [tool.pytest.ini_options]
 minversion = "8.0"

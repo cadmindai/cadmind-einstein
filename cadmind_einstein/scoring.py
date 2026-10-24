@@ -603,27 +603,19 @@ def onchain_sha256(network: str, netuid: int, hotkey: str, block: int | None = N
 
 def check_votes(votes: Mapping[str, Any]) -> list[dict[str, Any]]:
     """The published votes that do not hold: a signature that is not its validator's (over the
-    published samples' hash), or a value that is not the rubric's weighted mean of its published
-    scores, each capped by its published cap (rubric 2: ``caps``, one per sample; none before it).
-    An unsigned vote (a local stack) is not checked."""
-    from .review import capped_value, verify_vote  # noqa: PLC0415 -- the auditor's vote check
+    published samples' hash), or a value that is not what its published scores give -- ``V_MAP``
+    of their lower median (vote/2, the device judge), or rubric 3's weighted mean of the scores,
+    each capped by its published cap (vote/1, before einstein 0.5.0). An unsigned vote (a local
+    stack) is not checked."""
+    from .review import published_value_holds, verify_vote  # noqa: PLC0415 -- the auditor's
 
     out: list[dict[str, Any]] = []
     for item in votes.get("items") or []:
         why = ""
         if item.get("sig") and not verify_vote(item):
             why = "signature"
-        scores = item.get("scores") or []
-        if scores and item.get("value") is not None:
-            caps = item.get("caps") or [None] * len(scores)
-            if len(caps) != len(scores):
-                caps = [None] * len(scores)
-            values = [
-                capped_value(s, None if c is None else float(c))
-                for s, c in zip(scores, caps, strict=True)
-            ]
-            if abs(statistics.fmean(values) - float(item["value"])) > 1e-6:
-                why = why or "value"
+        if not published_value_holds(item):
+            why = why or "value"
         if why:
             out.append({"job": item.get("job"), "validator": item.get("validator"), "why": why})
     return out

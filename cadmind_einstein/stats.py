@@ -86,7 +86,7 @@ FORMULA = {
         "C": "the client's signal: stars (s-1)/4; a download 0.75; each change or re-run -0.25;"
         " a quality refund counts as one star",
         "w": "how much C counts: the client's trust (paid 1, free 0.1), half for a download",
-        "V": "the validators' quality vote on the rubric (0..1)",
+        "V": "the validators' quality vote: the judge's median score 0-3 as 0, 0.3, 0.65 or 1",
         "u": "how much V counts (0.4 when votes are counted, 0 in shadow)",
         "B": "the baseline the client's signal moves from",
     },

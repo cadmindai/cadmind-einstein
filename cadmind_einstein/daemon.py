@@ -114,7 +114,10 @@ from .desk import (
     Desk,
     SecondOpinion,
 )
-from .models import Prices, Spend, model_from
+from .judge import BACKENDS as JUDGE_BACKENDS
+from .judge import VALIDATOR_VERSION, ValidatorJudgeError, for_validator, validator_model
+from .judge import VERSIONS as JUDGE_VERSIONS
+from .models import Prices, Spend
 from .platform import OperatorClient, PlatformError
 from .scoring import GENESIS, HOUR_MS, WINDOW_H, Ledger
 from .service import serve
@@ -324,9 +327,27 @@ def parser() -> argparse.ArgumentParser:
         " scoring them",
     )
     ap.add_argument(
+        "--judge",
+        default=VALIDATOR_VERSION,
+        choices=sorted(JUDGE_VERSIONS),
+        help="the device judge votes are made with (DESIGN.md section 13): a validator runs"
+        f" {VALIDATOR_VERSION} only; 1.2b-tools is refused at start",
+    )
+    ap.add_argument(
+        "--judge-backend",
+        default="openrouter",
+        choices=JUDGE_BACKENDS,
+        help="where the judge's model runs: openrouter (the default: --review-model"
+        " openai:<model> with --review-key-file) or claude-cli (a Claude subscription logged in"
+        " for this service's user: --review-model is a Claude model name, no key file; its"
+        " dollars are notional and count toward --review-daily-usd)",
+    )
+    ap.add_argument(
         "--review-model",
         default="",
-        help="the vision model that votes: anthropic:<model> or openai:<model> (none: no votes)",
+        help="the vision model that votes: openai:<model> (OpenRouter: --review-base-url"
+        " https://openrouter.ai/api/v1) or anthropic:<model>; with --judge-backend claude-cli a"
+        " Claude model name (none: no votes)",
     )
     ap.add_argument("--review-key-file", type=Path, help="the review model's API key (0600)")
     ap.add_argument("--review-base-url", default="", help="the provider's base URL (optional)")
@@ -336,7 +357,8 @@ def parser() -> argparse.ArgumentParser:
         "--review-daily-usd",
         type=float,
         default=10.0,
-        help="the review model's daily spend cap in US dollars (0: none); past it, an ALERT",
+        help="the review model's daily spend cap in US dollars (0: none); past it, an ALERT."
+        " A 1.2b vote is six requests and a grouping call: about 3-4 times rubric 3's cost",
     )
     ap.add_argument("--review-usd-per-mtok-in", type=float, default=0.0)
     ap.add_argument("--review-usd-per-mtok-out", type=float, default=0.0)
@@ -372,8 +394,17 @@ def version_watch(say: Callable[[str], None], every_s: float = 86400.0) -> None:
     threading.Thread(target=run, name="version-check", daemon=True).start()
 
 
+def check_judge(version: str) -> None:
+    """A validator refuses to start with a judge it may not vote with (the tools judge)."""
+    try:
+        for_validator(version)
+    except ValidatorJudgeError as e:
+        raise SystemExit(f"cadmind-einstein: --judge {version}: {e}") from None
+
+
 def main(argv: list[str] | None = None) -> int:
     a = parser().parse_args(argv)
+    check_judge(a.judge)
     setup_logging(a, prefix="[cadmind-einstein]")
     _log(f"cadmind-einstein {__version__} (spec {__spec_version__})")
     if not a.no_version_check:
@@ -497,13 +528,16 @@ def main(argv: list[str] | None = None) -> int:
 
         model = None
         if a.review_model:
-            if a.review_key_file is None:
+            subscription = a.judge_backend == "claude-cli"
+            if a.review_key_file is None and not subscription:
                 raise SystemExit("--review-model needs --review-key-file")
-            model = model_from(
+            model = validator_model(
+                a.judge_backend,
                 a.review_model,
-                read_key(a.review_key_file),
+                "" if subscription else read_key(a.review_key_file),
                 base_url=a.review_base_url,
                 effort=a.review_effort,
+                work=a.state_dir / "judge-cli",
             )
         spend = Spend(
             a.review_daily_usd,
@@ -525,6 +559,7 @@ def main(argv: list[str] | None = None) -> int:
             store=store,
             log=_log,
             archive=archive,
+            judge_version=a.judge,
         )
         desk.on_delivered = reviewer.enqueue
         desk.judge = reviewer.judge
@@ -532,6 +567,8 @@ def main(argv: list[str] | None = None) -> int:
         _log(
             f"votes {a.votes}: "
             + (
+                f"judge {reviewer.judge_cfg.version} {reviewer.digest}, "
+                f"backend {a.judge_backend}, "
                 f"model {a.review_model}, {a.review_samples} samples, "
                 f"cap ${a.review_daily_usd:g}/day"
                 if model is not None

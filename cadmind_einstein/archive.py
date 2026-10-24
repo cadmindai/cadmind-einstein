@@ -10,11 +10,13 @@ rejections, gate errors and retries did not. This archive keeps them.
 record of the job in the order it was written. A record is ``{"kind", "at_ms", "einstein", ...}``:
 
 - ``vote``: one vote as recorded (:meth:`.votes.Reviewer._review`) -- the signed vote with its
-  parsed samples, the judge (rubric version and digest), the model asked, the bundle it read
-  (its sha256, image set and manifest: the renderer is named there), and ``calls``: every model
-  call made for it, in order, with the raw reply text, what it parsed to (or why it was
-  unavailable), the model that answered, tokens, dollars and latency;
-- ``vote-attempt``: model calls that made no vote (too few valid samples, a provider error): they
+  parsed samples and kept nudges, the judge (version, digest, mode, samples asked), the model
+  asked, the bundle it read (its sha256, image set and manifest: the renderer is named there), the
+  nudge grouping and the usage, and ``calls``: every model conversation made for it, in order
+  (each judge sample, each grouping call), with the raw answers, what they parsed to (or why they
+  were unavailable), the model that answered, tokens, dollars, latency, and the instrument calls
+  with their Watt compute (the tools judge only; none on a validator);
+- ``vote-attempt``: conversations that made no vote (too few valid samples, a provider error): they
   cost money and say how the judge fails, so they are kept too;
 - ``job``: the validator's job row with every attempt (``event`` is ``ended`` when the platform took
   its result, ``dropped`` when the store let it go), with the versions it was judged under.
