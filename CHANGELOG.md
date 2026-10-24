@@ -7,7 +7,31 @@ All notable changes to this project are listed here. The format follows
 
 ## [Unreleased]
 
+Proposed as **0.5.0**: the vote protocol and the value scale change. A change to the judge needs the subnet
+owner's approval (DESIGN.md section 13).
+
 ### Added
+- **CADmind's device judge** (`cadmind_einstein/judge.py`, the prompt `judge_prompt.md` as package data; owner
+  decision 2026-10-24). One core, four modes (`rate`, `nudge`, `check`, `final`), one entry point `judge(mode,
+  inputs, model, version=...)`. One sample is one two-turn conversation: a **blind turn 1** (the client's words and
+  photos only: use steps and 5-8 "useless if" lines, 1-4 of them the main job), then the pictures and the fact sheet
+  (rulings, at most 3 nudges, a score 0-3). The **main-job cap** is in the prompt and applied mechanically. Two
+  versions, switched by configuration (`--judge`, `Judge(version=...)`), each with its own `JUDGE_VERSION` and
+  digest (prompt, schemas, switches, sampling, aggregation, constants, injection lists):
+  - `cadmind-judge/1.2b`: no tools, 3 samples, the lower median, a nudge kept on 2 of 3. The validators' judge.
+  - `cadmind-judge/1.2b-tools`: read-only Watt instruments (`entities`, `inspect`, `measure`) on the delivered
+    project in a workspace, at most 12 calls (configurable), locked until turn 1 is answered, output scrubbed of
+    instruction-like text; ONE sample, taken as it is. For CADmind's pipeline and the miner-side reviewer only. The
+    read-only rule is enforced by our client (`judge_tools.ReadOnlyWatt`, four allowed requests), not by the key.
+- **`--judge-backend openrouter|claude-cli`**: a validator's judge runs on its review key (`openrouter`, the
+  default) or on a Claude subscription (`claude-cli`: `claude -p` isolated as the reference miner, no tools,
+  `ANTHROPIC_*`/`OPENROUTER*` stripped from its environment). The subscription's dollars are notional list prices,
+  archived as `usd_kind: notional-subscription` and counted toward the same `--review-daily-usd` cap.
+- **`cadmind-judge`**: run the judge on a review bundle in any mode and either version (development and our
+  pipeline; `claude-cli:<model>` or an API model). `judge_tools` (the instruments and their stdio MCP server) and
+  `judge_workspace` (load a delivered project into a workspace for the tools judge).
+- **The client's photos** in our validator's bundle are read and checked (`photos.sha256`) and go to the judge's
+  blind turn 1; they are not part of the image set.
 - **The calibration archive** (`<state-dir>/archive/jobs/<job>.jsonl`, one append-only file per job, 0600): what
   the store's 7-day window used to forget. Every vote as it is recorded, with every model call made for it -- the
   raw reply text, what it parsed to or why it was unavailable, the model that answered, tokens, dollars and latency
@@ -24,10 +48,24 @@ All notable changes to this project are listed here. The format follows
   nothing more of it is archived (also after a restart).
 
 ### Changed
+- **The vote is the judge's** (`cadmind-einstein-vote/2`): `review.py` and `votes.py` call `judge("rate")` with
+  1.2b. A vote's samples are the judge's, it names the judge digest and version (`judge`, `judge_version`, where v1
+  named `rubric`), its value is `V_MAP[lower median]` with `V_MAP = {0: 0, 1: 0.3, 2: 0.65, 3: 1.0}`, and a spread
+  of 2 or more is noisy. `u` is unchanged and votes stay counted. The public form carries each sample's score,
+  cap flag, ruling and nudge counts; the miner's own view adds the derived lines, rulings and kept nudges.
+  `cadmind-recompute` checks v2 values as `V_MAP` of the lower median, and v1 votes still in the window as before.
+  A vote costs about three to four times rubric 3's: re-set `--review-daily-usd`.
+- **The calibration archive** records the judge's version, digest and mode, the samples asked, every conversation
+  (both turns' raw answers, requests, tokens, dollars and their kind, latency), the grouping calls, the instrument
+  calls and their Watt compute.
+- **A validator refuses to start with `--judge 1.2b-tools`**, with why.
+- `cadmind-review` and `cadmind-calibrate` judge with 1.2b.
 - **The reference miner reads Watt's guide topics**: the core (brief, primer, scope), then each topic the device
   needs (`watt_guide <topic>`; the primer's Topics table says when).
 
 ### Removed
+- **Rubric 3** (R1-R5, `FUNCTION_CAP`, `SYSTEM_PROMPT`, `REPLY_SCHEMA`, `parse_sample`, `sample_cap`,
+  `capped_value`, `ask_samples`, `rubric_digest`, `user_text`): replaced by the device judge.
 - **The `needs-client` rejection** (owner 2026-10-24: "no questions: the miner assumes and records"). On a job
   whose client asked not to be asked questions, a need no option keeps is the builder's own decided decision with
   `misses` (Watt's W0240 accepts it on such a job) and the job is delivered: the gate no longer refuses it, the

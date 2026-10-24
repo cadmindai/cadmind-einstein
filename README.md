@@ -20,7 +20,7 @@ miners' AI agents as checked engineering projects.
    Each job is scored
    from the gate, efficiency, timeliness, the **client's own reaction** (download, stars, change requests, a
    quality refund) and the validators' **quality vote** -- a vision model's evaluation of the delivered device on a
-   published rubric (a light base rating, counted with `u = 0.4`). No model decides whether a device is delivered. Every
+   published judge (`cadmind-judge/1.2b`, counted with `u = 0.4`). No model decides whether a device is delivered. Every
    hour the validator sets weights and publishes a report anyone can recompute.
 
 Watt itself, the agent bench that runs it, and the platform's accounts, job queue and billing are hosted services
@@ -139,7 +139,7 @@ commercial use). An efficient harness -- fewer, better model calls and less Watt
 |---|---|
 | [`DESIGN.md`](DESIGN.md) | how einstein works and why: jobs, the gate, reassignment, scoring, weights, abuse, auditability |
 | [`docs/MINER.md`](docs/MINER.md) | miners: registering, the sealed agent key and its approval, the entry test, the job protocol, scoring, your stats, copying, running an agent |
-| [`docs/VALIDATOR.md`](docs/VALIDATOR.md) | validators: staking, the review bundle, the rubric and its prompt, the vote protocol, cost, calibration |
+| [`docs/VALIDATOR.md`](docs/VALIDATOR.md) | validators: staking, the review bundle, the judge and its prompt, the vote protocol, cost, calibration |
 | [`CHANGELOG.md`](CHANGELOG.md) | what changed in each release |
 | [`CONTRIBUTING.md`](CONTRIBUTING.md) | development setup and pull requests |
 | [`SECURITY.md`](SECURITY.md) | reporting a vulnerability privately |
@@ -232,8 +232,10 @@ cadmind-einstein --state-dir ~/.local/share/cadmind-einstein \
 - The validator logs whether it is **stake-dominant** (its share of active validator stake above `kappa`), and
   publishes that in every report and at `GET /v1/chain`.
 - **Quality votes** ([`docs/VALIDATOR.md`](docs/VALIDATOR.md)): `--votes` (`counted` by default: voted, published
-  and scored with `u = 0.4`; `live` is its old name; `shadow`: voted and published, not scored; `off`), `--review-model anthropic:<model>|openai:<model>` with
-  `--review-key-file` (0600; install `cadmind-einstein[review]`), `--review-samples` (3), `--review-effort`
+  and scored with `u = 0.4`; `live` is its old name; `shadow`: voted and published, not scored; `off`), `--judge 1.2b` (the only judge a validator accepts; `1.2b-tools` is refused), `--judge-backend
+  openrouter|claude-cli` (`claude-cli`: a Claude subscription logged in for the service user, no key file, notional
+  dollars counted toward the cap), `--review-model anthropic:<model>|openai:<model>` (a Claude model name with
+  `claude-cli`) with `--review-key-file` (0600; install `cadmind-einstein[review]`), `--review-samples` (3), `--review-effort`
   (`medium`), `--review-daily-usd` (10; an ALERT when reached) and `--review-usd-per-mtok-in/out/cached` (the
   provider's prices, for the cap). Without `--review-model` deliveries are queued, not reviewed.
 
@@ -502,7 +504,10 @@ signature and value, and compares the newest report's hash with the validator's 
 | `cadmind_einstein/desk.py` | the job desk: claim, route, accept, deadlines, gate, reassignment, job endings, admission, abuse disables |
 | `cadmind_einstein/scoring.py` | per-job scores, decayed weights, the vector, hourly reports; `cadmind-recompute` (the auditor) |
 | `cadmind_einstein/stats.py` | miner stats (24 h, 7 days, lifetime; the daily rollup), the leaderboard; `cadmind-miner-stats` |
-| `cadmind_einstein/review.py` | the reference reviewer: rubric, prompt, strict replies, injection measures, bundle checks, the average; `cadmind-review` |
+| `cadmind_einstein/review.py` | the review bundle and its checks, the signed vote (v2, and v1 still in the window), the average; `cadmind-review` |
+| `cadmind_einstein/judge.py` | the device judge: one prompt (`judge_prompt.md`), four modes, versions 1.2b and 1.2b-tools, strict replies, the digest, the subscription transport; `cadmind-judge` |
+| `cadmind_einstein/judge_tools.py` | the tools judge's read-only instruments (the proxy and the MCP server) |
+| `cadmind_einstein/judge_workspace.py` | a delivered project loaded into a Watt workspace for the tools judge (our pipeline only) |
 | `cadmind_einstein/votes.py` | our validator's votes: the review queue, counted/shadow, signed votes, their report section |
 | `cadmind_einstein/models.py` | the review model by configuration (Anthropic or OpenAI SDK) and the daily spend cap |
 | `cadmind_einstein/calibration.py` | the calibration set and the go/no-go |

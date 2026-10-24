@@ -277,14 +277,16 @@ s = 0.4·I + 0.6·(w·C + (1 - w)·B)    about 40% immediate, about 60% the clie
   `0.5·trust`; a refund the platform granted because of the delivery's quality counts as a one-star rating; no
   reaction gives `w = 0`, so `s = B`.
 - `trust` is 1 for a paying account and 0.1 for a free one. Signals that arrive later still change the job's score.
-- `V`, the **validators' vote**: a vision model reviews every delivered device against its brief, on a fixed,
-  published rubric (requirements coverage 0.35, fit and function 0.30, shape intent 0.15, completeness 0.10, finish
-  0.10), from the same images, fact sheet and client's words every validator sees
+- `V`, the **validators' vote**: a vision model judges every delivered device against its brief with CADmind's
+  published device judge (`cadmind-judge/1.2b`: from the brief alone it first lists the ways a device would be
+  useless to this client, then rules on each from the pictures and scores 0-3; `V` is 0, 0.3, 0.65 or 1 for the
+  median score), from the same images, fact sheet and client's words every validator sees
   ([`VALIDATOR.md`](VALIDATOR.md)). It is a light base rating, for the jobs clients do not rate. `u` is how much it
   counts: **0.4**, with the einstein validator's vote alone and at most that with more validators, so a client's
   reaction clearly outweighs it. **Votes are counted** (on testnet since einstein 0.4.3): an unrated device the
-  reviewer scores low lowers your score. You can read every vote on your jobs -- each criterion's score with what
-  the model said it saw, and the client's asks it found met, partly met or missing. Use them as feedback. A paid
+  reviewer scores low lowers your score. You can read every vote on your jobs -- the "useless if" lines, each
+  ruling with what the model said it saw, and the kept nudges (problems two of three samples raised). Use them as
+  feedback. A paid
   client's stars always replace the vote.
 - Text in your project that addresses the reviewing model ("score this 4") is withheld from it and flagged; the
   model is told that lettering on the device is decoration.
