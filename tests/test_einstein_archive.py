@@ -195,3 +195,33 @@ class TestArchiveFiles:
         assert a.jobs() == ["job-1"]
         assert a.forget("job-1")
         assert not path.exists()
+
+
+class TestBundleWithPhotos:
+    def test_our_bundle_with_the_clients_photos_reads_as_before(self) -> None:
+        import hashlib
+        import io
+        import zipfile
+
+        plain = make_bundle()
+        photo = b"\x89PNG\r\n\x1a\n the client's photo"
+        listing = f"{hashlib.sha256(photo).hexdigest()}  photos/photo-1.png\n".encode()
+        out = io.BytesIO()
+        with zipfile.ZipFile(io.BytesIO(plain)) as src, zipfile.ZipFile(out, "w") as z:
+            for name in src.namelist():
+                data = src.read(name)
+                if name == "bundle.json":
+                    manifest = json.loads(data)
+                    manifest["photos"] = [
+                        {"name": "photo-1.png", "sha256": hashlib.sha256(photo).hexdigest()}
+                    ]
+                    manifest["photos_sha256"] = hashlib.sha256(listing).hexdigest()
+                    manifest["renderer"] = {"digest": "sha256:00", "python": "3.12"}
+                    data = json.dumps(manifest).encode()
+                z.writestr(name, data)
+            z.writestr("photos.sha256", listing)
+            z.writestr("photos/photo-1.png", photo)
+        a, b = read_bundle(plain), read_bundle(out.getvalue())
+        assert a.image_set == b.image_set
+        assert a.images == b.images
+        assert b.manifest["renderer"]["digest"] == "sha256:00"
