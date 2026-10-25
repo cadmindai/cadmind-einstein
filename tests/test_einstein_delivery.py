@@ -8,13 +8,16 @@ from __future__ import annotations
 
 import json
 import random
+import tempfile
 import unittest
+from pathlib import Path
 from typing import Any
 
-from cadmind_einstein.desk import Desk
+from cadmind_einstein.desk import Desk, Job
 from cadmind_einstein.platform import OperatorClient, PlatformError
 from cadmind_einstein.scoring import Ledger
 from cadmind_einstein.sealing import new_keypair
+from cadmind_einstein.store import Store
 from tests.test_einstein import GOOD, A, B, Clock, FakePlatform
 from tests.test_einstein_operator_roles import _Stub
 
@@ -173,6 +176,9 @@ class TestRefusedDelivery(_Case):
         self.refuse.append(PlatformError("cannot read now", 503, "delivery_unverified", ours=True))
         self.deliver("j1")
         self.tick()
+        self.assertEqual(len(self.calls), 1)  # backed off: not sent again before its delay
+        self.clock.t += 10
+        self.tick()
         self.assertEqual(len(self.calls), 2)  # refused once (503), sent again
         self.assertEqual(self.p.completed["j1"]["label"], "delivered")
         self.assertEqual(len(self.desk.ledger.outcomes), 1)
@@ -196,10 +202,140 @@ class TestClientCodes(unittest.TestCase):
         stub.rules[prefix] = (503, {"code": "delivery_unverified"}, {"Retry-After": "3"})
         with self.assertRaises(PlatformError) as e:
             c.complete("j1", {"label": "delivered"})
-        self.assertEqual((e.exception.status, e.exception.ours), (503, True))
+        self.assertEqual(
+            (e.exception.status, e.exception.ours, e.exception.held), (503, True, False)
+        )
         stub.rules.clear()
-        t[0] += 4
+        c.complete("j2", {"label": "delivered"})  # one job's 503 holds no other job back
+        c.claim()
+        stub.rules[prefix] = (503, {"error": "the server is busy", "code": "busy"}, {})
+        with self.assertRaises(PlatformError) as e:
+            c.complete("j1", {"label": "delivered"})
+        self.assertTrue(e.exception.held)  # the platform's load holds the queue role
+        stub.rules.clear()
+        with self.assertRaises(PlatformError) as e:
+            c.claim()
+        self.assertEqual((e.exception.code, e.exception.held), ("backoff", True))
+        t[0] += 6
         c.complete("j1", {"label": "delivered"})
+
+
+class TestOneResultNeverStarvesTheOthers(unittest.TestCase):
+    """A result the platform keeps refusing with a 503 of its own (it cannot export that one
+    delivery) backs off alone: the other jobs' results reach the platform on the same tick, over
+    the real client, and the refused one's back-off survives a restart."""
+
+    def setUp(self) -> None:
+        self.stub = _Stub()
+        self.addCleanup(self.stub.close)
+        self.clock, self.logs = Clock(), []
+        self.dir = tempfile.TemporaryDirectory()
+        self.addCleanup(self.dir.cleanup)
+        self.store = Store(Path(self.dir.name) / "s.sqlite3")
+        self.stub.rules[("POST", "/api/engine/einstein/jobs/jA/result")] = (
+            503,
+            {
+                "error": "the Watt agent API did not answer; send the result again",
+                "code": "agent_api_offline",
+            },
+            {"Retry-After": "5"},
+        )
+
+    def desk(self) -> Desk:
+        client = OperatorClient(self.stub.url, "op", clock=self.clock, log=self.logs.append)
+        desk = Desk(
+            client,  # type: ignore[arg-type]
+            Ledger(store=self.store),
+            registered=list,
+            clock=self.clock,
+            store=self.store,
+            log=self.logs.append,
+        )
+        self.addCleanup(desk.stop)
+        return desk
+
+    def sent(self) -> list[str]:
+        return [p.split("/")[-2] for m, p, _ in self.stub.seen if p.endswith("/result")]
+
+    def end(self, desk: Desk, job: str, label: str = "didn't finish") -> None:
+        with desk._mut():
+            desk.jobs[job] = Job(
+                job=job,
+                brief="",
+                state="done",
+                created_ms=desk.now_ms(),
+                result={"label": label, "charge": False, "why": "test"},
+            )
+            desk._outbox.append(job)
+
+    def test_a_refused_result_backs_off_alone(self) -> None:
+        desk = self.desk()
+        for job in ("jA", "jB", "jC"):  # the refused one first
+            self.end(desk, job)
+        desk._flush()
+        self.assertEqual(sorted(self.sent()), ["jA", "jB", "jC"])  # B and C on the same tick
+        self.assertEqual(desk._outbox, ["jA"])
+        self.assertEqual(desk.platform.frozen(), [])
+        # within its back-off, A is not sent again; a new result goes out at once
+        self.end(desk, "jD")
+        self.clock.t += 5
+        desk._flush()
+        self.assertEqual(self.sent()[3:], ["jD"])
+        # past it, A is sent again -- after the fresh results -- and its delay doubles
+        self.end(desk, "jE")
+        self.clock.t += 6
+        desk._flush()
+        self.assertEqual(self.sent()[4:], ["jE", "jA"])
+        self.assertEqual(desk._outbox_retry["jA"]["tries"], 2)
+        self.assertEqual(desk._outbox_retry["jA"]["code"], "agent_api_offline")
+        self.clock.t += 15
+        desk._flush()
+        self.assertEqual(self.sent()[6:], [])  # 20 s now
+        self.assertFalse(any("ALERT" in x for x in self.logs))
+        desk.stop()
+        # a restart keeps the back-off
+        again = self.desk()
+        self.assertEqual(again._outbox, ["jA"])
+        self.assertEqual(again._outbox_retry["jA"]["tries"], 2)
+        again._flush()
+        self.assertEqual(self.sent()[6:], [])
+        # refused for a long time: one ALERT naming the job and the platform's words
+        for _ in range(12):
+            self.clock.t += 300
+            again._flush()
+        alerts = [x for x in self.logs if "ALERT" in x and "jA" in x]
+        self.assertTrue(alerts)
+        self.assertIn("did not answer", alerts[0])
+        self.assertLessEqual(len(alerts), 2)  # 1 h of refusals, said at most every 30 min
+        self.assertLessEqual(again._outbox_retry["jA"]["next_ms"] - again.now_ms(), 300_000)
+        # the platform takes it at last: gone from the outbox and its back-off
+        del self.stub.rules[("POST", "/api/engine/einstein/jobs/jA/result")]
+        self.clock.t += 300
+        again._flush()
+        self.assertEqual(again._outbox, [])
+        self.assertEqual(again._outbox_retry, {})
+
+    def test_the_platforms_load_stops_the_walk_and_backs_off_only_the_job_it_answered(self) -> None:
+        self.stub.rules.clear()
+        self.stub.rules[("POST", "/api/engine/einstein/jobs/")] = (
+            503,
+            {"error": "the server is busy; try again", "code": "busy"},
+            {"Retry-After": "5"},
+        )
+        desk = self.desk()
+        for job in ("jA", "jB", "jC"):
+            self.end(desk, job)
+        desk._flush()
+        self.assertEqual(len(self.sent()), 1)  # the role is held: nothing more sent this tick
+        self.assertEqual(sorted(desk._outbox), ["jA", "jB", "jC"])
+        self.assertEqual(set(desk._outbox_retry), {"jA"})  # only the one the platform answered
+        self.stub.rules.clear()
+        self.clock.t += 6
+        desk._flush()
+        self.assertEqual(desk._outbox, ["jA"])  # B and C at once, A after its own 10 s
+        self.clock.t += 5
+        desk._flush()
+        self.assertEqual(desk._outbox, [])
 
 
 if __name__ == "__main__":

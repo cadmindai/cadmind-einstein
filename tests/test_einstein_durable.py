@@ -208,6 +208,9 @@ class TestRestart(unittest.TestCase):
         down["on"] = False
         self.r.restart()
         self.r.tick()
+        self.assertNotIn("m5", self.r.p.completed)  # its back-off survived the restart
+        self.r.clock.t += 10
+        self.r.tick()
         self.assertEqual(self.r.p.completed["m5"]["label"], "delivered")
 
     def test_the_copy_window_survives(self) -> None:

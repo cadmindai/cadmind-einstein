@@ -25,6 +25,16 @@ allowlist): logged as an ALERT. **Back-pressure**: 429 ``too_many_in_flight`` an
 role off for the answer's ``Retry-After`` (5 s if none), failing its calls at once meanwhile --
 the desk retries them on a later tick, never in a loop.
 
+**One job's 503 is not back-pressure.** A call about one job (its result, its review bundle) can
+be answered 503 for that job alone: the platform could not verify or keep THAT delivery now
+(``delivery_unverified``, ``agent_api_offline``, ``delivery_unreadable``, ``result_in_progress``,
+or any other code it names). Such a 503 fails that call only and holds nothing, so the next job's
+result goes out on the same tick; the desk backs the job off on its own. On a job's call, only
+the platform's own load holds the role: 429 ``too_many_in_flight``, or a 503 that names no code
+or names ``busy`` (the server out of threads, or a proxy in front of it). Every other call keeps
+the rule above: any 503 holds its role. A failure raised by a hold, or while one lasts, carries
+``held`` (the desk stops walking its outbox: every queue call would fail the same way).
+
 Stdlib only. Every failure is a :class:`PlatformError` carrying the HTTP status and the platform's
 code; ``ours`` marks a failure on the validator's side (its credential, the platform's load).
 """
@@ -43,10 +53,16 @@ from urllib.parse import quote
 
 class PlatformError(Exception):
     def __init__(
-        self, message: str, status: int = 0, code: str = "", *, ours: bool = False
+        self,
+        message: str,
+        status: int = 0,
+        code: str = "",
+        *,
+        ours: bool = False,
+        held: bool = False,
     ) -> None:
         super().__init__(message)
-        self.status, self.code, self.ours = status, code, ours
+        self.status, self.code, self.ours, self.held = status, code, ours, held
 
 
 class RoleFrozenError(PlatformError):
@@ -59,6 +75,9 @@ class RoleRefusedError(PlatformError):
 
 WORKSPACES, KEYS, QUEUE = "workspaces", "keys", "queue"
 ROLES = (WORKSPACES, KEYS, QUEUE)
+ROLE_BUSY = ("", "busy")
+"""the codes of a 503 that is the platform's (or its proxy's) load, not one job's: on a job's call,
+only these hold the role"""
 FROZEN = ("operator_frozen", "operator_ceiling")
 RECHECK_S = 300.0
 BACKOFF_S = 5.0
@@ -139,6 +158,7 @@ class OperatorClient:
                 503,
                 "operator_frozen",
                 ours=True,
+                held=True,
             )
         if now < held:
             raise PlatformError(
@@ -146,6 +166,7 @@ class OperatorClient:
                 503,
                 "backoff",
                 ours=True,
+                held=True,
             )
 
     def _after_ok(self, role: str) -> None:
@@ -155,8 +176,11 @@ class OperatorClient:
         if was is not None:
             self.log(f"the validator's {role} key works again: the role resumes")
 
-    def _refused(self, role: str, status: int, code: str, message: str, headers: Any) -> None:
-        """Raise the failure; freeze, hold off or alert on the way."""
+    def _refused(
+        self, role: str, status: int, code: str, message: str, headers: Any, *, job: bool = False
+    ) -> None:
+        """Raise the failure; freeze, hold off or alert on the way. ``job``: the call is about one
+        job, whose own 503 holds nothing (module docstring)."""
         if code in FROZEN:
             with self._lock:
                 self._frozen[role] = self.clock() + self.recheck_s
@@ -166,7 +190,7 @@ class OperatorClient:
                 f"stopped and asked again every {self.recheck_s / 60:g} min -- the owner must "
                 "enable the key again",
             )
-            raise RoleFrozenError(message, 503, code, ours=True)
+            raise RoleFrozenError(message, 503, code, ours=True, held=True)
         if code == "operator_role":
             self._alert(
                 f"role:{role}",
@@ -182,10 +206,13 @@ class OperatorClient:
                 f"revoked key{where}",
             )
             raise PlatformError(message, status, code, ours=True)
+        if status == 503 and job and code not in ROLE_BUSY:
+            # this job's delivery, not the platform's load: the other jobs' calls go on
+            raise PlatformError(message, 503, code, ours=True)
         if (status == 429 and code == "too_many_in_flight") or status == 503:
             with self._lock:
                 self._held[role] = self.clock() + _retry_after(headers)
-            raise PlatformError(message, 503, code or "busy", ours=True)
+            raise PlatformError(message, 503, code or "busy", ours=True, held=True)
         raise PlatformError(message, status, code)
 
     def _call(
@@ -198,6 +225,7 @@ class OperatorClient:
         raw: bool = False,
         timeout: float | None = None,
         base: str = "",
+        job: bool = False,
     ) -> Any:
         self._before(role)
         data = json.dumps(dict(body)).encode() if body is not None else None
@@ -224,6 +252,7 @@ class OperatorClient:
                 str(err.get("code") or ""),
                 str(err.get("error") or e.reason),
                 e.headers,
+                job=job,
             )
             raise AssertionError("unreachable") from None  # pragma: no cover -- _refused raises
         except (urllib.error.URLError, TimeoutError, ConnectionError) as e:
@@ -351,7 +380,8 @@ class OperatorClient:
         gate read (``digest``); the platform refuses it, 409 ``delivery_not_of_job`` or
         ``delivery_digest_mismatch``, when the fork does not descend from the job's own grant or
         is not at that digest (never retried), and answers 503 ``delivery_unverified`` when it
-        cannot tell now (retried). Answers the platform's ``{accepted, charged, label}``:
+        cannot tell now (retried; that job's 503 holds no other job's result back). Answers the
+        platform's ``{accepted, charged, label}``:
         ``charged`` is whether the client was charged (false for a delivery the client cancelled
         meanwhile, or one that could not be kept)."""
         out = self._call(
@@ -360,6 +390,7 @@ class OperatorClient:
             {"result": dict(result)},
             base=self.queue,
             role=QUEUE,
+            job=True,
         )
         return dict(out) if isinstance(out, Mapping) else {}
 
@@ -376,6 +407,7 @@ class OperatorClient:
             {"audience": audience},
             base=self.queue,
             role=QUEUE,
+            job=True,
         )
         return dict(out) if isinstance(out, Mapping) else {}
 

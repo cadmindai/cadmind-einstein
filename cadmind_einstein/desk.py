@@ -96,7 +96,7 @@ from typing import Any, Protocol
 
 from . import __version__
 from .answers import check as answers_check
-from .platform import PlatformError
+from .platform import PlatformError, RoleFrozenError
 from .scoring import JobOutcome, Ledger, size_class
 from .sealing import seal, valid_public
 from .similarity import CopyCheck, CopyPolicy, Entry, fingerprint
@@ -160,6 +160,14 @@ RETRY_FIRST_S = 15.0
 RETRY_BUSY_FIRST_S = 5.0
 RETRY_MAX_S = 600.0
 CANCEL_COOLOFF_S = 45.0
+OUTBOX_RETRY_S = 10.0
+OUTBOX_RETRY_MAX_S = 300.0
+"""a result the platform did not take is sent again after this long, doubling with each refusal up
+to the cap -- that job alone: the other results in the outbox go out meanwhile"""
+OUTBOX_ALERT_AFTER_S = 900.0
+OUTBOX_ALERT_EVERY_S = 1800.0
+"""a result refused for this long is logged as an ALERT (its job and the platform's words), at most
+this often per job"""
 """how long a miner whose job was cancelled gets no new job (time to stop its agent)"""
 MINT_PER_HOUR = 40
 """agent keys the validator mints per hour in all: below the platform's own ceiling, past which the
@@ -624,6 +632,9 @@ class Desk:
         self.lease_every_s, self._leased_ms = lease_every_s, 0
         self._lease_lock = threading.Lock()
         self._outbox: list[str] = []
+        self._outbox_retry: dict[str, dict[str, Any]] = {}
+        """per job in the outbox the platform has refused: ``{tries, first_ms, next_ms, said_ms,
+        status, code, error}`` -- when it is sent again (persisted with the outbox)"""
         self._revoke: list[str] = []
         """deregistered or disabled hotkeys whose key the platform has not yet deleted"""
         self.rng = rng or random.Random()  # noqa: S311 -- routing, not a secret
@@ -705,6 +716,7 @@ class Desk:
                 "rejected": self.rejected,
                 "overturned": self.overturned,
                 "outbox": self._outbox,
+                "outbox_retry": {k: v for k, v in self._outbox_retry.items() if k in self._outbox},
                 "revoke": self._revoke,
                 "copied": self.copied,
                 "failed": self.failed,
@@ -758,6 +770,11 @@ class Desk:
         self.rejected = dict(meta.get("rejected") or {})
         self.overturned = dict(meta.get("overturned") or {})
         self._outbox = list(meta.get("outbox") or [])
+        self._outbox_retry = {
+            str(k): dict(v)
+            for k, v in (meta.get("outbox_retry") or {}).items()
+            if isinstance(v, dict) and k in self._outbox
+        }
         self._revoke = list(meta.get("revoke") or [])
         self.copied = dict(meta.get("copied") or {})
         self.failed = dict(meta.get("failed") or {})
@@ -1655,6 +1672,7 @@ class Desk:
                 old.queued_ms = self.now_ms()
                 if job_id in self._outbox:
                     self._outbox.remove(job_id)
+                self._outbox_retry.pop(job_id, None)
                 self._final.discard(job_id)
                 self._event("reclaimed", job_id, attempts=len(old.attempts))
                 return self.status(job_id)
@@ -2203,12 +2221,27 @@ class Desk:
     def _flush(self) -> None:
         """Ended jobs' results go back to the platform, which charges (delivered) or not, and
         releases the hold; a result the platform did not take stays in the outbox (persisted) and
-        is sent again on the next tick."""
+        is sent again later.
+
+        **No result starves the others.** A refused result backs off on its own
+        (:meth:`_outbox_refused`: 10 s, doubling to 5 min) and is not sent again before then; the
+        results due are sent fewest refusals first, so a result the platform keeps refusing (one
+        job's delivery it cannot keep) goes last, after every other job's. Only a refusal that
+        holds the whole queue role (the platform's load, a frozen key: ``held``) stops the walk,
+        since every later call would fail the same way; a refusal raised locally by that hold is
+        not the job's and does not back it off."""
         if not self._flushing.acquire(blocking=False):
             return
         try:
+            now = self.now_ms()
             with self._lock:
-                todo = list(self._outbox)
+                for k in [k for k in self._outbox_retry if k not in self._outbox]:
+                    del self._outbox_retry[k]
+                retry = {k: dict(v) for k, v in self._outbox_retry.items()}
+                todo = sorted(
+                    (k for k in self._outbox if int(retry.get(k, {}).get("next_ms", 0)) <= now),
+                    key=lambda k: int(retry.get(k, {}).get("tries", 0)),
+                )
             for job_id in todo:
                 with self._lock:
                     job = self.jobs.get(job_id)
@@ -2222,7 +2255,13 @@ class Desk:
                     except PlatformError as e:
                         if e.code in REFUSED_DELIVERY:
                             self._refused_delivery(job_id, e)
-                        continue  # anything else: sent again on a later tick
+                            continue
+                        local = e.code == "backoff" or isinstance(e, RoleFrozenError)
+                        if not local:  # the platform answered THIS result: it backs off alone
+                            self._outbox_refused(job_id, e)
+                        if e.held:
+                            break  # the whole queue role waits: the rest on a later tick
+                        continue  # anything else: sent again later, the others go on now
                     if (
                         result.get("label") == "delivered"
                         and result.get("charge")
@@ -2248,8 +2287,38 @@ class Desk:
                 with self._mut():
                     if job_id in self._outbox:
                         self._outbox.remove(job_id)
+                    self._outbox_retry.pop(job_id, None)
         finally:
             self._flushing.release()
+
+    def _outbox_refused(self, job_id: str, e: PlatformError) -> None:
+        """The platform did not take a job's result: it is sent again after a delay that doubles
+        with each refusal (``OUTBOX_RETRY_S`` up to ``OUTBOX_RETRY_MAX_S``), persisted with the
+        outbox. Refused for ``OUTBOX_ALERT_AFTER_S`` or more, an ALERT names the job and the
+        platform's words, at most every ``OUTBOX_ALERT_EVERY_S`` per job."""
+        now = self.now_ms()
+        with self._mut():
+            if job_id not in self._outbox:
+                return
+            row = self._outbox_retry.setdefault(job_id, {"tries": 0, "first_ms": now})
+            row["tries"] = int(row.get("tries", 0)) + 1
+            delay = min(OUTBOX_RETRY_MAX_S, OUTBOX_RETRY_S * 2 ** min(row["tries"] - 1, 30))
+            row["next_ms"] = now + int(delay * 1000)
+            row.update(status=e.status, code=e.code, error=str(e)[:300])
+            first, said = int(row.get("first_ms", now)), int(row.get("said_ms", 0) or 0)
+            alert = now - first >= OUTBOX_ALERT_AFTER_S * 1000 and (
+                not said or now - said >= OUTBOX_ALERT_EVERY_S * 1000
+            )
+            if alert:
+                row["said_ms"] = now
+            tries = row["tries"]
+        if alert:
+            self.log(
+                f"ALERT: job {job_id}: the platform has refused its result for "
+                f"{(now - first) / 60_000:.0f} min ({tries} tries; last {e.status} "
+                f"{e.code or 'no code'}: {str(e)[:200]}); sent again every "
+                f"{delay:.0f} s, the other results are not held back"
+            )
 
     @staticmethod
     def _held_for_review(job: Job) -> bool:
@@ -2276,6 +2345,7 @@ class Desk:
                 return
             if job_id in self._outbox:
                 self._outbox.remove(job_id)
+            self._outbox_retry.pop(job_id, None)
             gone = self.ledger.withdraw(job_id)
             self._unscore(job, gone)
             row = {
