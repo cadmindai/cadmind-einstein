@@ -274,7 +274,7 @@ class TestVersionsAndDigests(unittest.TestCase):
             (base.version, tools.version), ("cadmind-judge/1.2b", "cadmind-judge/1.2b-tools")
         )
         self.assertNotEqual(base.digest(), tools.digest())
-        self.assertEqual(base.digest(), jm.Judge().digest())
+        self.assertEqual(jm.Judge("1.3").digest(), jm.Judge().digest())  # the validators' default since 0.5.1
         # the tool budget is part of the tools judge (it is in the prompt), not of 1.2b
         self.assertNotEqual(tools.digest(), jm.Judge("1.2b-tools", tool_budget=8).digest())
         self.assertEqual(base.digest(), jm.Judge("1.2b", tool_budget=8).digest())
@@ -288,7 +288,7 @@ class TestVersionsAndDigests(unittest.TestCase):
             self.assertNotEqual(before, jm.Judge().digest())
         finally:
             jm.V_MAP[1] = old
-        self.assertEqual(base.digest(), jm.Judge().digest())
+        self.assertEqual(jm.Judge("1.3").digest(), jm.Judge().digest())  # the validators' default since 0.5.1
         with self.assertRaises(ValueError):
             jm.Judge("1.1")
 
@@ -338,13 +338,13 @@ def inputs_with_assumptions() -> jm.Inputs:
 
 
 class TestJudge13(unittest.TestCase):
-    """1.3: the fact sheet's ``assumptions`` and the guardrail on it, NOT released."""
+    """1.3: the fact sheet's ``assumptions`` and the guardrail on it; the validators' judge since 0.5.1."""
 
     def test_the_released_digests_do_not_move(self) -> None:
         for name, digest in RELEASED_DIGESTS.items():
             self.assertEqual(jm.judge_digest(name), digest)
-        self.assertEqual(jm.RELEASED, ("1.2b", "1.2b-tools"))
-        self.assertEqual(jm.VALIDATOR_VERSION, "1.2b")
+        self.assertEqual(jm.RELEASED, ("1.2b", "1.2b-tools", "1.3", "1.3-tools"))
+        self.assertEqual(jm.VALIDATOR_VERSION, "1.3")
 
     def test_its_own_prompt_file_and_digest(self) -> None:
         new, tools = jm.Judge("1.3"), jm.Judge("1.3-tools")
@@ -404,16 +404,14 @@ class TestJudge13(unittest.TestCase):
         capped = jm.Judge("1.3").parse_look(json.dumps(look("rate", 3)), "rate", d, inputs())
         self.assertEqual((capped["score"], capped["capped_from"]), (1, 3))
 
-    def test_a_validator_refuses_an_unreleased_judge(self) -> None:
-        for name in ("1.3", "1.3-tools"):
-            with self.assertRaises(jm.ValidatorJudgeError) as e:
-                jm.for_validator(name)
-            self.assertIn("not released", str(e.exception))
-            with self.assertRaises(SystemExit):
-                check_judge(name)
-        with self.assertRaises(ValueError):
-            Reviewer(Ledger(), None, None, me="v", judge_version="1.3")
-
+    def test_a_validator_votes_with_1_3_and_refuses_its_tools_judge(self) -> None:
+        self.assertEqual(jm.for_validator("1.3").name, "1.3")
+        check_judge("1.3")
+        with self.assertRaises(jm.ValidatorJudgeError) as e:
+            jm.for_validator("1.3-tools")
+        self.assertIn("never a validator", str(e.exception))
+        with self.assertRaises(SystemExit):
+            check_judge("1.3-tools")
 
 class TestTheToolsJudge(unittest.TestCase):
     def access(self, d: str) -> ToolAccess:
@@ -454,7 +452,7 @@ class TestTheToolsJudge(unittest.TestCase):
         with self.assertRaises(jm.ValidatorJudgeError) as e:
             jm.for_validator("1.2b-tools")
         self.assertIn("never a validator", str(e.exception))
-        self.assertIn("--judge 1.2b", str(e.exception))
+        self.assertIn("--judge 1.3", str(e.exception))
         with self.assertRaises(jm.ValidatorJudgeError):
             jm.for_validator("2.0")
         with self.assertRaises(ValueError):

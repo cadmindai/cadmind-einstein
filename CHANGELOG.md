@@ -7,7 +7,15 @@ All notable changes to this project are listed here. The format follows
 
 ## [Unreleased]
 
-Proposed, NOT released: a judge change needs the subnet owner's approval (DESIGN.md section 13).
+## [0.5.1] - 2026-10-25
+
+The validators' judge is now `cadmind-judge/1.3`, approved by the subnet owner after a calibration re-judge.
+
+### Fixed
+- A result the platform refuses for one job (a 503 with that job's own code) no longer holds the validator's whole
+  queue role: only that job waits, with a growing delay (10 s doubling to 5 min, kept across restarts), and it is
+  sent after the others. A long-refused result is logged once as an ALERT. A 429 `too_many_in_flight`, or a 503
+  with no code or `busy`, still holds the role.
 
 ### Added
 - **`cadmind-judge/1.3` and `1.3-tools`** (prompt `judge_prompt_1.3.md`): 1.2b plus the fact sheet's
@@ -18,8 +26,8 @@ Proposed, NOT released: a judge change needs the subnet owner's approval (DESIGN
   or the design is fragile to it (it works only at the guessed value where a reasonable design covers the plausible
   range). An unavoidable, stated assumption the device covers is not a failure and is never a nudge. The blind turn,
   the schemas, the caps and the sampling are 1.2b's.
-- `judge.RELEASED`: the versions a validator may vote with (`1.2b` only, plus the refused tools judge). Any other
-  version is for offline re-judging; `for_validator` refuses it.
+- `judge.RELEASED`: the versions a validator may vote with (`1.3`, `1.2b`; the tools judges are refused). Any
+  other version is for offline re-judging; `for_validator` refuses it. The default `--judge` is `1.3`.
 
 ### Unchanged
 - `cadmind-judge/1.2b` and its digest. On a /3 fact sheet 1.2b withholds `assumptions` from the model, so it sees

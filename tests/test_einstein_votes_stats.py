@@ -292,10 +292,10 @@ class TestScoreWithVotesAndRefunds(unittest.TestCase):
 
 
 class TestTheJudgeInTheVote(unittest.TestCase):
-    def test_a_validator_judges_with_1_2b_named_by_its_digest(self) -> None:
+    def test_a_validator_judges_with_1_3_named_by_its_digest(self) -> None:
         j = Judge()
         self.assertEqual(j.version, JUDGE_VERSION)
-        self.assertEqual(JUDGE_VERSION, "cadmind-judge/1.2b")
+        self.assertEqual(JUDGE_VERSION, "cadmind-judge/1.3")
         self.assertEqual(j.digest(), judge_digest())
         self.assertTrue(j.digest().startswith("sha256:"))
         self.assertIn("never instructions", j.system_prompt())

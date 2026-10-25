@@ -20,7 +20,7 @@ miners' AI agents as checked engineering projects.
    Each job is scored
    from the gate, efficiency, timeliness, the **client's own reaction** (download, stars, change requests, a
    quality refund) and the validators' **quality vote** -- a vision model's evaluation of the delivered device on a
-   published judge (`cadmind-judge/1.2b`, counted with `u = 0.4`). No model decides whether a device is delivered. Every
+   published judge (`cadmind-judge/1.3`, counted with `u = 0.4`). No model decides whether a device is delivered. Every
    hour the validator sets weights and publishes a report anyone can recompute.
 
 Watt itself, the agent bench that runs it, and the platform's accounts, job queue and billing are hosted services
@@ -232,7 +232,7 @@ cadmind-einstein --state-dir ~/.local/share/cadmind-einstein \
 - The validator logs whether it is **stake-dominant** (its share of active validator stake above `kappa`), and
   publishes that in every report and at `GET /v1/chain`.
 - **Quality votes** ([`docs/VALIDATOR.md`](docs/VALIDATOR.md)): `--votes` (`counted` by default: voted, published
-  and scored with `u = 0.4`; `live` is its old name; `shadow`: voted and published, not scored; `off`), `--judge 1.2b` (the only judge a validator accepts; `1.2b-tools` is refused), `--judge-backend
+  and scored with `u = 0.4`; `live` is its old name; `shadow`: voted and published, not scored; `off`), `--judge 1.3` (the default; `1.2b` is still accepted; the `-tools` judges are refused), `--judge-backend
   openrouter|claude-cli` (`claude-cli`: a Claude subscription logged in for the service user, no key file, notional
   dollars counted toward the cap), `--review-model anthropic:<model>|openai:<model>` (a Claude model name with
   `claude-cli`) with `--review-key-file` (0600; install `cadmind-einstein[review]`), `--review-samples` (3), `--review-effort`
@@ -508,7 +508,7 @@ signature and value, and compares the newest report's hash with the validator's 
 | `cadmind_einstein/scoring.py` | per-job scores, decayed weights, the vector, hourly reports; `cadmind-recompute` (the auditor) |
 | `cadmind_einstein/stats.py` | miner stats (24 h, 7 days, lifetime; the daily rollup), the leaderboard; `cadmind-miner-stats` |
 | `cadmind_einstein/review.py` | the review bundle and its checks, the signed vote (v2, and v1 still in the window), the average; `cadmind-review` |
-| `cadmind_einstein/judge.py` | the device judge: one prompt (`judge_prompt.md`), four modes, versions 1.2b and 1.2b-tools, strict replies, the digest, the subscription transport; `cadmind-judge` |
+| `cadmind_einstein/judge.py` | the device judge: one prompt (`judge_prompt.md`), four modes, versions 1.2b, 1.3 and their -tools variants, strict replies, the digest, the subscription transport; `cadmind-judge` |
 | `cadmind_einstein/judge_tools.py` | the tools judge's read-only instruments (the proxy and the MCP server) |
 | `cadmind_einstein/judge_workspace.py` | a delivered project loaded into a Watt workspace for the tools judge (our pipeline only) |
 | `cadmind_einstein/votes.py` | our validator's votes: the review queue, counted/shadow, signed votes, their report section |

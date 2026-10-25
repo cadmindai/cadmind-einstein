@@ -13,9 +13,8 @@ judged calls :func:`judge`, so one prompt, one version and one digest control th
                     pipeline and the miner-side reviewer, never a validator: its instruments
                     need live access to the delivered project through an agent key, and the
                     read-only rule is enforced by our client only.
-``1.3``             NOT RELEASED (:data:`RELEASED`): 1.2b plus the fact sheet's ``assumptions``
-                    and the rules on it (its own prompt, ``judge_prompt_1.3.md``); offline
-                    re-judging only until the subnet owner approves it.
+``1.3``             1.2b plus the fact sheet's ``assumptions`` and the rules on it (its own
+                    prompt, ``judge_prompt_1.3.md``). The validators' judge since 0.5.1.
 ``1.3-tools``       the same with the instruments, as ``1.2b-tools``.
 ==================  ==========================================================================
 
@@ -92,7 +91,7 @@ PROMPT_FILE = PROMPT_DIR / "judge_prompt.md"
 """1.2b's prompt (and 1.2b-tools'); a later version names its own file (:attr:`Version.prompt`)"""
 
 MODES = ("rate", "nudge", "check", "final")
-VALIDATOR_VERSION = "1.2b"
+VALIDATOR_VERSION = "1.3"
 """the one version a validator runs"""
 TOOL_BUDGET = 12
 NUDGE_KEEP = 2
@@ -184,11 +183,11 @@ VERSIONS = {
         assumptions=True,
     ),
 }
-RELEASED = ("1.2b", "1.2b-tools")
+RELEASED = ("1.2b", "1.2b-tools", "1.3", "1.3-tools")
 """The versions the subnet owner approved. Any other is for offline re-judging only: a validator
 refuses it (:func:`for_validator`) until its release adds it here."""
 JUDGE_VERSION = VERSIONS[VALIDATOR_VERSION].label
-"""the validators' judge, ``cadmind-judge/1.2b``"""
+"""the validators' judge, ``cadmind-judge/1.3``"""
 
 
 class ValidatorJudgeError(ValueError):
