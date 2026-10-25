@@ -47,7 +47,7 @@ include = ["cadmind_einstein", "cadmind_einstein.*"]
 
 [tool.setuptools.package-data]
 # the device judge's prompt and the tools judge's instrument list: hashed into the judge digests
-cadmind_einstein = ["judge_prompt.md", "judge_instruments.md"]
+cadmind_einstein = ["judge_prompt.md", "judge_prompt_1.3.md", "judge_instruments.md"]
 
 [tool.pytest.ini_options]
 minversion = "8.0"

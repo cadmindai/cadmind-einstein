@@ -13,6 +13,10 @@ judged calls :func:`judge`, so one prompt, one version and one digest control th
                     pipeline and the miner-side reviewer, never a validator: its instruments
                     need live access to the delivered project through an agent key, and the
                     read-only rule is enforced by our client only.
+``1.3``             NOT RELEASED (:data:`RELEASED`): 1.2b plus the fact sheet's ``assumptions``
+                    and the rules on it (its own prompt, ``judge_prompt_1.3.md``); offline
+                    re-judging only until the subnet owner approves it.
+``1.3-tools``       the same with the instruments, as ``1.2b-tools``.
 ==================  ==========================================================================
 
 **Four modes**, one core; only the end of turn 2 differs:
@@ -83,7 +87,9 @@ from typing import Any
 
 from .models import Conversation, Reply
 
-PROMPT_FILE = Path(__file__).resolve().parent / "judge_prompt.md"
+PROMPT_DIR = Path(__file__).resolve().parent
+PROMPT_FILE = PROMPT_DIR / "judge_prompt.md"
+"""1.2b's prompt (and 1.2b-tools'); a later version names its own file (:attr:`Version.prompt`)"""
 
 MODES = ("rate", "nudge", "check", "final")
 VALIDATOR_VERSION = "1.2b"
@@ -111,6 +117,8 @@ MAIN_FAIL_CAP = 1
 MAIN_UNSURE_CAP = 2
 STATEMENT_MAX = 300
 WITHHELD = "[withheld: instruction-like text]"
+FACTS_WITHHELD = ("bill", "bodies")
+"""fact-sheet keys no version shows the model (1.2b also withholds ``assumptions``)"""
 IMAGE_KINDS = ("analytic", "world", "section")
 """the bundle's image kinds the judge sees (never ``studio``)"""
 
@@ -125,6 +133,11 @@ class Version:
     min_samples: int
     nudge_keep: int
     aggregate: str
+    prompt: str = "judge_prompt.md"
+    """the prompt file (package data) this version reads and hashes"""
+    assumptions: bool = False
+    """1.3: the fact sheet's ``assumptions`` section and the guardrail on it. Off (1.2b), the
+    section is withheld from the model, so a /3 fact sheet gives 1.2b exactly what /2 gave it."""
 
     @property
     def label(self) -> str:
@@ -149,7 +162,31 @@ VERSIONS = {
         nudge_keep=1,
         aggregate="one sample as it is: its capped score, its valid nudges, its verdicts",
     ),
+    "1.3": Version(
+        "1.3",
+        tools=False,
+        samples=3,
+        min_samples=2,
+        nudge_keep=NUDGE_KEEP,
+        aggregate="score: median_low of the samples' capped scores; nudge kept at nudge_keep "
+        "samples (one text-only grouping call); verdict by strict majority, else unsure",
+        prompt="judge_prompt_1.3.md",
+        assumptions=True,
+    ),
+    "1.3-tools": Version(
+        "1.3-tools",
+        tools=True,
+        samples=1,
+        min_samples=1,
+        nudge_keep=1,
+        aggregate="one sample as it is: its capped score, its valid nudges, its verdicts",
+        prompt="judge_prompt_1.3.md",
+        assumptions=True,
+    ),
 }
+RELEASED = ("1.2b", "1.2b-tools")
+"""The versions the subnet owner approved. Any other is for offline re-judging only: a validator
+refuses it (:func:`for_validator`) until its release adds it here."""
 JUDGE_VERSION = VERSIONS[VALIDATOR_VERSION].label
 """the validators' judge, ``cadmind-judge/1.2b``"""
 
@@ -164,6 +201,12 @@ def for_validator(version: str) -> Version:
     if version not in VERSIONS:
         raise ValidatorJudgeError(
             f"no judge version {version!r}; the versions are {', '.join(VERSIONS)}"
+        )
+    if version not in RELEASED:
+        raise ValidatorJudgeError(
+            f"cadmind-judge/{version} is not released: a judge change needs the subnet owner's "
+            "approval (DESIGN.md section 13), and until then it only re-judges offline. A "
+            f"validator votes with cadmind-judge/{VALIDATOR_VERSION} (--judge {VALIDATOR_VERSION})."
         )
     if VERSIONS[version].tools:
         raise ValidatorJudgeError(
@@ -264,15 +307,16 @@ SECTIONS = (
 )
 
 
-def prompt_text() -> str:
-    return PROMPT_FILE.read_text(encoding="utf-8")
+def prompt_text(version: str = VALIDATOR_VERSION) -> str:
+    """A version's prompt file, verbatim (1.2b: ``judge_prompt.md``)."""
+    return (PROMPT_DIR / VERSIONS[version].prompt).read_text(encoding="utf-8")
 
 
-def sections() -> dict[str, str]:
-    got = dict(_SECTION.findall(prompt_text()))
+def sections(version: str = VALIDATOR_VERSION) -> dict[str, str]:
+    got = dict(_SECTION.findall(prompt_text(version)))
     missing = set(SECTIONS) - set(got)
     if missing:
-        raise ValueError(f"judge_prompt.md lacks sections {sorted(missing)}")
+        raise ValueError(f"{VERSIONS[version].prompt} lacks sections {sorted(missing)}")
     return got
 
 
@@ -507,19 +551,19 @@ class Judge:
     # -- the prompt --------------------------------------------------------------------------------
 
     def system_prompt(self) -> str:
-        return _fill(sections()["system"], seen_max=SEEN_MAX)
+        return _fill(sections(self.version_name)["system"], seen_max=SEEN_MAX)
 
     def derive_text(self) -> str:
         schema = {"use_steps": ["..."], "useless_if": [LINE]}
-        return _fill(sections()["derive"], derive_schema=json.dumps(schema))
+        return _fill(sections(self.version_name)["derive"], derive_schema=json.dumps(schema))
 
     def look_text(self) -> str:
-        s = sections()
+        s = sections(self.version_name)
         extra = _fill(s["look-tools"], tool_budget=self.tool_budget) if self.spec.tools else ""
         return _fill(s["look"], look_extra=extra)
 
     def look_question(self, mode: str) -> str:
-        s = sections()
+        s = sections(self.version_name)
         parts = [self.look_text()]
         if mode in ("rate", "nudge", "final"):
             parts.append(_fill(s["nudges"], max_nudges=MAX_NUDGES, nudge_chars=NUDGE_CHARS))
@@ -546,7 +590,12 @@ class Judge:
                 canonical(
                     {
                         "version": self.version,
-                        "switches": {"main_cap": True, "tools": spec.tools},
+                        "switches": {
+                            "main_cap": True,
+                            "tools": spec.tools,
+                            # 1.2b's digest is unchanged: the switch is named only when on
+                            **({"assumptions": True} if spec.assumptions else {}),
+                        },
                         "sampling": {
                             "samples": spec.samples,
                             "min_samples": spec.min_samples,
@@ -554,7 +603,7 @@ class Judge:
                             "extra_tries": EXTRA_TRIES,
                             "aggregate": spec.aggregate,
                         },
-                        "prompt": prompt_text(),
+                        "prompt": prompt_text(self.version_name),
                         "schemas": {m: reply_schema(m) for m in MODES},
                         "line": LINE,
                         "constants": {
@@ -612,7 +661,8 @@ class Judge:
     def look_turn(self, mode: str, inp: Inputs) -> list[dict[str, Any]]:
         data: dict[str, Any] = {"pictures": [p.listing() for p in inp.images]}
         if inp.facts is not None:
-            full = {k: v for k, v in inp.facts.items() if k not in ("bill", "bodies")}
+            withheld = FACTS_WITHHELD + (() if self.spec.assumptions else ("assumptions",))
+            full = {k: v for k, v in inp.facts.items() if k not in withheld}
             data["facts"] = scrub(full)[0]
         if mode in ("check", "final"):
             data["nudges"] = [
