@@ -427,7 +427,10 @@ from the signed link it answers). See `cadmind_einstein/platform.py`.
   5 minutes and resumes by itself; results waiting to be returned stay in its store. A frozen role never counts
   against a miner.
 - 429 `too_many_in_flight` and 503 hold the role for the answer's `Retry-After`; the calls are retried on a later
-  tick.
+  tick. A 503 about one job's result (any code other than `busy`, such as `delivery_unverified` or
+  `agent_api_offline`) holds nothing: that result is sent again after a delay of its own (10 s, doubling to 5
+  minutes, kept across restarts) while the other results go out at once, and one refused for 15 minutes or more
+  is logged as an ALERT naming the job and the platform's message (at most every 30 minutes).
 - Every grant names its job, and every delivered result names the validator's own fork and the digest its gate
   read, so the platform can check that a charged delivery descends from the job's own grant at that digest. A
   result the platform refuses on provenance (409 `delivery_not_of_job` or `delivery_digest_mismatch`) is logged as
