@@ -5,6 +5,26 @@ All notable changes to this project are listed here. The format follows
 [Semantic Versioning](https://semver.org/). Each release's spec version (`10000*MAJOR + 100*MINOR + PATCH`) is the
 `version_key` the validator sets weights with.
 
+## [Unreleased]
+
+Proposed, NOT released: a judge change needs the subnet owner's approval (DESIGN.md section 13).
+
+### Added
+- **`cadmind-judge/1.3` and `1.3-tools`** (prompt `judge_prompt_1.3.md`): 1.2b plus the fact sheet's
+  `assumptions` section (review facts format /3: what the builder decided in the client's place, why it could not
+  be known, what the design was built for, the bought parts' unpublished facts, the facts to verify on the part, and
+  whether the client could be asked) and rules on it. An assumption counts against the device only when it was
+  avoidable (the client's words or photos, or a maker's data, give the fact; or the builder could ask and did not)
+  or the design is fragile to it (it works only at the guessed value where a reasonable design covers the plausible
+  range). An unavoidable, stated assumption the device covers is not a failure and is never a nudge. The blind turn,
+  the schemas, the caps and the sampling are 1.2b's.
+- `judge.RELEASED`: the versions a validator may vote with (`1.2b` only, plus the refused tools judge). Any other
+  version is for offline re-judging; `for_validator` refuses it.
+
+### Unchanged
+- `cadmind-judge/1.2b` and its digest. On a /3 fact sheet 1.2b withholds `assumptions` from the model, so it sees
+  exactly what a /2 fact sheet gave it.
+
 ## [0.5.0] - 2026-10-24
 
 Proposed as **0.5.0**: the vote protocol and the value scale change. A change to the judge needs the subnet
