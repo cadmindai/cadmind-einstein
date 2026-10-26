@@ -92,7 +92,8 @@ validator: freeze on submit, fork, read Watt's verdict (the gate), copy check, s
   from the brief (or, for a later round of a client's project, from the delivered project), granted to that miner's
   key. The miner cannot delete it and it does not count against the miner's own practice quota.
 - **Accept, work, submit -- or reject.** The miner sees the job on `work`, must `accept` within 2 minutes, and
-  `submit {job, workspace, digest, summary?}` before the effort's deadline (low 30, medium 60, high 120, max 180 minutes). On
+  `submit {job, workspace, digest, summary?}` before the job's deadline: one deadline for every job, 120 minutes from the accept (there are no
+  effort levels; the builder may submit sooner). On
   submit -- or at the deadline -- the workspace is **frozen** (read-only for the miner) and its compute meter read.
   `summary`, optional, is the builder's own words on what still blocks delivery when it hands over a project that
   is not deliverable (the client reads it; whitespace collapsed, at most 2000 characters). Instead of building,
@@ -186,7 +187,7 @@ passing job:   I = 0.5 + 0.3·E + 0.2·T            immediate: passed the gate, 
 ```
 
 - `E`, **efficiency**: half `min(1, median compute / own)` and half `min(1, median wall time / own)`, against the
-  passing jobs of the same bucket (effort, brief size class) in the 7-day window; 1 while the bucket has fewer than
+  passing jobs of the same bucket (the brief size class) in the 7-day window; 1 while the bucket has fewer than
   5 jobs. Compute is the platform's meter, so a miner cannot fake it. `T` is 1 on time, 0 late.
 - `C`, the client's verdict in [0, 1], and `w`, how much it counts:
   - **stars** (1-5) weigh most: `C = (stars - 1)/4`, `w = trust`;
@@ -276,8 +277,8 @@ scratch, throwing the first builder's work away; after two or four tries the job
 
 - **Admission.** Before any client job, an approved key holder passes an entry test: `POST /v1/miners/admission`
   creates a job assigned to it alone, at most once a day. It is a real small device built from a client-style
-  brief (`--admission-brief-file`; a generic built-in brief otherwise), at `--admission-effort` (`high` by default)
-  with that effort's deadline. There is no client, so the job carries `no_questions`: the builder decides every
+  brief (`--admission-brief-file`; a generic built-in brief otherwise), with the one job deadline
+  (120 minutes; `--admission-effort` is accepted and ignored). There is no client, so the job carries `no_questions`: the builder decides every
   open question. It passes only through the client jobs' gate -- deliverable on the validator's own guard run, no
   unproven must, no client decision left open -- and only when submitted before its deadline. Passing admits the
   miner; it is never scored. Only admitted miners get client jobs and weight.
@@ -298,7 +299,7 @@ scratch, throwing the first builder's work away; after two or four tries the job
 
 ## 7. Hourly reports and the auditor
 
-Every hour the validator writes a report: the window's jobs with their facts (hotkey, effort, size class, accepted,
+Every hour the validator writes a report: the window's jobs with their facts (hotkey, size class, accepted,
 on time, gate, compute, wall time, copy, how the attempt ended) and client signals (kind, stars, trust -- never who
 the client is), every score, each miner's weight and quality, the admitted and reachable miners, the rule used
 (history or genesis), the constants, the validator's stake share against `kappa`, and the vector.

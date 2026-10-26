@@ -901,8 +901,20 @@ if __name__ == "__main__":
     unittest.main()
 
 
-def test_every_priced_effort_has_its_own_deadline() -> None:
-    """`max` is priced as the highest effort, so it must not fall back to medium's hour."""
-    from cadmind_einstein.desk import DEADLINE_S
+def test_every_job_has_one_120_minute_deadline() -> None:
+    """No effort levels: one deadline for every job, whatever effort an older platform sends."""
+    from cadmind_einstein import desk
 
-    assert DEADLINE_S == {"low": 1800, "medium": 3600, "high": 7200, "max": 10800}
+    assert desk.JOB_DEADLINE_S == 7200
+    assert not hasattr(desk, "DEADLINE_S")
+
+
+def test_an_older_record_with_an_effort_still_loads() -> None:
+    """Jobs and outcomes saved before effort levels were removed carry ``effort``; it is dropped."""
+    from cadmind_einstein.desk import _job_from
+    from cadmind_einstein.scoring import _job
+
+    o = {"job": "j", "hotkey": "h", "ended_ms": 1, "effort": "max", "size": "small"}
+    job = _job_from({"job": "j", "brief": "b", "effort": "low", "pending": [o]})
+    assert job.pending[0].bucket == "small"
+    assert _job(o).bucket == "small"

@@ -203,7 +203,7 @@ cadmind-einstein --state-dir ~/.local/share/cadmind-einstein \
   weights (`bt.SetWeights`, plain or commit-reveal as the subnet runs, within `weights_rate_limit`) and commit each
   report's SHA-256 (`set_commitment`).
 - `--max-inflight` caps jobs in flight (the hosted bench's capacity); `--sync-s` is the metagraph re-read interval;
-  `--accept-s` the acceptance window; `--abuse-*` the disable policy (0 turns a rule off); `--copy-*` the copy
+  `--accept-s` the acceptance window; `--job-deadline-min` every job's one deadline from its accept (120 by default); `--abuse-*` the disable policy (0 turns a rule off); `--copy-*` the copy
   check (`--copy-containment` 0.7, `--copy-min-features` 8, `--copy-common-coldkeys` 3, `--copy-window` 500, and
   `--copy-corpus PATH`, repeatable: public example projects whose features never count as evidence);
   `--second-opinion-coldkeys` (2) and `--second-opinion-wait-s` (1800) the second-opinion rule; `--genesis`
@@ -213,8 +213,8 @@ cadmind-einstein --state-dir ~/.local/share/cadmind-einstein \
   holder passes the entry test once before any job or weight. Switching a validator from `auto` to `manual`
   revokes every key it never approved: those hotkeys go back to pending and start over. `--pending-message-file`
   sets what a pending miner reads (for example, where to reach the team). The entry test:
-  `--admission-brief-file` (a client-style brief for a small device; a generic built-in one otherwise) at `--admission-effort` (`high` by default, with that effort's
-  deadline), with no client questions, through the same gate as a client job.
+  `--admission-brief-file` (a client-style brief for a small device; a generic built-in one otherwise) with the one job deadline
+  (`--admission-effort` is accepted and ignored), with no client questions, through the same gate as a client job.
 - **Launch.** `--launch-equal on|off`: equal weight per admitted, registered, reachable hotkey, whatever its
   history, while on (the report records `launch_equal` and its rule says "launch: equal among admitted miners").
   The switch is saved in the state: the flag sets and saves it; without the flag the saved value is kept across
@@ -377,7 +377,7 @@ Every answer on these routes is signed by the validator's hotkey (`X-Einstein-Va
 |---|---|---|
 | `POST /v1/miners/agent_key` | `{x25519_public, contact?}` | `{key_id, sealed}`: the hotkey-bound agent key, sealed to that X25519 key (rate-limited); `202 {pending: true, message, retry_after_s}` until the subnet team approves the hotkey; 403 with the reason when refused or revoked |
 | `POST /v1/miners/admission` | `{}` | the entry test (approved key holders only): a small device from a client-style brief, assigned to this miner alone, no client questions, the client jobs' gate, within its deadline (once a day) |
-| `POST /v1/jobs/work` | `{}` | `{job, workspace, brief, effort, accepted, accept_by_ms, deadline_ms, no_questions, subprojects?}` or `{job: null}`, plus `cancelled: <job>` when the client cancelled the miner's last job; also the liveness poll |
+| `POST /v1/jobs/work` | `{}` | `{job, workspace, brief, accepted, accept_by_ms, deadline_ms, no_questions, subprojects?}` or `{job: null}`, plus `cancelled: <job>` when the client cancelled the miner's last job; also the liveness poll |
 | `POST /v1/jobs/accept` | `{job}` | `{job, workspace, deadline_ms}`; 410 for a job its client cancelled (also `submit` and `reject`) |
 | `POST /v1/jobs/submit` | `{job, workspace, digest, summary?}` | `{job, state: "judging"}` |
 | `POST /v1/jobs/reject` | `{job, category, message}` | `category`: `not-allowed` or `not-capable` |

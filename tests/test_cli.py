@@ -79,16 +79,17 @@ class TestDaemonFlags(unittest.TestCase):
     def test_onboarding_flags(self) -> None:
         a = self.parse()
         self.assertEqual(
-            (a.key_approval, a.admission_effort, a.launch_equal, a.pending_message_file),
-            ("manual", "high", None, None),
+            (a.key_approval, a.job_deadline_min, a.launch_equal, a.pending_message_file),
+            ("manual", 120, None, None),
         )
+        # --admission-effort is still accepted, and ignored
         a = self.parse(
             "--key-approval", "auto", "--admission-effort", "max", "--launch-equal", "on",
-            "--pending-message-file", "M",
+            "--pending-message-file", "M", "--job-deadline-min", "90",
         )  # fmt: skip
         self.assertEqual(
-            (a.key_approval, a.admission_effort, a.launch_equal, str(a.pending_message_file)),
-            ("auto", "max", "on", "M"),
+            (a.key_approval, a.job_deadline_min, a.launch_equal, str(a.pending_message_file)),
+            ("auto", 90, "on", "M"),
         )
         with self.assertRaises(SystemExit), contextlib.redirect_stderr(io.StringIO()):
             self.parse("--key-approval", "open")

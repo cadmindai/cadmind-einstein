@@ -156,9 +156,7 @@ def load(api: WorkspaceClient, project: Path, name: str) -> tuple[str, dict[str,
     Answers ``(workspace, record)``; the record names what was loaded, refused and patched."""
     rec: dict[str, Any] = {"files": 0, "assets": 0, "refused": []}
     brief = (project / "brief" / "brief.md").read_text(encoding="utf-8")
-    st, made = api.call(
-        "POST", "/api/agent/workspaces", {"brief": brief, "effort": "max", "name": name[:60]}
-    )
+    st, made = api.call("POST", "/api/agent/workspaces", {"brief": brief, "name": name[:60]})
     if st not in (200, 201) or not isinstance(made, dict) or not made.get("workspace"):
         raise RuntimeError(f"workspace not made: {st} {str(made)[:200]}")
     ws = str(made["workspace"])

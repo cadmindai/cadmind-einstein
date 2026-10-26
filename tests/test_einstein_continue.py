@@ -153,11 +153,12 @@ class TestTheRoundEnds(_Desk):
     def test_a_late_attempt_that_fails_ends_the_round_and_its_timeout_scores_at_once(
         self,
     ) -> None:
+        # an older platform's "effort" is accepted and ignored: every job has the one deadline
         self.enqueue({"job": "n3", "brief": "A shelf bracket.", "effort": "low"})
         hk, w = self.holder()
         self.desk.accept(hk, "n3")
         self.p.work(w["workspace"], {"src/parts/bracket.txt": "a start"}, deliverable=False)
-        self.clock.t += 31 * 60  # past the low effort's deadline, nothing submitted
+        self.clock.t += 121 * 60  # past the 120-minute deadline, nothing submitted
         self.tick()
         st = wait_state(self.desk, "n3", ("done",))
         res = st["result"]

@@ -818,7 +818,7 @@ def main(argv: list[str] | None = None) -> int:
         job, ws, brief = work["job"], work["workspace"], work.get("brief") or ""
         if not work.get("accepted"):
             code, _ = call("/v1/jobs/accept", {"job": job})
-            log(f"accepted {job} ({work.get('effort')}) in {ws}: {code}")
+            log(f"accepted {job} in {ws}: {code}")
             if code != 200:  # cancelled (410) or gone meanwhile: nothing to build
                 time.sleep(5)
                 continue

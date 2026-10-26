@@ -334,7 +334,7 @@ class TestMinerFreeAtSubmit(unittest.TestCase):
     def test_a_late_attempt_still_holds_its_miner_until_the_verdict(self) -> None:
         desk = self.desk(max_inflight=2)
         _take(desk, self.p, "j1", A)
-        self.clock.t += 2 * 3600
+        self.clock.t += 2 * 3600 + 60  # past the one 120-minute deadline
         desk.tick()
         self.assertEqual(desk.status("j1")["state"], "judging")
         self.assertEqual(desk.miners[A].job, "j1")

@@ -7,6 +7,17 @@ All notable changes to this project are listed here. The format follows
 
 ## [Unreleased]
 
+### Changed
+
+- **No effort levels.** Every job has one deadline: 120 minutes from the builder's accept
+  (`--job-deadline-min`, default 120). The builder may still submit sooner, and the client can still run
+  another round on the job. The job's `effort` is gone from `work`, job status and the hourly report; an
+  `effort` the platform still sends with a claim is accepted and ignored, and older saved jobs that carry one
+  still load.
+- **Efficiency compares like with like by brief size alone** (the bucket was effort and size).
+- **The entry test** has the same 120-minute deadline. `--admission-effort` is still accepted, so an
+  existing service file keeps working, and it does nothing.
+
 ## [0.5.1] - 2026-10-25
 
 The validators' judge is now `cadmind-judge/1.3`, approved by the subnet owner after a calibration re-judge.

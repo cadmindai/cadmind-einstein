@@ -45,8 +45,9 @@ Onboarding (``--key-approval``, default ``manual``): a registered hotkey's agent
 recorded as pending until the operator approves it (``--pending-message-file``: what the miner reads
 meanwhile) (``cadmind-einstein-operator``, over the
 Bearer routes ``/v1/operator/...``); ``auto`` keeps the self-serve rule. An approved key holder
-passes the entry test once (``--admission-brief-file``, ``--admission-effort``, default high, with
-that effort's deadline) before any job or weight.
+passes the entry test once (``--admission-brief-file``; the one job deadline,
+``--job-deadline-min``) before any job or weight. Every job has that one deadline: there are no
+effort levels.
 Every answer on a miner's route is signed with the validator's hotkey.
 
 The platform's operator credential is split by role (:mod:`.platform`): ``--operator-key-file``
@@ -101,10 +102,9 @@ from .cli import (
     wallet_kwargs,
 )
 from .desk import (
-    ADMISSION_EFFORT,
     CANCEL_COOLOFF_S,
-    DEADLINE_S,
     GATE_RUN_S,
+    JOB_DEADLINE_S,
     JUDGE_GIVE_UP_S,
     JUDGE_MAX_RETRIES,
     KEY_APPROVAL,
@@ -189,6 +189,12 @@ def parser() -> argparse.ArgumentParser:
     )
     ap.add_argument("--workers", type=int, default=0, help="desk worker threads (default 2N+2)")
     ap.add_argument("--accept-s", type=float, default=120.0)
+    ap.add_argument(
+        "--job-deadline-min",
+        type=float,
+        default=JOB_DEADLINE_S / 60,
+        help="every job's deadline from its acceptance, in minutes (default 120)",
+    )
     ap.add_argument("--hour-s", type=int, default=3600)
     ap.add_argument("--sync-s", type=float, default=300.0, help="metagraph re-read interval")
     ap.add_argument(
@@ -196,9 +202,9 @@ def parser() -> argparse.ArgumentParser:
     )
     ap.add_argument(
         "--admission-effort",
-        choices=tuple(DEADLINE_S),
-        default=ADMISSION_EFFORT,
-        help="the entry test's effort, and so its deadline (default: high)",
+        default="",
+        help="deprecated and ignored: there are no effort levels (the entry test has the one"
+        " job deadline)",
     )
     ap.add_argument(
         "--key-approval",
@@ -510,13 +516,13 @@ def main(argv: list[str] | None = None) -> int:
         judge_give_up_s=a.judge_give_up_s,
         mint_per_hour=a.mint_per_hour,
         mint_per_coldkey_hour=a.mint_per_coldkey_hour,
-        admission_effort=a.admission_effort,
+        deadline_s=max(60, int(a.job_deadline_min * 60)),
         key_approval=a.key_approval,
         **extra,
     )
     source = apply_launch_flag(desk, a.launch_equal)
     _log(
-        f"onboarding: key approval {a.key_approval}; entry test at {a.admission_effort} effort"
+        f"onboarding: key approval {a.key_approval}; job deadline {a.job_deadline_min:g} min"
         + (" (brief from file)" if a.admission_brief_file else " (built-in brief)")
         + f"; launch-equal {'ON' if desk.launch_equal else 'off'} (source: {source})"
     )

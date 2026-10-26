@@ -346,7 +346,8 @@ class OperatorClient:
 
     def claim(self) -> dict[str, Any] | None:
         """One einstein job from the platform's queue, now leased to this validator, or None:
-        ``{job, brief, effort, privacy, seed?, rerun_of?, trust}``."""
+        ``{job, brief, privacy, seed?, rerun_of?, trust}`` (an ``effort`` an older platform sends
+        is ignored)."""
         out = self._call("POST", "/api/engine/einstein/claim", {}, base=self.queue, role=QUEUE)
         job = out.get("job")
         return dict(job) if isinstance(job, dict) else None

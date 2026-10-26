@@ -424,7 +424,6 @@ class MinerStats:
         return {
             "job": o.job,
             "ended_ms": o.ended_ms,
-            "effort": o.effort,
             "kind": o.kind,
             "on_time": o.on_time,
             "s": o.s,

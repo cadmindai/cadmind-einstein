@@ -146,7 +146,7 @@ class TestJobsAreArchived(_Rig):
         hk = self.deliver()
         sent = self.p.completed["j1"]
         self.assertEqual(sent["versions"]["einstein"], __version__)
-        self.assertEqual(sent["versions"]["deadline_s"], 60 * 60)  # medium
+        self.assertEqual(sent["versions"]["deadline_s"], 120 * 60)  # the one deadline
         self.assertEqual(sent["versions"]["judge"]["judge"], judge_digest())
         self.assertEqual(sent["versions"]["judge"]["judge_version"], JUDGE_VERSION)
         (ended,) = [r for r in self.archive.records("j1") if r["kind"] == "job"]

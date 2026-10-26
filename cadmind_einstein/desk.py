@@ -9,8 +9,8 @@ A job's life:
 2. **assigned** -- the router chose one available miner (section 6) and the platform made a job
    workspace granted to that miner's key, from the brief (or the job's seed, for a later round of a
    client's project). The miner sees it on ``work`` and must ``accept`` within ``accept_s``.
-3. **working** -- accepted; the deadline is the effort's (low 30, medium 60, high 120, max 180
-   minutes).
+3. **working** -- accepted; every job has one deadline, 120 minutes (``JOB_DEADLINE_S``). The
+   builder may submit sooner.
 4. **judging** -- the miner submitted (it is free for another job from then on), or its deadline
    passed: the workspace is frozen, the
    validator forks it and gates the fork (:meth:`Desk._gate`): the miner's ``watt status`` must
@@ -105,7 +105,9 @@ from .style import check as style_check
 
 SUSPENDED = "agent_suspended"
 """The platform's code for a miner Watt's telemetry suspended (its key deleted, none minted)."""
-DEADLINE_S = {"low": 30 * 60, "medium": 60 * 60, "high": 120 * 60, "max": 180 * 60}
+JOB_DEADLINE_S = 120 * 60
+"""the one deadline of every job, from its acceptance (the daemon's ``--job-deadline-min``);
+there are no effort levels. A builder may submit sooner"""
 ALIVE_S = 60.0
 EXPLORE = 0.10
 THIN_JOBS = 5
@@ -190,8 +192,6 @@ PENDING_MESSAGE = (
     "test once (POST /v1/miners/admission) before any job or weight."
 )
 """what a miner whose key request is pending reads (the validator's ``--pending-message-file``)"""
-ADMISSION_EFFORT = "high"
-"""the entry test's effort, and so its deadline (``DEADLINE_S``)"""
 """a hotkey whose live key was minted less than this ago gets no new one"""
 
 
@@ -369,7 +369,6 @@ class Attempt:
 class Job:
     job: str
     brief: str
-    effort: str = "medium"
     privacy: str = "public"
     seed: str = ""
     prefer: str = ""
@@ -475,10 +474,10 @@ def _flag(value: object) -> bool | None:
 
 
 def _job_from(row: Mapping[str, Any]) -> Job:
-    r = dict(row)
+    r = {k: v for k, v in row.items() if k != "effort"}  # older records carry one; it is gone
     r["attempts"] = [Attempt(**a) for a in r.get("attempts") or []]
     r["pending"] = [
-        JobOutcome(**{k: v for k, v in o.items() if k not in ("s", "parts")})
+        JobOutcome(**{k: v for k, v in o.items() if k not in ("s", "parts", "effort")})
         for o in r.get("pending") or []
     ]
     return Job(**r)
@@ -558,10 +557,9 @@ class Desk:
         registered: Callable[[], Iterable[str]],
         accept_s: float = 120.0,
         admission_brief: str = ADMISSION_BRIEF,
-        admission_effort: str = ADMISSION_EFFORT,
         key_approval: str = "auto",
         pending_message: str = PENDING_MESSAGE,
-        deadlines: Mapping[str, int] | None = None,
+        deadline_s: int = JOB_DEADLINE_S,
         max_attempts: int = 4,
         max_inflight: int = 8,
         lease_every_s: float = 30.0,
@@ -611,10 +609,9 @@ class Desk:
         self.second_opinion = second_opinion or SecondOpinion()
         self.log = log or (lambda _line: None)
         self.admission_brief = admission_brief
-        self.accept_s, self.deadlines = accept_s, dict(deadlines or DEADLINE_S)
-        if admission_effort not in self.deadlines:
-            raise ValueError(f"admission_effort is one of {tuple(self.deadlines)}")
-        self.admission_effort = admission_effort
+        self.accept_s, self.deadline_s = accept_s, int(deadline_s)
+        if self.deadline_s <= 0:
+            raise ValueError("deadline_s must be positive")
         if key_approval not in KEY_APPROVAL:
             raise ValueError(f"key_approval is one of {KEY_APPROVAL}")
         self.key_approval = key_approval
@@ -1383,7 +1380,6 @@ class Desk:
                 "job": job.job,
                 "workspace": a.workspace,
                 "brief": job.brief,
-                "effort": job.effort,
                 "accepted": bool(a.accepted_ms),
                 "accept_by_ms": a.accept_by_ms,
                 "deadline_ms": a.deadline_ms,
@@ -1430,7 +1426,7 @@ class Desk:
             m = self.miners[hotkey]
             m.cancelled_job, m.after_cancel = "", False
             a.accepted_ms = now
-            a.deadline_ms = now + self.deadlines.get(job.effort, DEADLINE_S["medium"]) * 1000
+            a.deadline_ms = now + self.deadline_s * 1000
             job.state = "working"
             self._event("accepted", job_id, hotkey=hotkey, deadline_ms=a.deadline_ms)
             self._leased_ms = 0  # the platform hears of the builder on the next beat
@@ -1651,9 +1647,7 @@ class Desk:
         seed = str(body.get("seed") or "")
         if not brief.strip() and not seed:
             raise DeskError("a job needs a brief (or a seed project to continue)")
-        effort = str(body.get("effort") or "medium")
-        if effort not in self.deadlines:
-            raise DeskError(f"effort is one of {sorted(self.deadlines)}")
+        # an "effort" in the body (older platforms send one) is ignored: every job has one deadline
         job_id = str(body.get("job") or f"job-{secrets.token_hex(8)}")
         exclude = [str(x) for x in body.get("exclude") or []]
         rerun_of = str(body.get("rerun_of") or "")
@@ -1662,7 +1656,7 @@ class Desk:
             if old is not None and old.state == "done" and old.result.get("lost"):
                 # claimed again after the platform took it back (a lapsed lease): a fresh round of
                 # the same job -- its earlier attempts kept as history (the lost one uncounted)
-                old.brief, old.seed, old.effort = brief, seed, effort
+                old.brief, old.seed = brief, seed
                 old.no_questions = body.get("no_questions") is True
                 old.subprojects = _flag(body.get("subprojects"))
                 old.style = _style_of(body.get("style"))
@@ -1696,7 +1690,6 @@ class Desk:
             self.jobs[job_id] = Job(
                 job=job_id,
                 brief=brief,
-                effort=effort,
                 privacy=privacy,
                 seed=seed,
                 prefer=str(body.get("prefer") or ""),
@@ -1713,8 +1706,8 @@ class Desk:
 
     def admission(self, hotkey: str) -> dict[str, Any]:
         """A miner's entry test: a job assigned to it alone, once a day -- a small device from a
-        client-style brief (``admission_brief``), at ``admission_effort`` with that effort's
-        deadline, and with no client to ask (``no_questions``: the builder decides every open
+        client-style brief (``admission_brief``), with the one job deadline, and with no client to
+        ask (``no_questions``: the builder decides every open
         question). It passes only through the client jobs' gate (:meth:`_gate`: deliverable on the
         validator's own guard run, no unproven must; and :meth:`_answers_gate`: no client decision
         left open), submitted before its deadline. Passing admits the miner; only admitted miners
@@ -1740,7 +1733,6 @@ class Desk:
             self.jobs[job_id] = Job(
                 job=job_id,
                 brief=self.admission_brief,
-                effort=self.admission_effort,
                 kind="admission",
                 no_questions=True,
                 target=hotkey,
@@ -1789,14 +1781,14 @@ class Desk:
         self._event("forgotten", job_id, archive=bool(gone))
         return {"job": job_id, "forgotten": True}
 
-    def versions(self, job: Job) -> dict[str, Any]:
+    def versions(self, job: Job) -> dict[str, Any]:  # noqa: ARG002 -- one deadline for every job
         """What the validator knows of the versions a job was run and judged under, as
         its result names them: this einstein, the job's deadline and the gate
         run's budget, and the judge its delivery is voted under. Watt's own installation is the
         platform's to stamp: the validator reaches Watt only through workspace commands."""
         out: dict[str, Any] = {
             "einstein": __version__,
-            "deadline_s": int(self.deadlines.get(job.effort, 0)),
+            "deadline_s": self.deadline_s,
             "gate_run_s": self.gate_run_s,
         }
         if self.judge is not None:
@@ -1915,7 +1907,6 @@ class Desk:
             return {
                 "job": job.job,
                 "state": job.state,
-                "effort": job.effort,
                 "attempts": [asdict(a) for a in job.attempts],
                 "result": dict(job.result),
             }
@@ -2444,7 +2435,6 @@ class Desk:
                 attempt=len(job.attempts),
                 workspace=ws,
                 kind=job.kind,
-                effort=job.effort,
                 no_questions=job.no_questions or None,
             )
 
@@ -2491,7 +2481,6 @@ class Desk:
                 job=job.job,
                 hotkey=a.hotkey,
                 ended_ms=self.now_ms(),
-                effort=job.effort,
                 size=size_class(job.brief),
                 accepted=bool(a.accepted_ms) or kind == "reject",
             )
@@ -2922,7 +2911,6 @@ class Desk:
             job=job.job,
             hotkey=a.hotkey,
             ended_ms=self.now_ms(),
-            effort=job.effort,
             size=size_class(job.brief),
             accepted=True,
             on_time=on_time,

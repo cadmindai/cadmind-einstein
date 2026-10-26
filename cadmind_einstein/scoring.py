@@ -9,7 +9,7 @@ another miner passes the same job -- the desk decides that). A **passing** job s
     s = 0.4·I + 0.6·(w·C + (1 - w)·B)
 
 - ``E``, efficiency: half ``min(1, median compute / own)`` and half ``min(1, median wall time /
-  own)``, the medians over the passing jobs of the same bucket (effort, brief size class) in the
+  own)``, the medians over the passing jobs of the same bucket (the brief size class) in the
   scoring window; 1 when the bucket has fewer than 5. ``T`` is 1 on time, 0 late.
 - ``C``, the client's signal, in [0, 1], and ``w``, how much it counts, in [0, 1]:
   - stars (1-5) weigh most: ``C = (stars - 1)/4``, ``w = trust``;
@@ -98,7 +98,6 @@ class JobOutcome:
     job: str
     hotkey: str
     ended_ms: int
-    effort: str = "medium"
     size: str = "medium"
     accepted: bool = True
     on_time: bool = True
@@ -119,8 +118,9 @@ class JobOutcome:
     parts: dict[str, float] = field(default_factory=dict)
 
     @property
-    def bucket(self) -> tuple[str, str]:
-        return (self.effort, self.size)
+    def bucket(self) -> str:
+        """the jobs it is compared with: the same brief size class (every job has one deadline)"""
+        return self.size
 
     @property
     def passed(self) -> bool:
@@ -168,8 +168,8 @@ def score_all(jobs: Iterable[JobOutcome]) -> list[JobOutcome]:
     """Fill every job's ``s`` and ``parts`` from its facts, its signals, and the window's
     medians."""
     jobs = list(jobs)
-    comp: dict[tuple[str, str], list[float]] = defaultdict(list)
-    wall: dict[tuple[str, str], list[float]] = defaultdict(list)
+    comp: dict[str, list[float]] = defaultdict(list)
+    wall: dict[str, list[float]] = defaultdict(list)
     for o in jobs:
         if o.passed:
             comp[o.bucket].append(o.compute_s)
@@ -559,7 +559,7 @@ def _atomic_write(path: Path, data: bytes) -> None:
 
 
 def _job(row: Mapping[str, Any]) -> JobOutcome:
-    return JobOutcome(**{k: v for k, v in row.items() if k not in ("s", "parts")})
+    return JobOutcome(**{k: v for k, v in row.items() if k not in ("s", "parts", "effort")})
 
 
 def recompute(report: Mapping[str, Any]) -> dict[str, Any]:

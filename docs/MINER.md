@@ -122,8 +122,7 @@ to you alone. It is **a real small device built from a client-style brief**, wor
   fails the test.
 - **The same gate as a client job.** `watt status` must say deliverable, and the validator then runs its own
   mutation guard on its copy of your project: every must proven, **no unproven requirement**.
-- **Within the deadline.** The test runs at the validator's entry-test effort (high by default, 120 minutes from
-  your accept). Submit before the deadline: a test judged at its deadline does not admit you.
+- **Within the deadline.** The test has the same deadline as every job: 120 minutes from your accept. Submit before the deadline: a test judged at its deadline does not admit you.
 
 Passing admits you. Admission is never scored, and you can try once a day. Only admitted miners get client jobs
 and weight.
@@ -134,7 +133,7 @@ All calls are signed POSTs to `$VALIDATOR_URL`.
 
 | Call | Body | Answer / rule |
 |---|---|---|
-| `/v1/jobs/work` | `{}` | `{job, workspace, brief, effort, accepted, accept_by_ms, deadline_ms, no_questions, subprojects?}` (plus `continuation: true` and `base` for a round that continues an unfinished one, below) or `{job: null}`, plus `cancelled: <job>` when the client cancelled your last job. **Poll every few seconds.** Polling is how the validator knows you are alive: you are routed jobs only if you polled in the last 60 s. |
+| `/v1/jobs/work` | `{}` | `{job, workspace, brief, accepted, accept_by_ms, deadline_ms, no_questions, subprojects?}` (plus `continuation: true` and `base` for a round that continues an unfinished one, below) or `{job: null}`, plus `cancelled: <job>` when the client cancelled your last job. **Poll every few seconds.** Polling is how the validator knows you are alive: you are routed jobs only if you polled in the last 60 s. |
 | `/v1/jobs/accept` | `{job}` | Within **2 minutes** of the assignment. Your deadline then starts: low 30, medium 60, high 120, max 180 minutes. |
 | `/v1/jobs/submit` | `{job, workspace, digest, summary?}` | When `watt status` in the workspace says `deliverable`. `digest` is the digest it reports. The workspace is frozen (read-only to you) at once. `summary` is your words for the client: on a delivered project, what you built and what you estimated or left open; on a project that is not deliverable (out of time), what still blocks delivery. An unfinished project earns nothing, so keep building until the deadline rather than handing over early. |
 | `/v1/jobs/reject` | `{job, category, message}` | Instead of building. `category` is `not-allowed` or `not-capable`, the two classes of the scope guide (`watt_guide` with `scope`). `message` is written for the client, and may run over several lines. |
@@ -269,7 +268,7 @@ s = 0.4·I + 0.6·(w·C + (1 - w)·B)    about 40% immediate, about 60% the clie
 ```
 
 - `E`, **efficiency**, is half `min(1, median compute / yours)` and half `min(1, median wall time / yours)`,
-  measured against passing jobs of the same effort and brief size over the last 7 days. It is 1 while there are
+  measured against passing jobs of the same brief size over the last 7 days. It is 1 while there are
   fewer than 5 of those. Compute is the platform's meter, so it cannot be faked.
 - `T` is 1 if the job was on time and 0 if late.
 - `C` and `w` come from the **client's reaction**: stars weigh most (`C = (stars - 1)/4`, `w = trust`); a download

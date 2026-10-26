@@ -5,7 +5,7 @@
 - Only an approved key holder takes the entry test; until it passes, no job and no weight.
 - A revocation drops the key and the admission, frees the miner's job unscored, and removes the
   miner from the next vector under every rule; re-approved, it takes the entry test again.
-- The entry test: a client-style brief at its own effort and deadline, no questions, through the
+- The entry test: a client-style brief with the one job deadline, no questions, through the
   same gate as a client job (the validator's guard, no unproven must, no open client decision),
   submitted on time.
 - Launch: equal per admitted, reachable hotkey until a time, then the usual rules; recompute
@@ -32,7 +32,7 @@ import bittensor.http_auth as btauth
 from bittensor.sp_core import Keypair
 
 from cadmind_einstein import onboarding
-from cadmind_einstein.desk import ADMISSION_BRIEF, DEADLINE_S, Desk, DeskError
+from cadmind_einstein.desk import ADMISSION_BRIEF, JOB_DEADLINE_S, Desk, DeskError
 from cadmind_einstein.fake_miner import ask_key
 from cadmind_einstein.scoring import (
     HOUR_MS,
@@ -298,25 +298,25 @@ class TestEntryTestGates(_Case):
         self.tick()
         self.assertEqual(self.desk.work(A)["job"], "c1")
 
-    def test_the_entry_test_is_a_high_effort_no_questions_job(self) -> None:
+    def test_the_entry_test_is_a_no_questions_job_with_the_one_deadline(self) -> None:
         self.desk.approve(A)
         self.key(A)
         adm = self.desk.admission(A)
         self.assertTrue(self.desk.wait_idle())
-        self.assertEqual(adm["effort"], "high")
+        self.assertNotIn("effort", adm)
         w = self.desk.work(A)
         self.assertIs(w["no_questions"], True)  # the miner is told to decide every question
         self.assertEqual(w["brief"], ADMISSION_BRIEF)
         acc = self.desk.accept(A, w["job"])
-        self.assertEqual(acc["deadline_ms"], self.desk.now_ms() + DEADLINE_S["high"] * 1000)
+        self.assertEqual(acc["deadline_ms"], self.desk.now_ms() + JOB_DEADLINE_S * 1000)
+        self.assertEqual(JOB_DEADLINE_S, 120 * 60)
 
-    def test_the_admission_effort_is_an_option_with_its_own_deadline(self) -> None:
-        d = Desk(self.p, Ledger(), registered=lambda: [A], admission_effort="medium")
-        d.agent_key(A, new_keypair()[1])
-        self.assertEqual(d.admission(A)["effort"], "medium")
+    def test_the_deadline_is_a_setting(self) -> None:
+        d = Desk(self.p, Ledger(), registered=lambda: [A], deadline_s=90 * 60)
+        self.assertEqual(d.deadline_s, 90 * 60)
         d.stop()
         with self.assertRaises(ValueError):
-            Desk(self.p, Ledger(), registered=lambda: [A], admission_effort="huge")
+            Desk(self.p, Ledger(), registered=lambda: [A], deadline_s=0)
 
     def test_the_default_brief_is_a_small_device_not_the_worked_example(self) -> None:
         self.assertNotIn("watt example", ADMISSION_BRIEF)
@@ -349,7 +349,7 @@ class TestEntryTestGates(_Case):
         w = self.desk.work(A)
         self.desk.accept(A, w["job"])
         self.p.work(w["workspace"], GOOD, deliverable=True)
-        self.clock.t += DEADLINE_S["high"] + 60
+        self.clock.t += JOB_DEADLINE_S + 60
         self.tick()  # judged at its deadline, never submitted
         st = wait_state(self.desk, w["job"], ("done",))
         self.assertEqual(st["result"]["label"], "not admitted")
