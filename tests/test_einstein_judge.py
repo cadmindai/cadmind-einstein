@@ -274,7 +274,7 @@ class TestVersionsAndDigests(unittest.TestCase):
             (base.version, tools.version), ("cadmind-judge/1.2b", "cadmind-judge/1.2b-tools")
         )
         self.assertNotEqual(base.digest(), tools.digest())
-        self.assertEqual(jm.Judge("1.3").digest(), jm.Judge().digest())  # the validators' default since 0.5.1
+        self.assertEqual(jm.Judge("1.3").digest(), jm.Judge().digest())  # default since 0.5.1
         # the tool budget is part of the tools judge (it is in the prompt), not of 1.2b
         self.assertNotEqual(tools.digest(), jm.Judge("1.2b-tools", tool_budget=8).digest())
         self.assertEqual(base.digest(), jm.Judge("1.2b", tool_budget=8).digest())
@@ -288,7 +288,7 @@ class TestVersionsAndDigests(unittest.TestCase):
             self.assertNotEqual(before, jm.Judge().digest())
         finally:
             jm.V_MAP[1] = old
-        self.assertEqual(jm.Judge("1.3").digest(), jm.Judge().digest())  # the validators' default since 0.5.1
+        self.assertEqual(jm.Judge("1.3").digest(), jm.Judge().digest())  # default since 0.5.1
         with self.assertRaises(ValueError):
             jm.Judge("1.1")
 
@@ -338,7 +338,7 @@ def inputs_with_assumptions() -> jm.Inputs:
 
 
 class TestJudge13(unittest.TestCase):
-    """1.3: the fact sheet's ``assumptions`` and the guardrail on it; the validators' judge since 0.5.1."""
+    """1.3: the fact sheet's ``assumptions`` and its guardrail; validators' judge since 0.5.1."""
 
     def test_the_released_digests_do_not_move(self) -> None:
         for name, digest in RELEASED_DIGESTS.items():
@@ -412,6 +412,7 @@ class TestJudge13(unittest.TestCase):
         self.assertIn("never a validator", str(e.exception))
         with self.assertRaises(SystemExit):
             check_judge("1.3-tools")
+
 
 class TestTheToolsJudge(unittest.TestCase):
     def access(self, d: str) -> ToolAccess:
