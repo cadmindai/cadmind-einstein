@@ -16,6 +16,16 @@ All notable changes to this project are listed here. The format follows
   counts; the `--review-usd-per-mtok-*` prices are the fallback for a reply without a cost. A capped validator
   whose provider reports no cost and that has no prices set refuses to start, and a reply with neither stops the
   day's calls with an ALERT (before, every call counted $0 and the cap never tripped).
+- **`cadmind-recompute` reads the validator's own commitment.** The validator commits one `Sha256` field, and
+  recompute only parsed a `sha256:<hex>` text, so it reported "no sha256 commitment found". It now reads the field,
+  and the text form still reads.
+
+### Added
+
+- **Each hourly report names the einstein version that computed it** (`einstein: {version, spec_version}`; part of
+  the hashed bytes). `cadmind-recompute` recomputes a report only as the version that made it would: a report from
+  another version (or from before this field) whose numbers differ is listed under `not_checked` with a plain note,
+  not called a mismatch; its hash and chain links are still checked.
 
 ## [0.5.2] - 2026-10-26
 

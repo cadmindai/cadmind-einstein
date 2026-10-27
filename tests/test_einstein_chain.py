@@ -346,6 +346,71 @@ class TestReports(unittest.TestCase):
             self.assertFalse(out["ok"])
             self.assertIn("chain_break", out["reports"][1])
 
+    def test_the_commitment_is_read_from_its_sha256_field(self) -> None:
+        from types import SimpleNamespace
+
+        from cadmind_einstein.scoring import commitment_sha256
+
+        h = "7aff" + "0" * 60
+        # what the chain answers for the validator's own commitment (chain.commitment_call)
+        c = SimpleNamespace(block=8312749, data="", fields=[{"Sha256": "0x" + h.upper()}])
+        self.assertEqual(commitment_sha256(c), h)
+        self.assertEqual(
+            commitment_sha256({"data": "", "fields": [{"Sha256": bytes.fromhex(h)}]}), h
+        )
+        self.assertEqual(commitment_sha256({"fields": [{"Sha256": list(bytes.fromhex(h))}]}), h)
+        # the older text form still reads
+        self.assertEqual(commitment_sha256(SimpleNamespace(data=f"x sha256:0x{h}", fields=[])), h)
+        self.assertEqual(commitment_sha256(SimpleNamespace(data="", fields=[{"Raw": "0x00"}])), "")
+        self.assertEqual(
+            commitment_sha256(SimpleNamespace(data="", fields=[{"Sha256": "0x12"}])), ""
+        )
+
+    def test_a_report_says_its_version_and_another_version_is_not_a_mismatch(self) -> None:
+        from cadmind_einstein import __version__
+
+        with tempfile.TemporaryDirectory() as d:
+            ledger = Ledger(report_dir=Path(d))
+            uids = {OWNER: 0, A: 1}
+            ledger.add(passing("1", A, ended_ms=1000))
+            r1 = ledger.report(2000, uids, owner_hotkey=OWNER, admitted=[A], reachable=[A])
+            self.assertEqual(
+                r1["einstein"], {"version": __version__, "spec_version": __spec_version__}
+            )
+            p1 = Path(d) / "hour-0.json"
+            out = audit([p1], expect_sha256=r1["sha256"])
+            self.assertTrue(out["ok"])
+            self.assertEqual(out["reports"][0]["einstein"]["report"], __version__)
+            self.assertNotIn("not_checked", out)
+            # the same version with a changed score is a mismatch
+            rep = json.loads(p1.read_bytes())
+            rep["jobs"][0]["s"] = 0.5
+            p1.write_bytes(report_bytes(rep))
+            out = audit([p1])
+            self.assertFalse(out["ok"])
+            self.assertNotIn("other_version", out["reports"][0])
+            # an older version's report whose numbers differ is said plainly, not failed
+            rep["einstein"] = {"version": "0.5.1", "spec_version": 501}
+            p1.write_bytes(report_bytes(rep))
+            out = audit([p1])
+            self.assertTrue(out["ok"])
+            self.assertIn("einstein 0.5.1", out["reports"][0]["other_version"])
+            self.assertEqual(out["not_checked"], [str(p1)])
+            # a report from before the field: unknown version, same treatment
+            del rep["einstein"]
+            p1.write_bytes(report_bytes(rep))
+            out = audit([p1])
+            self.assertTrue(out["ok"])
+            self.assertIn("before 0.5.3", out["reports"][0]["other_version"])
+            # an older version's report that still recomputes is simply checked
+            rep = json.loads(report_bytes(json.loads(p1.read_bytes())))
+            rep["jobs"][0]["s"] = r1["jobs"][0]["s"]
+            rep["einstein"] = {"version": "0.5.1", "spec_version": 501}
+            p1.write_bytes(report_bytes(rep))
+            out = audit([p1])
+            self.assertTrue(out["ok"])
+            self.assertNotIn("not_checked", out)
+
     def test_two_reports_in_one_hour_are_both_kept_and_chained(self) -> None:
         with tempfile.TemporaryDirectory() as d:
             ledger = Ledger(report_dir=Path(d))

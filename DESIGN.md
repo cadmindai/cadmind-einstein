@@ -310,7 +310,9 @@ the client is), every score, each miner's weight and quality, the admitted and r
   is kept in chain state; the hash chain makes it authenticate the whole published history.
 - `cadmind-recompute hour-A.json ... hour-N.json [--network NET --netuid N --validator-hotkey HK]` rebuilds every
   score and the vector from the reports alone, checks the hash chain and canonical bytes, and compares the newest
-  hash with the commitment on chain.
+  hash with the commitment on chain (its `Sha256` field; a `sha256:<hex>` text commitment still reads). Each report
+  names the einstein version and spec version that computed it (`einstein`); a report from another version whose
+  numbers differ is said to be so (`other_version`, `not_checked`), not called a mismatch.
 - Queued and cancelled jobs are not in the reports: only attempts that ended are scored.
 - **Votes** (section 13): each report's `votes` carries the mode (`counted` or `shadow`), the judge's version and
   digest, every vote on a window job in its public form -- the validator, the model it names, the image set's digest,

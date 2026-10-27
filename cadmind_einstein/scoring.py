@@ -80,6 +80,8 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
 
+from . import __spec_version__, __version__
+
 HALF_LIFE_H = 24.0
 WINDOW_H = 7 * 24
 HOUR_MS = 3_600_000
@@ -518,6 +520,7 @@ class Ledger:
             "chain": dict(chain or {}),
             "watch": dict(watch or {}),
             "votes": dict(votes or {}),
+            "einstein": {"version": __version__, "spec_version": __spec_version__},
             "constants": {
                 "half_life_h": HALF_LIFE_H,
                 "window_h": WINDOW_H,
@@ -588,17 +591,51 @@ def recompute(report: Mapping[str, Any]) -> dict[str, Any]:
     return {"vector": vec, "rule": rule, "matches_published": same, "mismatches": mismatches}
 
 
+def _hex(value: Any) -> str:
+    """A committed hash as lowercase hex: ``0x...`` text, bytes, or a list of byte values."""
+    if isinstance(value, (bytes, bytearray)):
+        return bytes(value).hex()
+    if isinstance(value, (list, tuple)) and all(isinstance(b, int) for b in value):
+        try:
+            return bytes(value).hex()
+        except ValueError:
+            return ""
+    text = str(value or "").strip().lower().removeprefix("0x")
+    return text if len(text) == 64 and all(ch in "0123456789abcdef" for ch in text) else ""
+
+
+def commitment_sha256(c: Any) -> str:
+    """The SHA-256 in a commitment as the chain answers it: the ``Sha256`` field the validator
+    commits (:func:`.chain.commitment_call`; it reads ``fields=[{'Sha256': '0x...'}]`` with an
+    empty ``data``), else a ``sha256:<hex>`` word in its text ``data`` (the older form); '' when
+    neither."""
+    fields = c.get("fields") if isinstance(c, Mapping) else getattr(c, "fields", None)
+    for f in fields or []:
+        if isinstance(f, Mapping):
+            for k, v in f.items():
+                if str(k).lower() == "sha256" and _hex(v):
+                    return _hex(v)
+    data = c.get("data") if isinstance(c, Mapping) else getattr(c, "data", "")
+    for part in str(data or "").split():
+        if part.startswith("sha256:"):
+            return part.split(":", 1)[1].removeprefix("0x").lower()
+    return ""
+
+
 def onchain_sha256(network: str, netuid: int, hotkey: str, block: int | None = None) -> str:
     """The SHA-256 the validator's hotkey last committed on ``netuid`` (at ``block`` on an archive
     node), '' when none. A free read."""
     import bittensor as bt  # noqa: PLC0415 -- the auditor's optional chain read
 
     c = bt.Subtensor(network=network).identity.commitment(netuid, hotkey, block=block)
-    data = str(getattr(c, "data", "") or "")
-    for part in data.split():
-        if part.startswith("sha256:"):
-            return part.split(":", 1)[1].removeprefix("0x").lower()
-    return ""
+    return commitment_sha256(c) if c is not None else ""
+
+
+def report_version(report: Mapping[str, Any]) -> str:
+    """The einstein version that computed a report ('' for a report from before 0.5.3, which did
+    not say)."""
+    e = report.get("einstein")
+    return str(e.get("version") or "") if isinstance(e, Mapping) else ""
 
 
 def check_votes(votes: Mapping[str, Any]) -> list[dict[str, Any]]:
@@ -624,8 +661,14 @@ def check_votes(votes: Mapping[str, Any]) -> list[dict[str, Any]]:
 def audit(paths: list[Path], *, expect_sha256: str = "") -> dict[str, Any]:
     """Recompute every report and check the hash chain: each report's ``prev_sha256`` is the SHA-256
     of the report before it, and the newest one's SHA-256 is ``expect_sha256`` (what is on chain)
-    when given."""
+    when given.
+
+    The scoring rule can change between releases, so a report is recomputed only by the version
+    that made it. A report from another version whose numbers differ is not called a mismatch:
+    its row says ``other_version`` (recompute it with that version) and it is listed in
+    ``not_checked``; its hash and chain links are still checked."""
     out: list[dict[str, Any]] = []
+    not_checked: list[str] = []
     ok, prev = True, ""
     for i, path in enumerate(paths):
         raw = path.read_bytes()
@@ -633,6 +676,17 @@ def audit(paths: list[Path], *, expect_sha256: str = "") -> dict[str, Any]:
         sha = hashlib.sha256(raw).hexdigest()
         row: dict[str, Any] = {"report": str(path), "sha256": sha, **recompute(rep)}
         row["canonical"] = report_bytes(rep) == raw
+        made_by = report_version(rep)
+        row["einstein"] = {"report": made_by or "before 0.5.3 (not stated)", "this": __version__}
+        differs = not row["matches_published"] or bool(row["mismatches"])
+        if made_by != __version__ and differs:
+            row["other_version"] = (
+                f"made by einstein {made_by or 'before 0.5.3'}, recomputed with {__version__}: the "
+                "scoring rule may differ between versions, so this is not a mismatch; recompute "
+                f"it with einstein {made_by or 'of that hour'} to check its numbers"
+            )
+            not_checked.append(str(path))
+            differs = False
         bad_votes = check_votes(rep.get("votes") or {})
         if bad_votes:
             row["bad_votes"] = bad_votes
@@ -640,10 +694,12 @@ def audit(paths: list[Path], *, expect_sha256: str = "") -> dict[str, Any]:
         if i and rep.get("prev_sha256") != prev:
             row["chain_break"] = {"prev_sha256": rep.get("prev_sha256"), "expected": prev}
             ok = False
-        ok = ok and row["matches_published"] and not row["mismatches"] and row["canonical"]
+        ok = ok and not differs and row["canonical"]
         prev = sha
         out.append(row)
     result: dict[str, Any] = {"reports": out, "ok": ok}
+    if not_checked:
+        result["not_checked"] = not_checked
     if expect_sha256:
         result["expected_sha256"] = expect_sha256
         result["newest_matches_expected"] = bool(out) and out[-1]["sha256"] == expect_sha256

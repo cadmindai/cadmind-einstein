@@ -473,7 +473,11 @@ cadmind-recompute hour-A.json ... hour-N.json --subtensor.network test --netuid 
 ```
 
 It recomputes every score and the vector, checks the hash chain and canonical bytes, checks every published vote's
-signature and value, and compares the newest report's hash with the validator's on-chain commitment.
+signature and value, and compares the newest report's hash with the validator's on-chain commitment (its `Sha256`
+field). Each report names the einstein version that computed it (`einstein.version`, `einstein.spec_version`); the
+scoring rule can change between releases, so a report from another version whose numbers differ is listed under
+`not_checked` with a plain note (recompute it with that version), not called a mismatch. Its hash and chain links are
+still checked.
 
 ## Anti-abuse
 
