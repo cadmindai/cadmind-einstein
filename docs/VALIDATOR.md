@@ -226,7 +226,10 @@ logged.
 that carries no cost. A validator with a cap whose provider reports no cost (any server other than OpenRouter, or
 `anthropic:<model>`) and no prices set refuses to start; if a reply ever comes back with no cost and there are no
 prices, no more calls are made that day (an ALERT). The requests ask for a JSON object at the given reasoning effort
-and set no output-token limit; each waits up to 600 s and is retried twice by the SDK.
+and set no output-token limit; each waits up to 600 s and is retried twice by the SDK. Judge 1.3 was calibrated at
+`--review-effort high`, and on OpenRouter (`anthropic/claude-opus-5.5`) at that effort it gave the calibrated score on
+42 of 51 calibration items and was within one on all of them; a vote cost about $0.86 (up to about $1.45). Size
+`--review-daily-usd` to your delivery volume.
 
 ```bash
 --votes counted --judge 1.3 --judge-backend openrouter \
