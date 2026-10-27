@@ -1,5 +1,8 @@
 # The reference einstein miner as a systemd user unit (systemctl --user). The agent CLI must be on
 # PATH and already configured with your own model credentials; follow your provider's terms.
+# The self-review (on by default) runs the validators' judge on your own model key: put the key in
+# the file named by --self-review-key-file (mode 0600, pip install '.[review]'); without the file
+# the round is skipped and the miner works as before. --self-review off turns it off.
 [Unit]
 Description=CADmind einstein reference miner
 After=network-online.target
@@ -11,7 +14,8 @@ ExecStart=%h/cadmind-einstein/.venv/bin/cadmind-einstein-miner \
   --wallet.name MINER_WALLET --wallet.hotkey MINER_HOTKEY_NAME \
   --validator https://VALIDATOR_HOST --validator-hotkey VALIDATOR_SS58 \
   --platform https://cadmind.ai \
-  --state %h/.local/share/cadmind-einstein-miner
+  --state %h/.local/share/cadmind-einstein-miner \
+  --self-review-key-file %h/.config/cadmind-einstein/judge.key
 Restart=on-failure
 RestartSec=30
 

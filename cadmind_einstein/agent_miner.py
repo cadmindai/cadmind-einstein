@@ -55,6 +55,15 @@ named ``cadmind-fetch``): it downloads a public document from the miner's own co
 refuse the platform's address) and uploads it into the job's workspace, as the hosted ``fetch``
 stores one. It is a fenced download, not a shell; ``--no-local-fetch`` leaves it out.
 
+**Self-review** (``--self-review on``, the default; :mod:`.self_review`): after the agent's
+``DONE`` and before the submit, the validators' own judge (:mod:`.judge`, on the miner's own model
+key: ``--self-review-model``, ``--self-review-key-file``) reviews the built device on a review
+bundle the miner draws itself (:mod:`.miner_bundle`), and the upheld points go back to the agent as
+a correction, checked again, up to ``--self-review-loops`` times. The agent is told a deadline
+:func:`.self_review.reserve_s` earlier so the round has its time; the submit is never missed.
+Without a key file the round is skipped and the miner works as before. What it found, fixed and
+cost is logged and written to ``logs/<job>.self-review.json``.
+
 Flags follow Bittensor's names (``--wallet.name``, ``--wallet.hotkey``, ``--wallet.path``,
 ``--logging.debug``, ``--logging.trace``; the dashed ``--wallet-name``/``--wallet-hotkey`` remain
 aliases). With ``--netuid`` (and ``--subtensor.network``/``--subtensor.chain_endpoint``) the miner
@@ -85,6 +94,7 @@ from pathlib import Path
 from typing import Any
 
 from . import __spec_version__, __version__
+from . import self_review as sr
 from .cli import (
     add_logging_args,
     add_subtensor_args,
@@ -480,6 +490,8 @@ class Build:
         self.text, self.record, self.timed_out, self.cancelled = text, record, timed_out, cancelled
         self.resumed = False
         self.runs = 1
+        self.session: ClaudeSession | None = None
+        """the session the last run used (a dead one is replaced): the self-review resumes it"""
 
 
 def _record(out: str, err: str, code: int | None, timed_out: bool) -> str:
@@ -560,6 +572,7 @@ def build(
         if not dead(last):
             got.text = last  # an empty or dead answer keeps the earlier run's words
     got.record = record
+    got.session = session
     return got
 
 
@@ -680,6 +693,116 @@ def registered_on(network: str, netuid: int, hotkey: str) -> bool:
     return state.by_hotkey(hotkey) is not None
 
 
+def start_self_review(
+    a: argparse.Namespace,
+    got: Build,
+    *,
+    review_off: str,
+    job: str,
+    ws: str,
+    deadline_ms: int,
+    key: str,
+    questions_allowed: bool,
+    correct: sr.Correct,
+    cancelled: Any,
+    log: Any,
+    model: Any = None,
+) -> sr.SelfReview | None:
+    """The self-review round after the builder's run (:mod:`.self_review`), when it is on and
+    the builder delivered: run, its final check before the submit when it fits, its loops.
+    ``got.text`` becomes the corrected run's text when the corrected version is to be submitted.
+    None when the round does not start (the reason is logged). Never raises."""
+    if a.self_review != "on" or got.cancelled:
+        return None
+    kind, body = outcome(job, ws, got.text)
+    why = (
+        review_off
+        or ("" if deadline_ms else "the job has no deadline")
+        or ("" if kind == "submit" and body.get("digest") else "the builder did not deliver")
+    )
+    if why:
+        log(f"{job}: self-review: skipped: {why}")
+        return None
+    try:
+        if model is None:
+            model = sr.judge_model(
+                a.self_review_model,
+                a.self_review_key_file,
+                effort=a.self_review_effort,
+                base_url=a.self_review_base_url,
+            )
+    except Exception as e:  # noqa: BLE001 -- no judge: the job goes on without the round
+        log(f"{job}: self-review: skipped: the judge model: {type(e).__name__}: {str(e)[:200]}")
+        return None
+    rnd = sr.SelfReview(
+        job=job,
+        built_text=got.text,
+        deadline_ms=deadline_ms,
+        export=lambda: sr.workspace_export(a.platform, key, ws),
+        status=lambda: sr.workspace_status(a.platform, key, ws),
+        correct=correct,
+        log=log,
+        cancelled=cancelled,
+        model=model,
+        samples=a.self_review_samples,
+        loops=a.self_review_loops,
+        questions_allowed=questions_allowed,
+    )
+    rnd.run()
+    if rnd.final_pending and rnd.final_fits() and not cancelled():
+        rnd.final(after_submit=False)
+    if not cancelled():
+        rnd.loops()
+    if rnd.text:
+        got.text = rnd.text
+    return rnd
+
+
+def corrector(
+    a: argparse.Namespace,
+    got: Build,
+    *,
+    cmd: list[str],
+    prompt: str,
+    prompt_file: Path,
+    mcp_file: Path,
+    work_dir: Path,
+    ws: str,
+    job: str,
+    watch: Any,
+) -> sr.Correct:
+    """The self-review's ``correct(message, budget_s)``: the builder once more with the message.
+    Claude Code's session is resumed; an ``--agent-command`` agent runs again on the job's prompt
+    told that the workspace holds its delivered work (:data:`.self_review.FRESH`)."""
+
+    def correct(message: str, budget_s: float) -> tuple[str, bool]:
+        stdin: str | None = None
+        if got.session is not None:
+            argv = got.session.resume(cmd, message)
+        else:
+            done = _DONE.search(got.text)
+            text = prompt + sr.FRESH.format(digest=done.group(1) if done else "") + message
+            _write_private(prompt_file, text)
+            argv = agent_argv(
+                a, prompt=text, prompt_file=prompt_file, mcp_file=mcp_file, ws=ws, job=job
+            )
+            stdin = text
+        run = AgentRun(argv, cwd=work_dir, stdin=stdin)
+        watch(run)
+        try:
+            out, err, timed_out = run.wait(budget_s)
+        finally:
+            watch(None)
+        code = getattr(getattr(run, "proc", None), "returncode", None)
+        got.record += (
+            f"\n--- SELF-REVIEW ({int(budget_s // 60)} min) ---\n{message}\n--- answer ---\n"
+        )
+        got.record += _record(out, err, code if isinstance(code, int) else None, timed_out)
+        return out, run.stopped.is_set() and not timed_out
+
+    return correct
+
+
 def parser() -> argparse.ArgumentParser:
     """The miner's flags (Bittensor's names, with the earlier dashed names as aliases)."""
     ap = argparse.ArgumentParser(prog="cadmind-einstein-miner")
@@ -702,6 +825,51 @@ def parser() -> argparse.ArgumentParser:
         "--contact",
         default="",
         help="a short note for the subnet team with your key request (how to reach you)",
+    )
+    ap.add_argument(
+        "--self-review",
+        choices=sr.MODES,
+        default="on",
+        help="after the builder's DONE, the validators' judge reviews the built device on the "
+        "miner's own key and the builder corrects the upheld points (default on; skipped when no "
+        "--self-review-key-file is given)",
+    )
+    ap.add_argument(
+        "--self-review-model",
+        default=sr.DEFAULT_MODEL,
+        help="the judge's model, provider:model (an openai: model goes to OpenRouter unless "
+        f"--self-review-base-url says otherwise; default {sr.DEFAULT_MODEL})",
+    )
+    ap.add_argument(
+        "--self-review-key-file",
+        type=Path,
+        default=None,
+        help="a file holding the judge model's API key (your own account; never logged)",
+    )
+    ap.add_argument(
+        "--self-review-base-url",
+        default="",
+        help="the judge model's API base URL, if not the default",
+    )
+    ap.add_argument(
+        "--self-review-effort",
+        default=sr.DEFAULT_EFFORT,
+        help=f"the judge's reasoning effort (default {sr.DEFAULT_EFFORT}, as the validators' "
+        "judge is calibrated)",
+    )
+    ap.add_argument(
+        "--self-review-samples",
+        type=int,
+        default=sr.DEFAULT_SAMPLES,
+        help=f"samples per check and final check (default {sr.DEFAULT_SAMPLES}, as a "
+        "validator's vote)",
+    )
+    ap.add_argument(
+        "--self-review-loops",
+        type=int,
+        default=sr.DEFAULT_LOOPS,
+        help="further corrections while the final check finds a point still there or a new one "
+        f"(default {sr.DEFAULT_LOOPS})",
     )
     ap.add_argument(
         "--no-local-fetch",
@@ -756,6 +924,16 @@ def main(argv: list[str] | None = None) -> int:
     def call(path: str, body: dict[str, Any]) -> tuple[int, Any]:
         return signed(kp, a.validator, path, body, a.validator_hotkey)
 
+    review_off = sr.unavailable(a.self_review, a.self_review_model, a.self_review_key_file)
+    if not review_off:
+        log(
+            f"self-review: on (judge {sr.JUDGE_VERSION} on {a.self_review_model} at effort "
+            f"{a.self_review_effort}, {a.self_review_samples} samples, up to "
+            f"{a.self_review_loops} loops; your key, your cost)"
+        )
+    elif a.self_review == "on":
+        log(f"self-review: skipped on every job: {review_off}")
+
     key_file, mcp_file = a.state / "agent.key", a.state / "watt-mcp.json"
 
     def mint() -> bool:
@@ -782,7 +960,7 @@ def main(argv: list[str] | None = None) -> int:
     log(f"admission requested: {code} {adm.get('job') if isinstance(adm, dict) else adm}")
     checked = time.monotonic()
 
-    busy, stop = threading.Event(), threading.Event()
+    busy, stop, cancel = threading.Event(), threading.Event(), threading.Event()
     running: dict[str, Any] = {"job": "", "agent": None}
 
     def heartbeat() -> None:
@@ -791,8 +969,11 @@ def main(argv: list[str] | None = None) -> int:
                 # keep alive while the agent runs -- and stop it when its job is gone
                 code, w = call("/v1/jobs/work", {})
                 agent, job = running["agent"], running["job"]
-                if code == 200 and agent is not None and job and dropped(w, job):
+                if code == 200 and job and dropped(w, job) and not cancel.is_set():
+                    cancel.set()
                     log(f"{job}: cancelled or no longer ours: stopping the agent")
+                stopped = getattr(agent, "stopped", None)
+                if cancel.is_set() and agent is not None and not (stopped and stopped.is_set()):
                     agent.stop()
             stop.wait(15)
 
@@ -825,12 +1006,24 @@ def main(argv: list[str] | None = None) -> int:
             code, work = call("/v1/jobs/work", {})  # the deadline starts at accept
         deadline_ms = int(work.get("deadline_ms") or 0) if isinstance(work, dict) else 0
         minutes = max(10, int((deadline_ms / 1000 - time.time()) / 60) - 3) if deadline_ms else 25
+        # with the self-review, the builder is told an earlier deadline, so the round has its time
+        # (a builder still working then is told the real one and goes on)
+        reserve = sr.reserve_s(deadline_ms, time.time()) if not review_off else 0.0
+        told_ms = deadline_ms - int(reserve * 1000) if deadline_ms else 0
+        told_minutes = (
+            max(10, int((told_ms / 1000 - time.time()) / 60) - 3) if deadline_ms else minutes
+        )
+        if reserve:
+            log(
+                f"{job}: the builder is told {told_minutes} min: {reserve / 60:.0f} min kept "
+                "for the self-review"
+            )
         # the job's own deadline for `time_left` (none written: it says no deadline is set)
         deadline = deadline_file(a)
         if deadline is not None:
-            _write_private(deadline, str(deadline_ms) if deadline_ms else "")
+            _write_private(deadline, str(told_ms) if deadline_ms else "")
         deadline_utc = (
-            time.strftime("%H:%M", time.gmtime(deadline_ms / 1000))
+            time.strftime("%H:%M", time.gmtime(told_ms / 1000))
             if deadline_ms
             else "the job's deadline"
         )
@@ -838,7 +1031,7 @@ def main(argv: list[str] | None = None) -> int:
             ws=ws,
             job=job,
             brief=brief,
-            minutes=minutes,
+            minutes=told_minutes,
             deadline_utc=deadline_utc,
             server=MCP_SERVER,
             questions=questions_rule(work if isinstance(work, dict) else {}, ws),
@@ -852,10 +1045,22 @@ def main(argv: list[str] | None = None) -> int:
         t0 = time.time()
         out_file = logs / f"{job}.txt"
 
-        def watch(agent: AgentRun | None, job: str = job) -> None:
-            running.update(job=job if agent else "", agent=agent)
+        def watch(agent: AgentRun | None) -> None:
+            running.update(agent=agent)
 
+        def real_deadline(path: Path | None = deadline, real: int = deadline_ms) -> None:
+            if path is not None:
+                _write_private(path, str(real))
+
+        overrun = None
+        if reserve and deadline is not None:
+            overrun = threading.Timer(max(0.0, told_ms / 1000 - time.time()), real_deadline)
+            overrun.daemon = True
+            overrun.start()
+        cancel.clear()
+        running.update(job=job, agent=None)
         busy.set()
+        rnd: sr.SelfReview | None = None
         try:
             got = build(
                 cmd,
@@ -863,17 +1068,53 @@ def main(argv: list[str] | None = None) -> int:
                 cwd=work_dir,
                 stdin=prompt if a.agent_command else None,
                 timeout_s=minutes * 60,
-                deadline_ms=deadline_ms,
+                deadline_ms=told_ms or deadline_ms,
                 watch=watch,
                 log=log,
                 job=job,
             )
+            if overrun is not None:
+                overrun.cancel()
+                real_deadline()  # the self-review's corrections see the job's real deadline
+            if got.timed_out:
+                log(f"{job}: agent timed out")
+            log(f"{job}: agent finished in {(time.time() - t0) / 60:.1f} min")
+            got.cancelled = got.cancelled or cancel.is_set()
+            rnd = start_self_review(
+                a,
+                got,
+                review_off=review_off,
+                job=job,
+                ws=ws,
+                deadline_ms=deadline_ms,
+                key=key_file.read_text().strip() if key_file.exists() else "",
+                questions_allowed=not (isinstance(work, dict) and work.get("no_questions")),
+                correct=corrector(
+                    a,
+                    got,
+                    cmd=cmd,
+                    prompt=prompt,
+                    prompt_file=prompt_file,
+                    mcp_file=mcp_file,
+                    work_dir=work_dir,
+                    ws=ws,
+                    job=job,
+                    watch=watch,
+                ),
+                cancelled=cancel.is_set,
+                log=log,
+            )
+            got.cancelled = got.cancelled or cancel.is_set()
         finally:
+            if overrun is not None:
+                overrun.cancel()
             busy.clear()
+            running.update(job="", agent=None)
         _write_private(out_file, got.record)
-        if got.timed_out:
-            log(f"{job}: agent timed out")
-        log(f"{job}: agent finished in {(time.time() - t0) / 60:.1f} min")
+        review_file = logs / f"{job}.self-review.json"
+        if rnd is not None:
+            _write_private(review_file, json.dumps(rnd.summary(), indent=1, default=str))
+            log(f"{job}: {rnd.line()}")
         if got.cancelled:
             log(f"{job}: the job was cancelled; nothing submitted")
             done += 1
@@ -885,6 +1126,11 @@ def main(argv: list[str] | None = None) -> int:
         else:
             code, out = send(call, "/v1/jobs/submit", body, log=log)
             log(f"submitted {job} digest={body['digest'][:16] or '(none)'}: {code} {out}")
+        if rnd is not None and rnd.final_pending:
+            # no time before the submit: the final check (a record only) runs after it
+            rnd.final(after_submit=True)
+            _write_private(review_file, json.dumps(rnd.summary(), indent=1, default=str))
+            log(f"{job}: {rnd.line()}")
         done += 1
     stop.set()
     return 0

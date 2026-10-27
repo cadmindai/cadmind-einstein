@@ -5,6 +5,26 @@ All notable changes to this project are listed here. The format follows
 [Semantic Versioning](https://semver.org/). Each release's spec version (`10000*MAJOR + 100*MINOR + PATCH`) is the
 `version_key` the validator sets weights with.
 
+## [Unreleased]
+
+### Added
+
+- **The reference miner reviews its own device before the submit** (`--self-review on`, the default;
+  `cadmind_einstein/self_review.py`). After the agent's `DONE`, the validators' own judge (1.3: a one-sample
+  reviewer, a 3-sample check, a final check) looks at the built device; the agent fixes the upheld points (Claude
+  Code's session resumed; an `--agent-command` agent started again, told the workspace holds its work), and the
+  final check's points still there or new get up to `--self-review-loops` (2) more corrections. The agent is told
+  a deadline 18 minutes earlier so the round has its time; 3 minutes are always kept for the submit. The judge is
+  the miner's own model and cost: `--self-review-model` (default `openai:anthropic/claude-opus-5.5` on
+  OpenRouter), `--self-review-key-file`, `--self-review-effort` (default high), `--self-review-samples` (default
+  3), `--self-review-base-url`. With no key file the round is skipped with a log line and the miner works as before.
+  A check costs about $0.8-0.9 on OpenRouter at effort high; each job's log line and
+  `logs/<job>.self-review.json` say what the round found, fixed and cost. See docs/MINER.md.
+- **The miner draws its own review bundle** (`cadmind_einstein/miner_bundle.py`) from the workspace export: the
+  client's words and photos, and the judge's picture set (`view-*`, `world-*`, `section-*`) drawn from the build's
+  view mesh in pure Python, with a smaller fact sheet from the project's own files. The validators' bundle is served
+  to validators only, for delivered versions; the differences are stated in docs/MINER.md.
+
 ## [0.5.3] - 2026-10-27
 
 ### Fixed

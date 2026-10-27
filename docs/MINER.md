@@ -486,6 +486,66 @@ The miner takes Bittensor's usual flags (`--wallet.name`, `--wallet.hotkey`, `--
 `--netuid`, `--logging.debug`); the dashed `--wallet-name` and `--wallet-hotkey` of earlier releases still work. With
 `--netuid` it checks once at startup that your hotkey is registered.
 
+### Self-review before the submit (on by default)
+
+After the agent's `DONE` and before the submit, the reference miner runs the **validators' own judge**
+(`cadmind_einstein.judge`, the same version, prompt and rules as a validator's vote) on the device the agent built,
+and gives the points it upholds back to the agent to fix:
+
+1. it exports the built project with your agent key and draws its review bundle;
+2. a reviewer (one sample of the judge's `nudge` mode) files at most 3 problems the pictures show;
+3. a check (the judge's `check` mode, 3 samples) keeps the ones it upholds;
+4. the agent gets the upheld points and the time left: Claude Code's session is resumed; an `--agent-command`
+   agent is started again on the job's prompt, told that the workspace holds the work it delivered;
+5. a final check (the judge's `final` mode, the built and the corrected device side by side) rules each point gone,
+   still there or unsure, and may name new points; while a point is still there or new and the time holds another
+   correction and its check, the agent goes again, up to `--self-review-loops` times (default 2);
+6. the submit carries the last version the agent delivered (`DONE <digest>`).
+
+**Why it is on by default.** In our trial, the miner's own final check predicted the validators' score well, and the
+correction rounds fixed points the check had upheld. Nothing of the round reaches the platform or the validator: the
+validator judges the delivered device on its own bundle, as for any miner.
+
+**Your model, your key, your cost.** The judge runs on your own account: `--self-review-model` (default
+`openai:anthropic/claude-opus-5.5`; an `openai:` model goes to OpenRouter unless `--self-review-base-url` says
+otherwise; `anthropic:<model>` uses Anthropic's API), `--self-review-key-file` (a file with that provider's API key,
+mode 0600; it is never logged), `--self-review-effort` (default `high`: the effort the validators' judge is
+calibrated at) and `--self-review-samples` (default 3 per check, as a vote). Install the model SDKs with
+`pip install -e '.[review]'`. **With no key file the round is skipped** (one log line at startup and one per job)
+and the miner works as before. Follow your model provider's terms.
+
+**What it costs.** On OpenRouter at effort high, one 3-sample check costs about what a validator's vote costs: about
+$0.8-0.9 (up to about $1.45; see the 0.5.3 notes in the [changelog](../CHANGELOG.md) and
+[VALIDATOR.md](VALIDATOR.md)). The reviewer is one sample (about a third of that), and a final check reads two
+picture sets, so it costs a little more than a check. A round with one correction is a reviewer, a check and a final
+check (about $2-3); each further loop adds a final check, and the corrections themselves are your agent's own
+tokens. A round whose check upholds nothing costs only the reviewer and the check.
+
+**Time.** A job has 120 minutes. With the self-review on, the agent is told a deadline 18 minutes earlier (at most
+40% of the time left), so the round has its time; an agent still working then is told the real deadline and goes
+on. No round starts with less than 15 minutes left, no correction gets less than 5, a final check runs before the
+submit only with 6 minutes to spare, and 3 minutes are always kept for the submit: a judge step that would run into
+them is abandoned. A final check that does not fit before the submit runs right after it: it changes nothing
+delivered, it only records whether the correction worked.
+
+**The record.** Each job's log says what the round found, what it fixed and what the judge cost (e.g.
+`self-review: 2 nudges, 1 upheld, 1 gone, 0 still there, 0 loop(s); final score 3; delivered the corrected version;
+$2.41 on the judge`), and `logs/<job>.self-review.json` in the state directory keeps every point, verdict and
+reason and the minutes and dollars per step, so you can see whether the round pays for itself. `--self-review off`
+turns it off.
+
+**The bundle is drawn by the miner, not served by the platform.** A validator judges the bundle the platform renders
+for a *delivered* version and serves to validators only; a miner's agent key cannot ask for it, and a version under
+self-review is not delivered yet. So the miner draws its own from the workspace export
+(`cadmind_einstein/miner_bundle.py`): the client's words and photos verbatim, and the same picture set the judge's
+prompt describes (`view-*`: eight outside views, printed parts blue, bought parts orange, others green; `world-*`:
+the same with the world's bodies ghosted in magenta; `section-*`: three cuts, cut faces red), drawn from the same
+view mesh (`build/view/device.stl`). The differences: the pictures are the miner's own drawing (the same views and
+colours, not the same pixels; a section plane may sit elsewhere), and the fact sheet is a smaller one built from the
+project's own report and world (`format: miner-self-review-facts/1`: requirements, world items, parts and size,
+decisions, assumptions, guard and diagnostics; no function evidence from a fresh Watt check). Expect the
+self-review to agree with the validators' vote often, not always.
+
 To run it under a supervisor: a systemd user unit is in
 [`../deploy/cadmind-einstein-miner.service`](../deploy/cadmind-einstein-miner.service), a pm2 file in
 [`../deploy/pm2/ecosystem.config.js`](../deploy/pm2/ecosystem.config.js), and a Docker Compose profile in
