@@ -202,8 +202,9 @@ model under the spend cap, prints the go/no-go and writes every vote to `--out`.
 
 ```bash
 pip install 'cadmind-einstein[review]'
-cadmind-review BUNDLE.zip --model openai:<model> --key-file ~/.config/cadmind-einstein/review.key \
-    --base-url https://openrouter.ai/api/v1          # OpenRouter; or anthropic:<model>
+cadmind-review BUNDLE.zip --model openai:<model> --key-file ~/.config/cadmind-einstein/review.key
+# openai:<model> goes to OpenRouter (https://openrouter.ai/api/v1) unless --base-url says otherwise;
+# or anthropic:<model> with an Anthropic key
 ```
 
 It checks the bundle, runs `cadmind-judge/1.2b` (`rate`, three samples) with your model and prints the vote
@@ -212,10 +213,26 @@ It checks the bundle, runs `cadmind-judge/1.2b` (`rate`, three samples) with you
 is what the validator says it used: it is observed, not verified.
 
 On the einstein validator the same code runs from the daemon: `--votes counted|shadow|off` (`counted` is the
-default; `live` is its old name), `--judge 1.2b` (the only judge a validator accepts), `--judge-backend
-openrouter|claude-cli`, `--review-model`, `--review-key-file`, `--review-samples`, `--review-effort` and a daily
-spend cap, `--review-daily-usd`, with `--review-usd-per-mtok-in/out/cached` (the provider's prices); past the cap no
-call is made that day and an ALERT is logged.
+default; `live` is its old name), `--judge 1.3` (the default; `1.2b` is still accepted, the `-tools` judges are
+refused), `--judge-backend openrouter|claude-cli`, `--review-model`, `--review-key-file`, `--review-base-url`,
+`--review-samples`, `--review-effort` and a daily spend cap, `--review-daily-usd`, with
+`--review-usd-per-mtok-in/out/cached` (the provider's prices); past the cap no call is made that day and an ALERT is
+logged.
+
+**On OpenRouter** (the default backend): `--review-model openai:<OpenRouter model id>`, for example
+`openai:anthropic/claude-opus-5.5`. With no `--review-base-url` an `openai:` model goes to
+`https://openrouter.ai/api/v1`, never to api.openai.com. OpenRouter reports what it charged for every request
+(`usage.cost`), and that is what the daily cap counts; the `--review-usd-per-mtok-*` prices are used only for a reply
+that carries no cost. A validator with a cap whose provider reports no cost (any server other than OpenRouter, or
+`anthropic:<model>`) and no prices set refuses to start; if a reply ever comes back with no cost and there are no
+prices, no more calls are made that day (an ALERT). The requests ask for a JSON object at the given reasoning effort
+and set no output-token limit; each waits up to 600 s and is retried twice by the SDK.
+
+```bash
+--votes counted --judge 1.3 --judge-backend openrouter \
+--review-model openai:anthropic/claude-opus-5.5 --review-key-file ~/.config/cadmind-einstein/review.key \
+--review-effort high --review-samples 3 --review-daily-usd 40
+```
 
 **`--judge-backend claude-cli`** runs the judge on a Claude subscription logged in for the validator's service user
 (`claude -p`, isolated as the reference miner is: `--setting-sources project,local`, no slash commands, an isolation

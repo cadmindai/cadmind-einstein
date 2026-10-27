@@ -1372,16 +1372,17 @@ def validator_model(
 ) -> Any:
     """The judge's model for a backend. ``claude-cli``: ``spec`` is a Claude model name
     (``claude-opus-5-5`` or ``claude-cli:claude-opus-5-5``), no key; ``openrouter``: a
-    :func:`.models.model_from` spec with its key."""
+    :func:`.models.model_from` spec with its key, and an ``openai:`` model with no ``base_url``
+    goes to OpenRouter (:func:`.models.base_url_for`), never to the OpenAI API by accident."""
     if backend not in BACKENDS:
         raise ValueError(f"the judge backends are {', '.join(BACKENDS)}")
     provider, _, name = spec.partition(":")
     if backend == "claude-cli" or provider == "claude-cli":
         model = name if provider == "claude-cli" else spec
         return ClaudeCLI(model or "claude-opus-5-5", effort=effort, work=work)
-    from .models import model_from  # noqa: PLC0415
+    from .models import base_url_for, model_from  # noqa: PLC0415
 
-    return model_from(spec, key, base_url=base_url, effort=effort)
+    return model_from(spec, key, base_url=base_url_for(spec, base_url), effort=effort)
 
 
 def model_for_dev(spec: str, key: str = "", **kw: Any) -> Any:
@@ -1401,7 +1402,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     """``cadmind-judge BUNDLE.zip --mode rate --judge 1.2b|1.2b-tools --model SPEC``: a
     development run of the judge on one review bundle (any mode, either version), printed as JSON.
     ``--model claude-cli:<model>`` runs on a subscription; ``openai:<model>`` with ``--key-file``
-    (and ``--base-url https://openrouter.ai/api/v1``) on a key. The tools version also needs the
+    on a key (OpenRouter unless ``--base-url`` says otherwise). The tools version also needs the
     delivered project in a Watt workspace: ``--platform``, ``--agent-key-file``, ``--workspace``
     (``--variants``, ``--tool-budget``)."""
     import argparse  # noqa: PLC0415
@@ -1416,7 +1417,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     ap.add_argument("--judge", choices=sorted(VERSIONS), default=VALIDATOR_VERSION)
     ap.add_argument("--model", required=True, help="claude-cli:<model>, openai:<model>, ...")
     ap.add_argument("--key-file", type=Path, help="the model's API key (not for claude-cli)")
-    ap.add_argument("--base-url", default="")
+    ap.add_argument("--base-url", default="", help="default for openai:<model>: OpenRouter's")
     ap.add_argument("--effort", default="medium")
     ap.add_argument("--samples", type=int, default=None, help="default: the version's")
     ap.add_argument("--nudges", type=Path, help="check/final: a JSON list of nudges")

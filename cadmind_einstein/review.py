@@ -550,18 +550,21 @@ def main(argv: list[str] | None = None) -> int:
     from pathlib import Path  # noqa: PLC0415
 
     from .judge import Judge, inputs_from_bundle  # noqa: PLC0415
-    from .models import model_from  # noqa: PLC0415
+    from .models import base_url_for, model_from  # noqa: PLC0415
 
     ap = argparse.ArgumentParser(prog="cadmind-review")
     ap.add_argument("bundle", type=Path)
     ap.add_argument("--model", required=True, help="openai:<model> or anthropic:<model>")
     ap.add_argument("--key-file", type=Path, required=True)
-    ap.add_argument("--base-url", default="")
+    ap.add_argument("--base-url", default="", help="default for openai:<model>: OpenRouter's")
     ap.add_argument("--effort", default="medium")
     a = ap.parse_args(argv if argv is not None else sys.argv[1:])
     bundle = read_bundle(a.bundle.read_bytes())
     model = model_from(
-        a.model, a.key_file.read_text().strip(), base_url=a.base_url, effort=a.effort
+        a.model,
+        a.key_file.read_text().strip(),
+        base_url=base_url_for(a.model, a.base_url),
+        effort=a.effort,
     )
     j = Judge()
     got = j.run("rate", inputs_from_bundle(bundle), model, parallel=False)

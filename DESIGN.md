@@ -506,7 +506,7 @@ needs the subnet owner's approval**: it moves every validator's value scale at o
 einstein release with a new digest.
 
 **Model access is configuration.** A validator's judge runs on the review key (`--judge-backend openrouter`, the
-default: `openai:<model>` at OpenRouter, or `anthropic:<model>`) or on a Claude subscription (`--judge-backend
+default: `openai:<model>` at OpenRouter, its base URL when none is given, or `anthropic:<model>`) or on a Claude subscription (`--judge-backend
 claude-cli`: `claude -p`, isolated as the reference miner, no tools; its dollars are notional list prices, recorded
 as such and counted toward the same daily cap). The trial validator runs on the subscription (owner, 2026-10-24).
 
@@ -538,6 +538,7 @@ score is reported, not judged.
 old name): our validator votes on every delivery, the votes are signed, published and shown to the miner, and enter
 the score with `u = 0.4`. `--votes shadow` keeps them out of the score (`u` applied 0); a restart with another mode
 re-applies the recorded votes under it. Third-party voting routes come after. Each validator pays for its
-own model calls; ours are capped per day (`--review-daily-usd`, an ALERT when reached; a 1.2b vote costs about
+own model calls; ours are capped per day (`--review-daily-usd`, counting OpenRouter's reported cost per request, an
+ALERT when reached; a 1.2b vote costs about
 three to four times a rubric 3 vote, about $1 on an Opus-class model).
 

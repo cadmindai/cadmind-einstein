@@ -117,7 +117,7 @@ from .desk import (
 from .judge import BACKENDS as JUDGE_BACKENDS
 from .judge import VALIDATOR_VERSION, ValidatorJudgeError, for_validator, validator_model
 from .judge import VERSIONS as JUDGE_VERSIONS
-from .models import Prices, Spend
+from .models import Prices, Spend, base_url_for, cost_problem, reports_cost
 from .platform import OperatorClient, PlatformError
 from .scoring import GENESIS, HOUR_MS, WINDOW_H, Ledger
 from .service import serve
@@ -351,12 +351,17 @@ def parser() -> argparse.ArgumentParser:
     ap.add_argument(
         "--review-model",
         default="",
-        help="the vision model that votes: openai:<model> (OpenRouter: --review-base-url"
-        " https://openrouter.ai/api/v1) or anthropic:<model>; with --judge-backend claude-cli a"
-        " Claude model name (none: no votes)",
+        help="the vision model that votes: openai:<model> (on OpenRouter unless"
+        " --review-base-url says otherwise, e.g. openai:anthropic/claude-opus-5.5) or"
+        " anthropic:<model>; with --judge-backend claude-cli a Claude model name (none: no votes)",
     )
     ap.add_argument("--review-key-file", type=Path, help="the review model's API key (0600)")
-    ap.add_argument("--review-base-url", default="", help="the provider's base URL (optional)")
+    ap.add_argument(
+        "--review-base-url",
+        default="",
+        help="the provider's base URL; for an openai:<model> the default is OpenRouter's"
+        " (https://openrouter.ai/api/v1), never api.openai.com",
+    )
     ap.add_argument("--review-effort", default="medium", help="the model's reasoning effort")
     ap.add_argument("--review-samples", type=int, default=3, help="samples per vote")
     ap.add_argument(
@@ -364,9 +369,16 @@ def parser() -> argparse.ArgumentParser:
         type=float,
         default=10.0,
         help="the review model's daily spend cap in US dollars (0: none); past it, an ALERT."
-        " A 1.2b vote is six requests and a grouping call: about 3-4 times rubric 3's cost",
+        " On OpenRouter it counts the cost OpenRouter reports for each request; elsewhere the"
+        " tokens priced with --review-usd-per-mtok-*. A cap with neither is refused at start",
     )
-    ap.add_argument("--review-usd-per-mtok-in", type=float, default=0.0)
+    ap.add_argument(
+        "--review-usd-per-mtok-in",
+        type=float,
+        default=0.0,
+        help="the provider's input price per million tokens: used for a reply that carries no"
+        " reported cost (required for a capped judge off OpenRouter)",
+    )
     ap.add_argument("--review-usd-per-mtok-out", type=float, default=0.0)
     ap.add_argument("--review-usd-per-mtok-cached", type=float, default=0.0)
     ap.add_argument(
@@ -408,9 +420,26 @@ def check_judge(version: str) -> None:
         raise SystemExit(f"cadmind-einstein: --judge {version}: {e}") from None
 
 
+def check_review_cost(a: Any) -> None:
+    """A validator refuses to start with a judge whose daily cap could not count real money: an
+    API model, a cap, no cost reported per request (only OpenRouter reports it) and no prices."""
+    if a.votes == "off" or not a.review_model or a.judge_backend == "claude-cli":
+        return
+    if a.review_model.startswith("claude-cli:"):
+        return
+    problem = cost_problem(
+        a.review_daily_usd,
+        Prices(a.review_usd_per_mtok_in, a.review_usd_per_mtok_out, a.review_usd_per_mtok_cached),
+        reported=reports_cost(a.review_model, base_url_for(a.review_model, a.review_base_url)),
+    )
+    if problem:
+        raise SystemExit(f"cadmind-einstein: --review-daily-usd: {problem}")
+
+
 def main(argv: list[str] | None = None) -> int:
     a = parser().parse_args(argv)
     check_judge(a.judge)
+    check_review_cost(a)
     setup_logging(a, prefix="[cadmind-einstein]")
     _log(f"cadmind-einstein {__version__} (spec {__spec_version__})")
     if not a.no_version_check:
@@ -575,7 +604,13 @@ def main(argv: list[str] | None = None) -> int:
             + (
                 f"judge {reviewer.judge_cfg.version} {reviewer.digest}, "
                 f"backend {a.judge_backend}, "
-                f"model {a.review_model}, {a.review_samples} samples, "
+                f"model {a.review_model}"
+                + (
+                    ""
+                    if a.judge_backend == "claude-cli"
+                    else f" at {base_url_for(a.review_model, a.review_base_url) or 'its default'}"
+                )
+                + f", {a.review_samples} samples, "
                 f"cap ${a.review_daily_usd:g}/day"
                 if model is not None
                 else "no --review-model: deliveries are queued, not reviewed"

@@ -7,9 +7,12 @@ Each validator pays for its own calls with its own key. The SDKs are optional de
 does not review never needs them, and the tests use a fake (:class:`Reply` is all a model
 answers).
 
-**Cost.** Every reply carries its token counts; :class:`Spend` turns them into dollars with the
-prices the operator configures (per million input and output tokens) and keeps a daily total,
-refusing calls past the daily cap (an ALERT, once a day).
+**Cost.** Every reply carries its token counts, and OpenRouter's replies also carry the dollars
+it charged (``usage.cost``, in every reply). :class:`Spend` counts that reported cost when there is
+one, otherwise it prices the tokens with the operator's prices (per million input and output
+tokens), and keeps a daily total, refusing calls past the daily cap (an ALERT, once a day). A capped
+validator whose provider reports no cost and who set no prices is refused at start
+(:func:`cost_problem`).
 
 **Conversations** (:meth:`AnthropicModel.converse`, :meth:`OpenAIModel.converse`): the device judge
 (:mod:`.judge`) holds ONE conversation of two turns per sample. Each turn is a list of blocks
@@ -17,8 +20,10 @@ refusing calls past the daily cap (an ALERT, once a day).
 and its answer, so the model has its own blind list in front of it. A :class:`Conversation` carries
 each turn's answer and every request's :class:`Reply` (tokens, for :class:`Spend`). OpenRouter is
 the OpenAI path (``openai:<model>`` with ``base_url https://openrouter.ai/api/v1``); a validator's
-judge runs on it by default; ``--judge-backend claude-cli`` runs it on a Claude subscription
-instead (:class:`.judge.ClaudeCLI`), whose dollars are notional (:meth:`Spend.add_usd`).
+judge runs on it by default, and an ``openai:`` model with no base URL goes there
+(:data:`OPENROUTER_BASE_URL`), never to the OpenAI API by accident; ``--judge-backend claude-cli``
+runs it on a Claude subscription instead (:class:`.judge.ClaudeCLI`), whose dollars are notional
+(:meth:`Spend.add_usd`).
 """
 
 from __future__ import annotations
@@ -31,6 +36,8 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any, Protocol
 
+OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
+"""where an ``openai:<model>`` judge goes when no base URL is given (the validator's backend)"""
 MAX_TOKENS = 16_000
 EFFORT = "medium"
 TOOL_ROUNDS_SLACK = 3
@@ -46,6 +53,9 @@ class Reply:
     cached_tokens: int = 0
     model: str = ""
     """the model that answered, as the provider says (a fallback may answer)"""
+    cost_usd: float | None = None
+    """the dollars the provider says it charged for this request (OpenRouter's ``usage.cost``), or
+    None when it does not say: the tokens are then priced (:class:`Prices`)"""
 
 
 class Model(Protocol):
@@ -100,6 +110,44 @@ def _anthropic_blocks(turn: Turn) -> list[dict[str, Any]]:
                 }
             )
     return out
+
+
+def reported_cost(usage: Any) -> float | None:
+    """OpenRouter's ``usage.cost`` (US dollars charged for the request), or None when the reply
+    carries none (another server, or a malformed value)."""
+    raw = getattr(usage, "cost", None)
+    if raw is None and isinstance(usage, Mapping):
+        raw = usage.get("cost")
+    if raw is None or isinstance(raw, bool):
+        return None
+    try:
+        cost = float(raw)
+    except (TypeError, ValueError):
+        return None
+    return cost if cost >= 0 and cost == cost and cost != float("inf") else None
+
+
+def is_openrouter(base_url: str) -> bool:
+    """The base URL is OpenRouter's (it reports each request's cost)."""
+    from urllib.parse import urlparse  # noqa: PLC0415
+
+    host = (urlparse(base_url).hostname or "").lower()
+    return host == "openrouter.ai" or host.endswith(".openrouter.ai")
+
+
+def base_url_for(spec: str, base_url: str = "") -> str:
+    """The base URL a validator's ``openrouter`` backend calls: the one given, else OpenRouter's
+    for an ``openai:<model>`` (the OpenAI SDK's own default would be api.openai.com). An
+    ``anthropic:<model>`` keeps the Anthropic SDK's default."""
+    if base_url:
+        return base_url
+    return OPENROUTER_BASE_URL if spec.partition(":")[0] == "openai" else ""
+
+
+def reports_cost(spec: str, base_url: str) -> bool:
+    """Whether every reply of this model carries the dollars charged: an ``openai:`` model on
+    OpenRouter."""
+    return spec.partition(":")[0] == "openai" and is_openrouter(base_url)
 
 
 def _openai_blocks(turn: Turn) -> list[dict[str, Any]]:
@@ -242,15 +290,7 @@ class OpenAIModel:
             response_format={"type": "json_object"},
             reasoning_effort=self.effort,
         )
-        u = r.usage
-        details = getattr(u, "prompt_tokens_details", None)
-        return Reply(
-            str(r.choices[0].message.content or ""),
-            int(getattr(u, "prompt_tokens", 0) or 0),
-            int(getattr(u, "completion_tokens", 0) or 0),
-            int(getattr(details, "cached_tokens", 0) or 0),
-            str(getattr(r, "model", "") or self.model),
-        )
+        return self._reply(r)
 
     def _reply(self, r: Any) -> Reply:
         u = r.usage
@@ -261,6 +301,7 @@ class OpenAIModel:
             int(getattr(u, "completion_tokens", 0) or 0),
             int(getattr(details, "cached_tokens", 0) or 0),
             str(getattr(r, "model", "") or self.model),
+            reported_cost(u),
         )
 
     def converse(self, system: str, turns: Sequence[Turn], tools: Any = None) -> Conversation:
@@ -359,6 +400,25 @@ class Prices:
             + r.cached_tokens * self.cached
         ) / 1_000_000
 
+    @property
+    def set(self) -> bool:
+        """Any price is configured (all zero: tokens cost nothing, which no provider means)."""
+        return bool(self.input or self.output or self.cached)
+
+
+def cost_problem(daily_usd: float, prices: Prices, *, reported: bool) -> str:
+    """Why a daily cap could not count real money, or '' when it can: a cap is set, the provider
+    reports no cost per request (``reported``) and no token price is configured -- every call would
+    count $0 and the cap would never trip."""
+    if not daily_usd or reported or prices.set:
+        return ""
+    return (
+        f"a ${daily_usd:g}/day spend cap is set, but this provider reports no cost per request and "
+        "no token prices are given, so every call would count $0: pass the provider's prices "
+        "(--review-usd-per-mtok-in/out/cached), use OpenRouter (it reports the cost), or set the "
+        "cap to 0 to run without one"
+    )
+
 
 class Spend:
     """The validator's model spend per UTC day, against ``daily_usd`` (0: no cap). Kept in the
@@ -387,7 +447,13 @@ class Spend:
             self.store.get("meta", "review_spend") if self.store is not None else self._mem
         ) or {}
         if row.get("day") != self._day():
-            row = {"day": self._day(), "usd": 0.0, "calls": 0, "alerted": False}
+            row = {
+                "day": self._day(),
+                "usd": 0.0,
+                "calls": 0,
+                "alerted": False,
+                "unpriced": 0,
+            }
         return dict(row)
 
     def _put(self, row: dict[str, Any]) -> None:
@@ -403,7 +469,22 @@ class Spend:
     def allow(self) -> bool:
         with self._lock:
             row = self._row()
-            if not self.daily_usd or row["usd"] < self.daily_usd:
+            if not self.daily_usd:
+                return True
+            if row.get("unpriced") and not self.prices.set:
+                # a reply came back with no cost and there is nothing to price it with: the cap
+                # cannot be kept, so no more calls today (fail closed)
+                if not row["alerted"]:
+                    row["alerted"] = True
+                    self._put(row)
+                    self.alert(
+                        "ALERT: the review model answered without a cost and no token prices are "
+                        f"configured ({row['unpriced']} such replies on {row['day']}): the "
+                        f"${self.daily_usd:.2f} cap cannot be kept, no more votes today. Pass "
+                        "--review-usd-per-mtok-in/out/cached"
+                    )
+                return False
+            if row["usd"] < self.daily_usd:
                 return True
             if not row["alerted"]:
                 row["alerted"] = True
@@ -415,6 +496,16 @@ class Spend:
             return False
 
     def add(self, reply: Reply) -> float:
+        """Count one request: the dollars the provider reported, else its tokens priced. A reply
+        with neither (no cost reported, no prices set) is counted as unpriced: under a cap that
+        stops the day's calls (:meth:`allow`)."""
+        if reply.cost_usd is not None:
+            return self.add_usd(reply.cost_usd)
+        if not self.prices.set and (reply.input_tokens or reply.output_tokens):
+            with self._lock:
+                row = self._row()
+                row["unpriced"] = int(row.get("unpriced") or 0) + 1
+                self._put(row)
         return self.add_usd(self.prices.cost(reply))
 
     def add_usd(self, cost: float) -> float:

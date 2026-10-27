@@ -313,7 +313,14 @@ def calibrate_main(argv: list[str] | None = None) -> int:
     import sys  # noqa: PLC0415
 
     from .daemon import read_key  # noqa: PLC0415
-    from .models import Prices, Spend, model_from  # noqa: PLC0415
+    from .models import (  # noqa: PLC0415
+        Prices,
+        Spend,
+        base_url_for,
+        cost_problem,
+        model_from,
+        reports_cost,
+    )
     from .platform import OperatorClient  # noqa: PLC0415
 
     ap = argparse.ArgumentParser(prog="cadmind-calibrate")
@@ -325,7 +332,7 @@ def calibrate_main(argv: list[str] | None = None) -> int:
     ap.add_argument("--queue-key-file", type=Path, required=True, help="the validator's queue key")
     ap.add_argument("--model", required=True, help="anthropic:<model> or openai:<model>")
     ap.add_argument("--key-file", type=Path, required=True, help="the model's API key (0600)")
-    ap.add_argument("--base-url", default="")
+    ap.add_argument("--base-url", default="", help="default for openai:<model>: OpenRouter's")
     ap.add_argument("--effort", default="medium")
     ap.add_argument("--samples", type=int, default=3)
     ap.add_argument("--daily-usd", type=float, default=10.0, help="stop past this spend (0: none)")
@@ -339,16 +346,17 @@ def calibrate_main(argv: list[str] | None = None) -> int:
     def say(line: str) -> None:
         print(f"[cadmind-calibrate] {line}", file=sys.stderr, flush=True)  # noqa: T201 -- a CLI
 
+    base_url = base_url_for(a.model, a.base_url)
+    prices = Prices(a.usd_per_mtok_in, a.usd_per_mtok_out, a.usd_per_mtok_cached)
+    problem = cost_problem(a.daily_usd, prices, reported=reports_cost(a.model, base_url))
+    if problem:
+        ap.error(problem.replace("--review-usd-per-mtok", "--usd-per-mtok"))
     queue_key = read_key(a.queue_key_file)
     platform = OperatorClient(
         a.platform, queue_key, queue_key=queue_key, queue_url=a.queue_url, log=say
     )
-    model = model_from(a.model, read_key(a.key_file), base_url=a.base_url, effort=a.effort)
-    spend = Spend(
-        a.daily_usd,
-        Prices(a.usd_per_mtok_in, a.usd_per_mtok_out, a.usd_per_mtok_cached),
-        alert=say,
-    )
+    model = model_from(a.model, read_key(a.key_file), base_url=base_url, effort=a.effort)
+    spend = Spend(a.daily_usd, prices, alert=say)
     out = run(
         CalibrationSet.load(a.set),
         platform,
