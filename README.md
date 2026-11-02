@@ -20,7 +20,7 @@ miners' AI agents as checked engineering projects.
    Each job is scored
    from the gate, efficiency, timeliness, the **client's own reaction** (download, stars, change requests, a
    quality refund) and the validators' **quality vote** -- a vision model's evaluation of the delivered device on a
-   published judge (`cadmind-judge/1.3`, counted with `u = 0.4`). No model decides whether a device is delivered. Every
+   published judge (`cadmind-judge/1.3b`, counted with `u = 0.4`). No model decides whether a device is delivered. Every
    hour the validator sets weights and publishes a report anyone can recompute.
 
 Watt itself, the agent bench that runs it, and the platform's accounts, job queue and billing are hosted services
@@ -232,7 +232,7 @@ cadmind-einstein --state-dir ~/.local/share/cadmind-einstein \
 - The validator logs whether it is **stake-dominant** (its share of active validator stake above `kappa`), and
   publishes that in every report and at `GET /v1/chain`.
 - **Quality votes** ([`docs/VALIDATOR.md`](docs/VALIDATOR.md)): `--votes` (`counted` by default: voted, published
-  and scored with `u = 0.4`; `live` is its old name; `shadow`: voted and published, not scored; `off`), `--judge 1.3` (the default; `1.2b` is still accepted; the `-tools` judges are refused), `--judge-backend
+  and scored with `u = 0.4`; `live` is its old name; `shadow`: voted and published, not scored; `off`), `--judge 1.3b` (the default; `1.3` and `1.2b` are still accepted; the `-tools` judges are refused), `--judge-backend
   openrouter|claude-cli` (`claude-cli`: a Claude subscription logged in for the service user, no key file, notional
   dollars counted toward the cap), `--review-model anthropic:<model>|openai:<model>` (a Claude model name with
   `claude-cli`) with `--review-key-file` (0600; install `cadmind-einstein[review]`), `--review-base-url` (for an
@@ -241,7 +241,7 @@ cadmind-einstein --state-dir ~/.local/share/cadmind-einstein \
   `--review-usd-per-mtok-in/out/cached` (the provider's prices). On OpenRouter the cap counts the dollars OpenRouter
   reports for each request (`usage.cost`); the prices are the fallback for a reply without one. A cap with neither a
   reported cost nor prices is refused at start. Without `--review-model` deliveries are queued, not reviewed.
-  OpenRouter example: `--judge 1.3 --judge-backend openrouter --review-model openai:anthropic/claude-opus-5.5
+  OpenRouter example: `--judge 1.3b --judge-backend openrouter --review-model openai:anthropic/claude-opus-5.5
   --review-key-file K --review-effort high --review-samples 3 --review-daily-usd 40`.
 
 ### Approving miners

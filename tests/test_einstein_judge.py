@@ -268,13 +268,15 @@ class TestModes(unittest.TestCase):
 
 class TestVersionsAndDigests(unittest.TestCase):
     def test_two_versions_two_digests_and_any_change_moves_one(self) -> None:
-        self.assertEqual(set(jm.VERSIONS), {"1.2b", "1.2b-tools", "1.3", "1.3-tools"})
+        self.assertEqual(
+            set(jm.VERSIONS), {"1.2b", "1.2b-tools", "1.3", "1.3-tools", "1.3b", "1.3b-tools"}
+        )
         base, tools = jm.Judge("1.2b"), jm.Judge("1.2b-tools")
         self.assertEqual(
             (base.version, tools.version), ("cadmind-judge/1.2b", "cadmind-judge/1.2b-tools")
         )
         self.assertNotEqual(base.digest(), tools.digest())
-        self.assertEqual(jm.Judge("1.3").digest(), jm.Judge().digest())  # default since 0.5.1
+        self.assertEqual(jm.Judge("1.3b").digest(), jm.Judge().digest())  # default since 0.5.5
         # the tool budget is part of the tools judge (it is in the prompt), not of 1.2b
         self.assertNotEqual(tools.digest(), jm.Judge("1.2b-tools", tool_budget=8).digest())
         self.assertEqual(base.digest(), jm.Judge("1.2b", tool_budget=8).digest())
@@ -288,7 +290,7 @@ class TestVersionsAndDigests(unittest.TestCase):
             self.assertNotEqual(before, jm.Judge().digest())
         finally:
             jm.V_MAP[1] = old
-        self.assertEqual(jm.Judge("1.3").digest(), jm.Judge().digest())  # default since 0.5.1
+        self.assertEqual(jm.Judge("1.3b").digest(), jm.Judge().digest())  # default since 0.5.5
         with self.assertRaises(ValueError):
             jm.Judge("1.1")
 
@@ -308,6 +310,7 @@ class TestVersionsAndDigests(unittest.TestCase):
 RELEASED_DIGESTS = {
     "1.2b": "sha256:daf3c7db2ba13874744b663ef08a7f2cabe4266b38d294d57ef054b5407635e8",
     "1.2b-tools": "sha256:d1186b9ee354e5dd2290c674b0cf5ded50c565d64d89a178a3a8ffabab2e1edf",
+    "1.3": "sha256:0f9ee439704d29808150feb58689a9fbe35a5cedb9574028d29f6ae19e2cd18f",
 }
 """The validators' released judges: adding a version must not move these."""
 
@@ -337,21 +340,86 @@ def inputs_with_assumptions() -> jm.Inputs:
     return inp
 
 
+REFUSED = {
+    "deliverable": False,
+    "blocking": {"code": "W0804", "found": "neck_bus_lead is 120 mm; its route is 259 mm + 30 mm"},
+}
+
+
+def facing(today: dict[str, Any]) -> jm.Inputs:
+    inp = inputs()
+    assert inp.facts is not None
+    inp.facts["function"] = {"today": today}
+    inp.facts["assembly"] = {"steps": [{"step": 4, "adds": {"hw.a": 1}, "how": "loose"}], "cables": []}
+    return inp
+
+
+class TestJudge13b(unittest.TestCase):
+    """1.3b: Watt's refusal caps the score; the fact sheet's ``assembly`` is shown."""
+
+    def rate(self, version: str, inp: jm.Inputs) -> dict[str, Any]:
+        j = jm.Judge(version)
+        d = j.parse_derive(json.dumps(DERIVE), BRIEF)
+        return j.parse_look(json.dumps(look("rate", 3, first="ok")), "rate", d, inp)
+
+    def test_a_refusal_today_caps_the_score_at_1(self) -> None:
+        got = self.rate("1.3b", facing(REFUSED))
+        self.assertEqual((got["score"], got["capped_from"]), (1, 3))
+        self.assertEqual((got["capped_by"], got["v"]), ("watt_refuses_today", jm.V_MAP[1]))
+
+    def test_nothing_else_about_today_caps(self) -> None:
+        for today in (
+            {"deliverable": True},
+            {"deliverable": None},  # Watt could not be asked: ours, not the builder's
+            {"deliverable": False, "blocking": {"code": None, "reason": "guard_not_recorded"}},
+        ):
+            self.assertEqual(self.rate("1.3b", facing(today))["score"], 3, today)
+        self.assertEqual(self.rate("1.3b", inputs())["score"], 3)  # a sheet with no function
+
+    def test_a_score_under_the_cap_stands(self) -> None:
+        j = jm.Judge("1.3b")
+        d = j.parse_derive(json.dumps(DERIVE), BRIEF)
+        got = j.parse_look(json.dumps(look("rate", 0, first="ok")), "rate", d, facing(REFUSED))
+        self.assertEqual(got["score"], 0)
+        self.assertNotIn("capped_by", got)
+
+    def test_1_3_is_as_it_was(self) -> None:
+        self.assertEqual(self.rate("1.3", facing(REFUSED))["score"], 3)
+        text = jm.Judge("1.3").look_turn("rate", facing(REFUSED))[0]["text"]
+        self.assertNotIn('"assembly"', text)
+
+    def test_1_3b_sees_the_assembly_and_the_rules_on_it(self) -> None:
+        text = jm.Judge("1.3b").look_turn("rate", facing(REFUSED))[0]["text"]
+        self.assertIn('"assembly"', text)
+        self.assertIn("neck_bus_lead is 120 mm", text)
+        self.assertIn("scores at most 1", jm.Judge("1.3b").look_question("rate"))
+        self.assertIn("Watt's refusal.", jm.Judge("1.3b").system_prompt())
+
+    def test_a_validator_votes_with_it_and_refuses_its_tools_judge(self) -> None:
+        self.assertEqual(jm.for_validator("1.3b").name, "1.3b")
+        with self.assertRaises(jm.ValidatorJudgeError):
+            jm.for_validator("1.3b-tools")
+        self.assertIn(
+            '"judge_prompt_1.3b.md"',
+            (Path(__file__).resolve().parents[1] / "pyproject.toml").read_text(),
+        )
+
+
 class TestJudge13(unittest.TestCase):
     """1.3: the fact sheet's ``assumptions`` and its guardrail; validators' judge since 0.5.1."""
 
     def test_the_released_digests_do_not_move(self) -> None:
         for name, digest in RELEASED_DIGESTS.items():
             self.assertEqual(jm.judge_digest(name), digest)
-        self.assertEqual(jm.RELEASED, ("1.2b", "1.2b-tools", "1.3", "1.3-tools"))
-        self.assertEqual(jm.VALIDATOR_VERSION, "1.3")
+        self.assertEqual(jm.RELEASED, ("1.2b", "1.2b-tools", "1.3", "1.3-tools", "1.3b", "1.3b-tools"))
+        self.assertEqual(jm.VALIDATOR_VERSION, "1.3b")
 
     def test_its_own_prompt_file_and_digest(self) -> None:
         new, tools = jm.Judge("1.3"), jm.Judge("1.3-tools")
         self.assertEqual(new.version, "cadmind-judge/1.3")
         self.assertEqual(jm.VERSIONS["1.3"].prompt, "judge_prompt_1.3.md")
         digests = {jm.judge_digest(v) for v in jm.VERSIONS}
-        self.assertEqual(len(digests), 4)
+        self.assertEqual(len(digests), 6)
         self.assertNotEqual(tools.digest(), jm.Judge("1.3-tools", tool_budget=8).digest())
         self.assertEqual(set(jm.sections("1.3")), set(jm.SECTIONS))
         self.assertIn("NOT RELEASED", jm.prompt_text("1.3"))

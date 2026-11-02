@@ -16,6 +16,10 @@ judged calls :func:`judge`, so one prompt, one version and one digest control th
 ``1.3``             1.2b plus the fact sheet's ``assumptions`` and the rules on it (its own
                     prompt, ``judge_prompt_1.3.md``). The validators' judge since 0.5.1.
 ``1.3-tools``       the same with the instruments, as ``1.2b-tools``.
+``1.3b``            1.3 plus the fact sheet's ``assembly`` (how each thing is kept, cables and
+                    their routes) and Watt's refusal: a version Watt refuses today is capped at 1
+                    (its own prompt, ``judge_prompt_1.3b.md``). The validators' judge since 0.5.5.
+``1.3b-tools``      the same with the instruments.
 ==================  ==========================================================================
 
 **Four modes**, one core; only the end of turn 2 differs:
@@ -42,6 +46,11 @@ reply is unavailable, never a score.
 
 **The main-job cap**, in the prompt AND mechanically: a ``main`` line ruled ``fails`` caps the
 sample's score at 1; a ``cannot_tell`` on a ``main`` line caps it at 2.
+
+**Watt's refusal cap** (1.3b), in the prompt AND mechanically: a fact sheet saying today's Watt refuses
+this version (``function.today``: ``deliverable`` false and a ``blocking.code``) caps the sample's
+score at 1. ``blocking.code`` null is a change of Watt's guard rules, not of the device, and caps
+nothing; ``deliverable`` null means Watt could not be asked and caps nothing.
 
 **The value.** ``v = V_MAP[score]`` with :data:`V_MAP` ``{0: 0, 1: 0.3, 2: 0.65, 3: 1.0}``; a 1.2b
 vote's score is the lower median of its samples' scores.
@@ -80,7 +89,7 @@ import subprocess
 import tempfile
 import time
 from collections.abc import Callable, Mapping, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
 
@@ -91,7 +100,7 @@ PROMPT_FILE = PROMPT_DIR / "judge_prompt.md"
 """1.2b's prompt (and 1.2b-tools'); a later version names its own file (:attr:`Version.prompt`)"""
 
 MODES = ("rate", "nudge", "check", "final")
-VALIDATOR_VERSION = "1.3"
+VALIDATOR_VERSION = "1.3b"
 """the one version a validator runs"""
 TOOL_BUDGET = 12
 NUDGE_KEEP = 2
@@ -114,10 +123,13 @@ NOISY_SPREAD = 2
 """a vote whose samples' scores spread by this much or more is flagged noisy (half weight)"""
 MAIN_FAIL_CAP = 1
 MAIN_UNSURE_CAP = 2
+TODAY_REFUSED_CAP = 1
+"""1.3b: a version today's Watt refuses scores at most this"""
 STATEMENT_MAX = 300
 WITHHELD = "[withheld: instruction-like text]"
 FACTS_WITHHELD = ("bill", "bodies")
-"""fact-sheet keys no version shows the model (1.2b also withholds ``assumptions``)"""
+"""fact-sheet keys no version shows the model (1.2b also withholds ``assumptions``; before 1.3b,
+``assembly``)"""
 IMAGE_KINDS = ("analytic", "world", "section")
 """the bundle's image kinds the judge sees (never ``studio``)"""
 
@@ -137,6 +149,9 @@ class Version:
     assumptions: bool = False
     """1.3: the fact sheet's ``assumptions`` section and the guardrail on it. Off (1.2b), the
     section is withheld from the model, so a /3 fact sheet gives 1.2b exactly what /2 gave it."""
+    watt_today: bool = False
+    """1.3b: the fact sheet's ``assembly`` section, and Watt's refusal today caps the score. Off,
+    the section is withheld from the model and nothing caps on the refusal."""
 
     @property
     def label(self) -> str:
@@ -183,11 +198,17 @@ VERSIONS = {
         assumptions=True,
     ),
 }
-RELEASED = ("1.2b", "1.2b-tools", "1.3", "1.3-tools")
+VERSIONS["1.3b"] = replace(
+    VERSIONS["1.3"], name="1.3b", prompt="judge_prompt_1.3b.md", watt_today=True
+)
+VERSIONS["1.3b-tools"] = replace(
+    VERSIONS["1.3-tools"], name="1.3b-tools", prompt="judge_prompt_1.3b.md", watt_today=True
+)
+RELEASED = ("1.2b", "1.2b-tools", "1.3", "1.3-tools", "1.3b", "1.3b-tools")
 """The versions the subnet owner approved. Any other is for offline re-judging only: a validator
 refuses it (:func:`for_validator`) until its release adds it here."""
 JUDGE_VERSION = VERSIONS[VALIDATOR_VERSION].label
-"""the validators' judge, ``cadmind-judge/1.3``"""
+"""the validators' judge, ``cadmind-judge/1.3b``"""
 
 
 class ValidatorJudgeError(ValueError):
@@ -499,6 +520,16 @@ def _object(text: str) -> dict[str, Any]:
     return obj
 
 
+def refused_today(facts: Mapping[str, Any] | None) -> bool:
+    """Whether the fact sheet says today's Watt refuses this version for a reason in the device."""
+    function = (facts or {}).get("function")
+    today = function.get("today") if isinstance(function, Mapping) else None
+    if not isinstance(today, Mapping) or today.get("deliverable") is not False:
+        return False
+    blocking = today.get("blocking")
+    return isinstance(blocking, Mapping) and bool(blocking.get("code"))
+
+
 def nudge_void(n: Mapping[str, Any], pictures: set[str], client_text: str) -> str:
     """The mechanical format check: why a nudge is VOID, or "" (a void nudge is never a
     failure)."""
@@ -594,6 +625,7 @@ class Judge:
                             "tools": spec.tools,
                             # 1.2b's digest is unchanged: the switch is named only when on
                             **({"assumptions": True} if spec.assumptions else {}),
+                            **({"watt_today": True} if spec.watt_today else {}),
                         },
                         "sampling": {
                             "samples": spec.samples,
@@ -613,7 +645,11 @@ class Judge:
                             "lines": [LINES_MIN, LINES_MAX],
                             "steps": [STEPS_MIN, STEPS_MAX],
                             "main": [MAIN_MIN, MAIN_MAX],
-                            "caps": {"main_fails": MAIN_FAIL_CAP, "main_unsure": MAIN_UNSURE_CAP},
+                            "caps": {
+                                "main_fails": MAIN_FAIL_CAP,
+                                "main_unsure": MAIN_UNSURE_CAP,
+                                **({"today_refused": TODAY_REFUSED_CAP} if spec.watt_today else {}),
+                            },
                             "v_map": V_MAP,
                             "noisy_spread": NOISY_SPREAD,
                             "image_kinds": IMAGE_KINDS,
@@ -660,7 +696,11 @@ class Judge:
     def look_turn(self, mode: str, inp: Inputs) -> list[dict[str, Any]]:
         data: dict[str, Any] = {"pictures": [p.listing() for p in inp.images]}
         if inp.facts is not None:
-            withheld = FACTS_WITHHELD + (() if self.spec.assumptions else ("assumptions",))
+            withheld = (
+                FACTS_WITHHELD
+                + (() if self.spec.assumptions else ("assumptions",))
+                + (() if self.spec.watt_today else ("assembly",))
+            )
             full = {k: v for k, v in inp.facts.items() if k not in withheld}
             data["facts"] = scrub(full)[0]
         if mode in ("check", "final"):
@@ -797,7 +837,9 @@ class Judge:
             if isinstance(s, bool) or not isinstance(s, int) or s not in V_MAP:
                 raise Unavailable("score is not a whole number 0-3")
             main = {ln["id"] for ln in derived["useless_if"] if ln.get("main")}
-            if s > MAIN_FAIL_CAP and any(
+            if self.spec.watt_today and s > TODAY_REFUSED_CAP and refused_today(inp.facts):
+                out["capped_from"], out["capped_by"], s = s, "watt_refuses_today", TODAY_REFUSED_CAP
+            elif s > MAIN_FAIL_CAP and any(
                 r["verdict"] == "fails" and r["id"] in main for r in out["lines"]
             ):
                 out["capped_from"], s = s, MAIN_FAIL_CAP

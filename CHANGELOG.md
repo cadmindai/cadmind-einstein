@@ -5,6 +5,15 @@ All notable changes to this project are listed here. The format follows
 [Semantic Versioning](https://semver.org/). Each release's spec version (`10000*MAJOR + 100*MINOR + PATCH`) is the
 `version_key` the validator sets weights with.
 
+## [0.5.5] - unreleased
+
+### Changed
+
+- **Judge 1.3b is the validators' judge** (`cadmind_einstein/judge_prompt_1.3b.md`). A version Watt refuses today
+  scores at most 1, in the prompt and mechanically (`capped_by: watt_refuses_today`), and the judge reads Watt's
+  message. Mounting and cables are ruled from the fact sheet's new `assembly` section, which the pictures cannot show.
+  Judges 1.3 and 1.2b are unchanged and withhold that section.
+
 ## [0.5.4] - 2026-10-27
 
 ### Added

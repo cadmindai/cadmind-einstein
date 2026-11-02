@@ -213,7 +213,7 @@ It checks the bundle, runs `cadmind-judge/1.2b` (`rate`, three samples) with you
 is what the validator says it used: it is observed, not verified.
 
 On the einstein validator the same code runs from the daemon: `--votes counted|shadow|off` (`counted` is the
-default; `live` is its old name), `--judge 1.3` (the default; `1.2b` is still accepted, the `-tools` judges are
+default; `live` is its old name), `--judge 1.3b` (the default; `1.3` and `1.2b` are still accepted, the `-tools` judges are
 refused), `--judge-backend openrouter|claude-cli`, `--review-model`, `--review-key-file`, `--review-base-url`,
 `--review-samples`, `--review-effort` and a daily spend cap, `--review-daily-usd`, with
 `--review-usd-per-mtok-in/out/cached` (the provider's prices); past the cap no call is made that day and an ALERT is
@@ -232,7 +232,7 @@ and set no output-token limit; each waits up to 600 s and is retried twice by th
 `--review-daily-usd` to your delivery volume.
 
 ```bash
---votes counted --judge 1.3 --judge-backend openrouter \
+--votes counted --judge 1.3b --judge-backend openrouter \
 --review-model openai:anthropic/claude-opus-5.5 --review-key-file ~/.config/cadmind-einstein/review.key \
 --review-effort high --review-samples 3 --review-daily-usd 40
 ```
