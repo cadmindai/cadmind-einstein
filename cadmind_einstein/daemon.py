@@ -362,8 +362,8 @@ def parser() -> argparse.ArgumentParser:
         help="the provider's base URL; for an openai:<model> the default is OpenRouter's"
         " (https://openrouter.ai/api/v1), never api.openai.com",
     )
-    ap.add_argument("--review-effort", default="medium", help="the model's reasoning effort")
-    ap.add_argument("--review-samples", type=int, default=3, help="samples per vote")
+    ap.add_argument("--review-effort", default="high", help="the model's reasoning effort (the judge is calibrated at high)")
+    ap.add_argument("--review-samples", type=int, default=1, help="samples per vote")
     ap.add_argument(
         "--review-daily-usd",
         type=float,

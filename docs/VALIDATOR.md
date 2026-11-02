@@ -109,7 +109,7 @@ the fact sheet lacks, or a null, is never a flaw.
 a source, gave the fact) or the design is fragile to it. An unavoidable assumption the device covers is never a nudge
 and never lowers the score.
 
-**Samples.** A vote asks for `--review-samples` samples, **3 by default**, and an operator may set fewer.
+**Samples.** A vote asks for `--review-samples` samples, **1 by default**, and an operator may set more.
 `cadmind-review` always asks for 3. Up to two extra conversations replace replies that are unavailable, and a vote
 needs 2 valid samples (1 when one was asked); with fewer, the review is tried again later. The vote's score is the
 **lower median** of the samples' scores (with one sample, its score; with two, the lower one) and its value is
@@ -233,7 +233,7 @@ cadmind-review BUNDLE.zip --model openai:<model> --key-file ~/.config/cadmind-ei
 # or anthropic:<model> with an Anthropic key
 ```
 
-It checks the bundle, runs `cadmind-judge/1.3b` (`rate`, three samples; `--effort`, default `medium`, is the model's
+It checks the bundle, runs `cadmind-judge/1.3b` (`rate`, three samples; `--effort`, default `high`, is the model's
 reasoning effort) with your model and prints the vote (unsigned). Any model may vote: the minimum capability is enforced by calibration, not by a list. It must take 17 to
 21 images of 1024 px in a two-turn conversation, return strict JSON and hold a 64k context. The model a vote names
 is what the validator says it used: it is observed, not verified.
@@ -241,7 +241,7 @@ is what the validator says it used: it is observed, not verified.
 On the einstein validator the same code runs from the daemon: `--votes counted|shadow|off` (`counted` is the
 default; `live` is its old name), `--judge 1.3b` (the default; `1.3` and `1.2b` are still accepted, the `-tools` judges are
 refused), `--judge-backend openrouter|claude-cli`, `--review-model`, `--review-key-file`, `--review-base-url`,
-`--review-samples` (3), `--review-effort` (`medium`) and a daily spend cap, `--review-daily-usd`, with
+`--review-samples` (1), `--review-effort` (`high`) and a daily spend cap, `--review-daily-usd`, with
 `--review-usd-per-mtok-in/out/cached` (the provider's prices); past the cap no call is made that day and an ALERT is
 logged.
 
@@ -253,14 +253,14 @@ that carries no cost. A validator with a cap whose provider reports no cost (any
 `anthropic:<model>`) and no prices set refuses to start; if a reply ever comes back with no cost and there are no
 prices, no more calls are made that day (an ALERT). The requests ask for a JSON object at the given reasoning effort
 and set no output-token limit; each waits up to 600 s and is retried twice by the SDK. Judge 1.3 was calibrated at
-`--review-effort high` (not the flag's default, so set it), and on OpenRouter (`anthropic/claude-opus-5.5`) at that effort it gave the calibrated score on
+`--review-effort high` (the flag's default), and on OpenRouter (`anthropic/claude-opus-5.5`) at that effort it gave the calibrated score on
 42 of 51 calibration items and was within one on all of them; a vote cost about $0.86 (up to about $1.45). Size
 `--review-daily-usd` to your delivery volume.
 
 ```bash
 --votes counted --judge 1.3b --judge-backend openrouter \
 --review-model openai:anthropic/claude-opus-5.5 --review-key-file ~/.config/cadmind-einstein/review.key \
---review-effort high --review-samples 3 --review-daily-usd 40
+--review-effort high --review-samples 1 --review-daily-usd 40
 ```
 
 **`--judge-backend claude-cli`** runs the judge on a Claude subscription logged in for the validator's service user

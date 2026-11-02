@@ -19,8 +19,10 @@ another miner passes the same job -- the desk decides that). A **passing** job s
   - a refund the platform granted because of the delivery's quality counts as one star (``C = 0``,
     ``w = trust``), in its place among the ratings (the last rating wins); any other refund is
     recorded, not scored;
-  - no signal: ``w = 0``, so ``s = B``. A client signal moves 60% of the score from that baseline
-    toward the client's opinion.
+  - no signal: ``w = 0``, so ``s = 0.4·I + 0.6·B``. A client signal moves 60% of the score from that
+    baseline toward the client's opinion;
+  - a positive signal only ever raises a score: ``C`` of :data:`POSITIVE_C` or more (four stars, or a
+    download with no change or re-run) counts as ``max(C, B)``.
 - ``V``, the validators' quality vote on the delivered device (:mod:`.review`, DESIGN.md section
   13), in [0, 1], and ``u``, how much it counts: 0.4 when votes are counted (a client's stars
   clearly dominate it); 0 in shadow (recorded and published, never scored), so ``B = I`` and an
@@ -88,6 +90,8 @@ HOUR_MS = 3_600_000
 MIN_BUCKET = 5
 TRUST = {"paid": 1.0, "free": 0.1}
 W_IMMEDIATE, W_CLIENT = 0.4, 0.6
+POSITIVE_C = 0.75
+"""A client's ``C`` at or over this is positive: it never pulls a job's score below its baseline."""
 
 
 def size_class(brief: str) -> str:
@@ -191,6 +195,8 @@ def score_all(jobs: Iterable[JobOutcome]) -> list[JobOutcome]:
         v, u = vote_of(o.vote)
         b = u * v + (1 - u) * i if v is not None else i
         c, w = client_signal(o.signals)
+        if c is not None and c >= POSITIVE_C:
+            c = max(c, b)
         client = w * c + (1 - w) * b if c is not None else b
         o.s = round(W_IMMEDIATE * i + W_CLIENT * client, 6)
         o.parts = {

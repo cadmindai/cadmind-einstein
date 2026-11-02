@@ -289,8 +289,9 @@ clock measured (`I`) and 24% is the vote (`V`). With a paying client's stars, 40
     the ratings; any other refund is recorded and not scored;
   - no reaction gives `w = 0`, so `s = 0.4·I + 0.6·B`.
 
-  A reaction moves `s` from `B` toward `C`. So a download alone raises a job whose `B` is under 0.75 and lowers one
-  whose `B` is over it (see the [worked example](#worked-example)).
+  A reaction moves `s` from `B` toward `C`. A positive reaction only ever raises a score: a `C` of 0.75 or more (four
+  or five stars, or a download with no change or re-run) counts as `max(C, B)`, so a download never lowers a good job
+  (see the [worked example](#worked-example)).
 - `trust` is 1 for a paying account and 0.1 for a free one. Signals that arrive later change the job's score while
   the job is in the 7-day window; after that they change nothing.
 - `V`, the **validators' vote**: a vision model judges every delivered device against its brief with CADmind's
@@ -316,7 +317,7 @@ clock measured (`I`) and 24% is the vote (`V`). With a paying client's stars, 40
      and sources could not settle and that the device works across, never lowers the score.
 
   `V` is 0, 0.3, 0.65 or 1 for the score 0, 1, 2 or 3. A vote can hold several samples: its score is their lower median.
-  The validator setting (`--review-samples`) defaults to 3 and a validator may set fewer; every vote shows its samples,
+  The validator setting (`--review-samples`) defaults to 1, and a validator may set more; every vote shows its samples,
   so you can see how many yours had. A one-sample vote's score is that sample's.
 
   `u` is how much the vote counts: **0.4**, with the einstein validator's vote alone and at most that with more
@@ -417,7 +418,6 @@ minutes, to any other miner).
 | delivered, but judged or submitted late | `T = 0` |
 | a low vote | lower `B` on an unrated job |
 | low stars, a re-run, a change request, a quality refund | lower `C`, with more weight on it |
-| a download when `B` is over 0.75 | `s` moves down toward 0.75 |
 | time | each job's contribution halves every 24 hours |
 | no jobs | weight decays; quality stands still |
 | not polling for 24 hours | out of the launch and history rules while anyone else is seen |
@@ -460,7 +460,7 @@ The same job with a client's reaction, from a paying account except in the last 
 |---|---|---|---|
 | five stars | 1 | 1 | 0.985 |
 | two stars | 0.25 | 1 | 0.535 |
-| a download | 0.75 | 0.5 | 0.86125 |
+| a download | 0.8375 (`max(0.75, B)`) | 0.5 | 0.8875 |
 | a change request | 0.5 | 0.5 | 0.78625 |
 | five stars, free account | 1 | 0.1 | 0.89725 |
 
@@ -710,7 +710,7 @@ validator judges the delivered device on its own bundle, as for any miner.
 `openai:anthropic/claude-opus-5.5`; an `openai:` model goes to OpenRouter unless `--self-review-base-url` says
 otherwise; `anthropic:<model>` uses Anthropic's API), `--self-review-key-file` (a file with that provider's API key,
 mode 0600; it is never logged), `--self-review-effort` (default `high`: the effort the validators' judge is
-calibrated at) and `--self-review-samples` (default 3 per check, as a vote). Install the model SDKs with
+calibrated at) and `--self-review-samples` (default 3 per check). Install the model SDKs with
 `pip install -e '.[review]'`. **With no key file the round is skipped** (one log line at startup and one per job)
 and the miner works as before. Follow your model provider's terms.
 

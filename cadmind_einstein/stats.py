@@ -79,13 +79,13 @@ ROLLED = (
 FORMULA = {
     "text": "s = 0.4*I + 0.6*(w*C + (1-w)*B);  B = u*V + (1-u)*I;  I = 0.5 + 0.3*E + 0.2*T",
     "weight": "weight = sum over your jobs in the last 7 days of 0.5^(age_h/24) * s",
-    "share": "share = your weight / the sum of every weighted miner's weight (the vector)",
+    "share": "share = your part of the current vector; proportional to weight only under the history rule",
     "parts": {
         "I": "immediate: passed the Watt gate (0.5), efficiency E (0.3), on time T (0.2)",
         "E": "efficiency against the bucket's medians (1 when the bucket has fewer than 5 jobs)",
         "C": "the client's signal: stars (s-1)/4; a download 0.75; each change or re-run -0.25;"
-        " a quality refund counts as one star",
-        "w": "how much C counts: the client's trust (paid 1, free 0.1), half for a download",
+        " a quality refund counts as one star; a C of 0.75 or more counts as max(C, B)",
+        "w": "how much C counts: the client's trust (paid 1, free 0.1), half for a download, change or re-run",
         "V": "the validators' quality vote: the judge's median score 0-3 as 0, 0.3, 0.65 or 1",
         "u": "how much V counts (0.4 when votes are counted, 0 in shadow)",
         "B": "the baseline the client's signal moves from",

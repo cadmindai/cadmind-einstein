@@ -238,12 +238,12 @@ cadmind-einstein --state-dir ~/.local/share/cadmind-einstein \
   dollars counted toward the cap), `--review-model anthropic:<model>|openai:<model>` (a Claude model name with
   `claude-cli`) with `--review-key-file` (0600; install `cadmind-einstein[review]`), `--review-base-url` (for an
   `openai:<model>` the default is OpenRouter, `https://openrouter.ai/api/v1`; never api.openai.com unless you say
-  so), `--review-samples` (3; a validator may set fewer, and a one-sample vote keeps that sample's nudges), `--review-effort` (`medium`), `--review-daily-usd` (10; an ALERT when reached) and
+  so), `--review-samples` (1, and a one-sample vote keeps that sample's nudges; a validator may set more), `--review-effort` (`high`), `--review-daily-usd` (10; an ALERT when reached) and
   `--review-usd-per-mtok-in/out/cached` (the provider's prices). On OpenRouter the cap counts the dollars OpenRouter
   reports for each request (`usage.cost`); the prices are the fallback for a reply without one. A cap with neither a
   reported cost nor prices is refused at start. Without `--review-model` deliveries are queued, not reviewed.
   OpenRouter example: `--judge 1.3b --judge-backend openrouter --review-model openai:anthropic/claude-opus-5.5
-  --review-key-file K --review-effort high --review-samples 3 --review-daily-usd 40`.
+  --review-key-file K --review-effort high --review-samples 1 --review-daily-usd 40`.
 
 ### Approving miners
 

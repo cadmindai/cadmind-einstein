@@ -5,6 +5,21 @@ All notable changes to this project are listed here. The format follows
 [Semantic Versioning](https://semver.org/). Each release's spec version (`10000*MAJOR + 100*MINOR + PATCH`) is the
 `version_key` the validator sets weights with.
 
+## [0.5.6] - 2026-11-02
+
+### Changed
+
+- **A positive client signal only ever raises a score.** A `C` of 0.75 or more (four or five stars, or a download with
+  no change or re-run) counts as `max(C, B)`. Before, a download or four stars lowered a job whose `B` was over 0.75.
+  Hours scored before this release no longer recompute with this version.
+- `--review-samples` now defaults to 1 and `--review-effort`, `cadmind-review --effort` and the judge's `--effort` to
+  `high`, the effort the judge is calibrated at.
+- The docs on how miners are rated and weighted were checked against the code and corrected.
+
+### Fixed
+
+- `POST /v1/miners/stats` now returns `formula`, as documented.
+
 ## [0.5.5] - 2026-11-02
 
 ### Changed

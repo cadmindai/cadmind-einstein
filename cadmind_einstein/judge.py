@@ -67,8 +67,7 @@ it changes every validator's value scale at once.
 validators' path, the existing review key), :class:`.models.AnthropicModel`, or
 :class:`ClaudeCLI` -- ``claude -p`` on a Claude subscription, isolated as the reference miner is.
 A validator picks its backend with ``--judge-backend``: ``openrouter`` (the default: the review
-key, ``openai:<model>`` at OpenRouter) or ``claude-cli`` (the subscription; the owner's trial
-validator, 2026-10-24). Either way a validator runs 1.2b, so the CLI there has no tools. The
+key, ``openai:<model>`` at OpenRouter) or ``claude-cli`` (a subscription). Either way a validator runs a judge without tools. The
 bench, the load-test and this module's CLI use the same transports (:func:`validator_model`).
 
 **Cost.** An API backend's dollars are its tokens priced by the operator (:class:`.models.Spend`).
@@ -1466,7 +1465,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     ap.add_argument("--model", required=True, help="claude-cli:<model>, openai:<model>, ...")
     ap.add_argument("--key-file", type=Path, help="the model's API key (not for claude-cli)")
     ap.add_argument("--base-url", default="", help="default for openai:<model>: OpenRouter's")
-    ap.add_argument("--effort", default="medium")
+    ap.add_argument("--effort", default="high")
     ap.add_argument("--samples", type=int, default=None, help="default: the version's")
     ap.add_argument("--nudges", type=Path, help="check/final: a JSON list of nudges")
     ap.add_argument("--built", type=Path, help="final: the built version's bundle")

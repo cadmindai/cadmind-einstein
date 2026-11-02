@@ -1,8 +1,8 @@
 """Our validator's votes (DESIGN.md section 13): every delivered job is judged once by the
-configured vision model with CADmind's device judge (:mod:`.judge`, ``cadmind-judge/1.2b`` in
+configured vision model with CADmind's device judge (:mod:`.judge`, the validators' judge in
 ``rate`` mode), from the platform's review bundle (:mod:`.review`).
 
-**The judge.** A validator votes with ``cadmind-judge/1.2b`` only: three two-turn samples, the
+**The judge.** A validator votes with the released judge without tools: two-turn samples (one by default), the
 lower median of their 0-3 scores, ``v = V_MAP[median]``. ``--judge 1.2b-tools`` is refused at
 start (:func:`.judge.for_validator`): that version reads the delivered project through Watt tools
 and is for CADmind's own pipeline and the miner-side reviewer.
@@ -66,7 +66,7 @@ MODES = ("off", "shadow", "counted")
 ALIASES = {"live": "counted"}
 """older names of a mode, still accepted"""
 MIN_SAMPLES = 2
-"""valid samples a vote needs (of :data:`.review.SAMPLES` asked): the 1.2b judge's own minimum"""
+"""valid samples a vote needs (of those asked): the judge's own minimum"""
 MAX_TRIES = 8
 RETRY_FIRST_S = 60.0
 RETRY_MAX_S = 3600.0
@@ -138,7 +138,7 @@ class Reviewer:
         self.archive = archive
         """the calibration archive (:class:`.archive.Archive`), or None"""
         self.judge_cfg = Judge(for_validator(judge_version).name)
-        """the device judge votes are made with (1.2b: a validator never runs the tools judge)"""
+        """the device judge votes are made with (a validator never runs the tools judge)"""
         self.digest = self.judge_cfg.digest()
         self._busy = threading.Lock()
 

@@ -1491,7 +1491,7 @@ class Desk:
         a message the client reads if the job ends declined. The job goes to a second miner, which
         decides on its own and is not shown the first one's message. A job whose client asked not
         to be asked questions is never declined for a need: the builder assumes, records it and
-        delivers (owner 2026-10-24)."""
+        delivers."""
         if category not in CATEGORIES:
             raise DeskError("category is not-allowed or not-capable")
         text = " ".join(str(message or "").split())[:2000]

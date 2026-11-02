@@ -333,7 +333,7 @@ def calibrate_main(argv: list[str] | None = None) -> int:
     ap.add_argument("--model", required=True, help="anthropic:<model> or openai:<model>")
     ap.add_argument("--key-file", type=Path, required=True, help="the model's API key (0600)")
     ap.add_argument("--base-url", default="", help="default for openai:<model>: OpenRouter's")
-    ap.add_argument("--effort", default="medium")
+    ap.add_argument("--effort", default="high")
     ap.add_argument("--samples", type=int, default=3)
     ap.add_argument("--daily-usd", type=float, default=10.0, help="stop past this spend (0: none)")
     ap.add_argument("--usd-per-mtok-in", type=float, default=0.0)

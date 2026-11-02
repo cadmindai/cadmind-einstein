@@ -557,7 +557,7 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--model", required=True, help="openai:<model> or anthropic:<model>")
     ap.add_argument("--key-file", type=Path, required=True)
     ap.add_argument("--base-url", default="", help="default for openai:<model>: OpenRouter's")
-    ap.add_argument("--effort", default="medium")
+    ap.add_argument("--effort", default="high")
     a = ap.parse_args(argv if argv is not None else sys.argv[1:])
     bundle = read_bundle(a.bundle.read_bytes())
     model = model_from(

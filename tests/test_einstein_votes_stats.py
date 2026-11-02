@@ -732,6 +732,7 @@ class TestStatsRoutes(ReviewRig):
             code, out = signed(miner, base, "/v1/miners/stats", {}, VALIDATOR.ss58_address)
             self.assertEqual(code, 200)  # and signed: `signed` checked our signature
             self.assertEqual(out["hotkey"], hk)
+            self.assertIn("s = 0.4*I", out["formula"]["text"])  # the formula, as documented
             self.assertEqual(out["windows"]["lifetime"]["delivered"], 1)
 
             def get(path: str, auth: bool = True) -> tuple[int, Any]:

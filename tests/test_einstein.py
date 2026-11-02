@@ -250,6 +250,29 @@ def passing(job: str, hk: str, *, ended_ms: int = 0, **kw: Any) -> JobOutcome:
     return JobOutcome(job=job, hotkey=hk, ended_ms=ended_ms, deliverable=True, kind="pass", **facts)
 
 
+class TestPositiveSignals(unittest.TestCase):
+    def s(self, *signals: dict, vote: float = 0.3) -> float:
+        job = JobOutcome(
+            job="a", hotkey="h", ended_ms=0, deliverable=True, on_time=True, signals=list(signals),
+            vote={"V": vote, "u": 0.4},
+        )
+        return score_all([job])[0].s
+
+    def test_a_download_or_four_stars_never_lower_a_score(self) -> None:
+        for vote in (0.0, 0.3, 0.65, 1.0):
+            none = self.s(vote=vote)
+            for signal in ({"kind": "download", "trust": "paid"}, {"kind": "stars", "stars": 4, "trust": "paid"}):
+                self.assertGreaterEqual(self.s(signal, vote=vote), none, (vote, signal))
+
+    def test_low_stars_and_changes_still_lower_it(self) -> None:
+        none = self.s(vote=1.0)
+        self.assertLess(self.s({"kind": "stars", "stars": 3, "trust": "paid"}, vote=1.0), none)
+        self.assertLess(self.s({"kind": "change", "trust": "paid"}, vote=1.0), none)
+        self.assertLess(
+            self.s({"kind": "download", "trust": "paid"}, {"kind": "change", "trust": "paid"}, vote=1.0), none
+        )
+
+
 class TestScoring(unittest.TestCase):
     def test_an_unrated_job_counts_on_its_immediate_part_and_signals_move_it(self) -> None:
         plain = score_all([passing("a", A)])[0]
@@ -270,7 +293,7 @@ class TestScoring(unittest.TestCase):
         self.assertGreater(free_one_star, 0.9)  # a free account barely moves it
         self.assertAlmostEqual(
             with_signals({"kind": "download", "trust": "paid"}),
-            0.4 + 0.6 * (0.5 * 0.75 + 0.5 * 1.0),
+            1.0,  # a positive signal never lowers a score: here C counts as max(0.75, B = 1)
         )
         rerun = with_signals(
             {"kind": "download", "trust": "paid"}, {"kind": "rerun", "trust": "paid"}
