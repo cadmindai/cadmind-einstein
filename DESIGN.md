@@ -196,7 +196,7 @@ passing job:   I = 0.5 + 0.3·E + 0.2·T            immediate: passed the gate, 
   - a **refund** the platform granted for the delivery's quality counts as a one-star rating in its place among the
     ratings (`C = 0`, `w = trust`; the last rating wins); a refund for any other reason is recorded and shown in the
     miner's stats, never scored;
-  - **no reaction**: `w = 0`, so `s = B`.
+  - **no reaction**: `w = 0`, so `s = 0.4·I + 0.6·B`.
 - `V`, the **validators' vote** on the delivered device (section 13), in [0, 1], and `u`, how much it counts:
   **0.4**, with our validator's vote alone and at most that with third-party coldkeys too. The vote is a light base
   rating for jobs clients do not rate (or rate late), so a client's stars clearly dominate it. Votes are counted
@@ -205,17 +205,19 @@ passing job:   I = 0.5 + 0.3·E + 0.2·T            immediate: passed the gate, 
   from `B` toward the client's verdict, by its trust.
 - **Trust**: 1 for a paying account, 0.1 for a free one. Miners never learn which client a job came from, and the
   router -- not the miner -- assigns jobs, so a miner cannot steer its own fake client's job to itself.
-- **Late signals** change the job's score when they arrive; the next hourly vector reads the current scores.
+- **Late signals** change the job's score when they arrive, while it is in the window; the next hourly vector reads
+  the current scores. A job's `E` also moves with the window's medians, so its `s` can change hourly until it leaves.
 - The constants (0.4/0.6, 0.5/0.3/0.2, 0.75, -0.25, trust 0.1) are expected to be re-tuned on real traffic; every
-  hourly report publishes the constants it used.
+  hourly report names the einstein version that computed it and publishes the half-life, the window, the 0.4/0.6 split
+  and the trust values; the rest are in that version's `scoring.py`.
 
 ### Weights
 
 - Each job counts with a weight that **halves every 24 hours** of age (7-day window). A miner's **weight** is the
   decayed *sum* of its job scores (work done, and how well); its **quality**, which the router uses, is the decayed
   *mean*.
-- The vector is proportional to the weight over registered, admitted miners seen in the last 24 hours, and is set
-  **every hour**. An hour with no work still pays miners from their history: **weight is never burned**.
+- The vector is proportional to the weight over registered, admitted miners seen in the last 24 hours, **per hotkey**
+  (coldkeys play no part in this rule), and is set **every hour**. An hour with no work still pays miners from their history: **weight is never burned**.
 - **Only admitted hotkeys are weighted**, by every rule and every fallback below: a miner whose admission was
   dropped (its key revoked, disabled, deregistered) is out from the next vector on, whatever its decayed history
   and whatever the last vector held.
@@ -229,7 +231,7 @@ passing job:   I = 0.5 + 0.3·E + 0.2·T            immediate: passed the gate, 
 - **Genesis** (no admitted miner has history in the window), `--genesis`:
   - `delivered` (default): equal weight **per coldkey** among admitted, registered, reachable miners that have
     delivered at least one scored client job (ever), each coldkey's share split among its hotkeys. Admission is a
-    cheap, unscored entry test, so it earns nothing on its own while anyone has delivered.
+    cheap, unscored entry test, so it earns nothing on its own while a miner that has delivered is reachable.
   - `coldkey`: equal per coldkey among admitted, registered, reachable miners.
   - `hotkey`: equal per hotkey among them (an earlier rule; it pays in proportion to hotkeys registered).
 
@@ -350,7 +352,7 @@ the client is), every score, each miner's weight and quality, the admitted and r
 | Abuse of hosted compute | Per-job and per-key quotas, one run at a time, automatic disable |
 | Collusion between hotkeys | Second opinions come from another coldkey, and only two coldkeys end a job unpaid; endings, rejections, failures and admissions are published per coldkey in each report (`watch`) |
 | A device that passes Watt but does not serve its brief | The validators' vote scores it with the device judge (section 13); a quality refund counts as one star |
-| Text in a project aimed at the reviewing model | Structured facts only, capped, instruction-like strings withheld, one data block the prompt names data; strict replies; R1 quotes checked verbatim (section 13) |
+| Text in a project aimed at the reviewing model | Structured facts only, capped, instruction-like strings withheld, one data block the prompt names data; strict replies; quotes of the client checked verbatim (section 13) |
 | A validator voting for its own coldkey's miners | Its votes on them are dropped; others are clamped near the median, capped at a third, weighted by stake and calibrated reliability (section 13) |
 
 ### Copies
@@ -404,7 +406,7 @@ staked UID keeps its pro-rata dividends. Two consequences shape this validator:
 Under Yuma (a subnet that has not switched, such as testnet today) one weight-setting validator's row is the
 consensus only while it holds more than `kappa` of the stake of active validators. The einstein validator computes
 that share from every metagraph read, logs it when it changes and publishes it in every report (the `chain`
-section, also at `GET /v1/chain`); it never claims a dominance it does not hold. The legitimacy model is *centralised
+section; the operator also reads it at `GET /v1/chain`); it never claims a dominance it does not hold. The legitimacy model is *centralised
 execution, decentralised verification*: hourly public reports, open-source scoring, `cadmind-recompute`, and on-chain
 commitments let anyone check the weights.
 
@@ -470,9 +472,9 @@ never does. Never in it: the project's `src/` and `tests/`, the client's identit
 every image's SHA-256; its own SHA-256 is the **image-set digest** every vote names. Third-party validators get
 bundles of public projects only; our validator reviews every delivery.
 
-**The judge** (`cadmind_einstein.judge`, einstein 0.5.0; owner decision 2026-10-24). One device judge replaces
-rubric 3 and every other device-quality judge CADmind runs: one prompt (`judge_prompt.md`, package data, public),
-one core, four modes (`rate`: the vote; `nudge`: the miner-side reviewer; `check`: a nudge check; `final`: the vote
+**The judge** (`cadmind_einstein.judge`, einstein 0.5.0). One device judge replaces
+rubric 3 and every other device-quality judge CADmind runs: one prompt per version (`judge_prompt_1.3b.md` is the
+validators', package data, public), one core, four modes (`rate`: the vote; `nudge`: the miner-side reviewer; `check`: a nudge check; `final`: the vote
 after a correction), one entry point `judge(mode, inputs, model, version=...)`. One sample is one conversation of
 two turns. **Turn 1 is blind**: the client's words and photos only; the model writes 3-8 use steps and 5-8 "useless
 if" lines, each resting on a verbatim quote or none, and marks the 1-4 lines about the device's main job. **Turn
@@ -480,28 +482,35 @@ if" lines, each resting on a verbatim quote or none, and marks the 1-4 lines abo
 on each of its own lines (`ok`, `fails`, `cannot_tell`, with the picture and what it saw), files at most 3 one-
 sentence third-person nudges and scores 0-3 (unusable, needs rework, usable with small fixes, works as delivered).
 **The main-job cap** is in the prompt and applied mechanically: a main line that fails caps the sample at 1, a main
-line it cannot tell caps it at 2. Replies are checked strictly; a malformed one is unavailable, never a score.
+line it cannot tell caps it at 2. From 1.3b, so is **Watt's refusal**: a fact sheet saying today's Watt refuses this
+version for a reason in the device (`function.today`: `deliverable` false and a `blocking.code`) caps it at 1; a change
+of Watt's guard rules, or Watt not being reachable, caps nothing. Replies are checked strictly; a malformed one is unavailable, never a score.
 
-**Two versions, switched by configuration** (`--judge`, `Judge(version=...)`):
+**Versions, switched by configuration** (`--judge`, `Judge(version=...)`). The validators' is `cadmind-judge/1.3b`
+(`judge.VALIDATOR_VERSION`):
 
 | version | tools | samples | aggregation | who runs it |
 |---|---|---|---|---|
-| `cadmind-judge/1.2b` | none | 3 (at most 2 retries, at least 2 valid) | the **lower median** score; a nudge kept when 2 of 3 samples raise it (one grouping call); verdicts by strict majority | **validators** (the only one they accept) |
-| `cadmind-judge/1.2b-tools` | read-only Watt instruments (`entities`, `inspect`, `measure`), at most 12 calls (configurable), locked until turn 1 is answered, output scrubbed | 1, taken as it is (no median, no grouping) | the sample's own capped score, valid nudges and verdicts | CADmind's own pipeline and the miner-side reviewer (nudge role), never a validator |
+| `cadmind-judge/1.2b` | none | 3 (at most 2 retries, at least 2 valid) | the **lower median** score; a nudge kept when 2 of 3 samples raise it (one grouping call); verdicts by strict majority | validators until 0.5.1; still accepted |
+| `cadmind-judge/1.2b-tools` | read-only Watt instruments (`entities`, `inspect`, `measure`), at most 12 calls (configurable), locked until turn 1 is answered, output scrubbed | 1, taken as it is (no median, no grouping) | the sample's own capped score, valid nudges and verdicts | CADmind's own pipeline, never a validator |
+| `cadmind-judge/1.3` | none | as 1.2b | as 1.2b; adds the fact sheet's `assumptions` and the rules on it (an assumption counts only when avoidable or the design is fragile to it) | validators until 0.5.5; still accepted |
+| `cadmind-judge/1.3b` | none | as 1.2b: a validator asks for `--review-samples`, 3 by default, and may set fewer (at least 2 valid, or 1 when one was asked) | as 1.2b, and a vote of one sample keeps that sample's valid nudges; adds Watt's refusal cap and the fact sheet's `assembly`, from which mounting and cables are ruled, not from the pictures | **validators** |
+| `cadmind-judge/1.3-tools`, `1.3b-tools` | as 1.2b-tools | 1 | as 1.2b-tools, on that version's prompt | never a validator |
 
 The tools version reads the delivered project in a Watt workspace through an agent key. Its read-only rule is
 enforced by **our** client only (`judge_tools.ReadOnlyWatt` sends exactly four requests: write a request file under
 `_q/`, run `inspect` or `measure`, wait for that run, read the rendered image back); the key itself is not scoped. A
-validator configured with `--judge 1.2b-tools` refuses to start. Its evidence (design note §2c): one fewer device
+validator configured with a `-tools` judge refuses to start. Its evidence: one fewer device
 right than 1.2b on the ten-device set, 1.7 times the cost, about 80 s of Watt compute per vote.
 
 **The value.** `v = V_MAP[lower median]`, `V_MAP = {0: 0, 1: 0.3, 2: 0.65, 3: 1.0}`: 1 ("it would not work as
 made") sits under rubric 3's 0.35 function cap, which meant the same, and 3 is the only 1.0. A vote whose scores
-spread by 2 or more is noisy (half weight). `u` is unchanged. Votes count for real (`--votes counted`), not shadow
-(owner, 2026-10-24).
+spread by 2 or more is noisy (half weight among several voters; a lone voter's value is unchanged). `u` is unchanged.
+Votes count for real (`--votes counted`, the default), not shadow.
 
 **One key per version.** Each version's digest hashes the prompt file, every mode's reply schema, the version's
-switches, its sampling and aggregation, every constant of the reply check, both injection lists and, for the tools
+switches, its own sampling and aggregation (not `--review-samples`, so a vote of any sample count names the same
+digest), every constant of the reply check, both injection lists and, for the tools
 version, its budget and the instruments' descriptions (`judge_instruments.md`). Every vote, result stamp and archive
 record names the version and digest. **A change to the judge -- prompt, schema, sampling, aggregation, `V_MAP` --
 needs the subnet owner's approval**: it moves every validator's value scale at once, and it ships only as an
@@ -510,7 +519,7 @@ einstein release with a new digest.
 **Model access is configuration.** A validator's judge runs on the review key (`--judge-backend openrouter`, the
 default: `openai:<model>` at OpenRouter, its base URL when none is given, or `anthropic:<model>`) or on a Claude subscription (`--judge-backend
 claude-cli`: `claude -p`, isolated as the reference miner, no tools; its dollars are notional list prices, recorded
-as such and counted toward the same daily cap). The trial validator runs on the subscription (owner, 2026-10-24).
+as such and counted toward the same daily cap).
 
 **Votes before 0.5.0** (protocol `cadmind-einstein-vote/1`, rubric 3) still read, verify and recompute until they
 leave the window; new votes are `cadmind-einstein-vote/2` and name the judge digest where v1 named the rubric's.
@@ -525,7 +534,8 @@ checked as above.
 **The average.** Votes naming another image set or judge digest, votes from the builder's coldkey and votes from
 coldkeys below the reliability floor are dropped; the rest are merged per coldkey (stake-weighted), clamped to the
 median +- 0.2 when three or more coldkeys vote, and weighted: our validator 1, a third-party coldkey
-`r * min(1, stake / S_ref)` (none over a third of the third parties' weight; a noisy vote at half weight). `V` is
+`r * min(1, stake / S_ref)` (none over a third of the third parties' weight; a noisy vote at half weight). Today only
+our validator's votes exist, so `V` is its vote's value. `V` is
 the weighted mean; `u` is 0.4 with our vote, alone or with third parties (third parties alone reach 0.4 at three
 coldkeys), never more, so a client's stars clearly dominate (`cadmind_einstein.review.aggregate`).
 
@@ -541,6 +551,6 @@ old name): our validator votes on every delivery, the votes are signed, publishe
 the score with `u = 0.4`. `--votes shadow` keeps them out of the score (`u` applied 0); a restart with another mode
 re-applies the recorded votes under it. Third-party voting routes come after. Each validator pays for its
 own model calls; ours are capped per day (`--review-daily-usd`, counting OpenRouter's reported cost per request, an
-ALERT when reached; a 1.2b vote costs about
+ALERT when reached; a three-sample vote costs about
 three to four times a rubric 3 vote, about $1 on an Opus-class model).
 

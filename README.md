@@ -33,7 +33,8 @@ miners.
 owner, the miners, and the validators and their stakers, by Bittensor's rules. The miners' share is divided in
 proportion to the weights the validator sets. Einstein's weights are a miner's job scores summed with a 24-hour
 half-life over a 7-day window; **weight is never burned and the subnet owner's hotkey is never weighted**, so the
-whole miner share goes to miners who did client work. Details in [Scoring and weights](#scoring-and-weights) and
+whole miner share goes to miners who did client work (while the launch switch is on, equally to every admitted hotkey
+instead). Details in [Scoring and weights](#scoring-and-weights) and
 [`DESIGN.md`](DESIGN.md) section 5.
 
 **What miners earn.** Emissions, in proportion to their weight: the more client jobs they deliver, the better
@@ -55,8 +56,8 @@ What keeps this accountable:
   vector, chained by hash, and commits the newest report's SHA-256 on chain.
 - [`cadmind-recompute`](#scoring-and-weights) rebuilds every score and the vector from those reports and checks them
   against the on-chain commitment. The scoring code is this repository.
-- The validator publishes its own stake share and whether its weights are the consensus (`GET /v1/chain`, and in
-  every report).
+- The validator publishes its own stake share and whether its weights are the consensus (in every report's `chain`
+  section; `GET /v1/chain` is the operator's copy).
 - Miners read everything that affects their weight, signed by the validator (`POST /v1/miners/stats`,
   `cadmind-miner-stats`, and the optional dashboard on platform.cadmind.ai).
 
@@ -237,7 +238,7 @@ cadmind-einstein --state-dir ~/.local/share/cadmind-einstein \
   dollars counted toward the cap), `--review-model anthropic:<model>|openai:<model>` (a Claude model name with
   `claude-cli`) with `--review-key-file` (0600; install `cadmind-einstein[review]`), `--review-base-url` (for an
   `openai:<model>` the default is OpenRouter, `https://openrouter.ai/api/v1`; never api.openai.com unless you say
-  so), `--review-samples` (3), `--review-effort` (`medium`), `--review-daily-usd` (10; an ALERT when reached) and
+  so), `--review-samples` (3; a validator may set fewer, and a one-sample vote keeps that sample's nudges), `--review-effort` (`medium`), `--review-daily-usd` (10; an ALERT when reached) and
   `--review-usd-per-mtok-in/out/cached` (the provider's prices). On OpenRouter the cap counts the dollars OpenRouter
   reports for each request (`usage.cost`); the prices are the fallback for a reply without one. A cap with neither a
   reported cost nor prices is refused at start. Without `--review-model` deliveries are queued, not reviewed.
@@ -468,9 +469,12 @@ window); the hourly vector is proportional to it over registered, admitted, rece
 launch, while the operator's launch switch is on, it is equal per admitted hotkey instead). Only admitted miners are ever
 weighted, by every rule and fallback. Weight is never
 burned and the subnet owner's hotkey is never weighted; at genesis (nobody has history) the weight is split
-equally per coldkey among admitted miners that have delivered a scored client job. The vector is **never empty**
+equally per coldkey, each coldkey's share among its hotkeys, among admitted miners that have delivered a scored client
+job. Under the usual rule each hotkey counts on its own; coldkeys play no part. The vector is **never empty**
 while a miner is admitted (under Null consensus an empty one spreads emission over every UID): the last non-empty
-vector is sent again, or, before the first, equal shares per coldkey among admitted, reachable miners. Details: [`DESIGN.md`](DESIGN.md) section 5.
+vector is sent again, or, before the first, equal shares per coldkey among admitted, reachable miners. Details:
+[`docs/MINER.md`](docs/MINER.md#weights) (with a worked example and what the numbers cannot promise) and
+[`DESIGN.md`](DESIGN.md) section 5.
 
 **Audit it yourself:** download the reports and run
 
@@ -524,7 +528,7 @@ still checked.
 | `cadmind_einstein/scoring.py` | per-job scores, decayed weights, the vector, hourly reports; `cadmind-recompute` (the auditor) |
 | `cadmind_einstein/stats.py` | miner stats (24 h, 7 days, lifetime; the daily rollup), the leaderboard; `cadmind-miner-stats` |
 | `cadmind_einstein/review.py` | the review bundle and its checks, the signed vote (v2, and v1 still in the window), the average; `cadmind-review` |
-| `cadmind_einstein/judge.py` | the device judge: one prompt (`judge_prompt.md`), four modes, versions 1.2b, 1.3 and their -tools variants, strict replies, the digest, the subscription transport; `cadmind-judge` |
+| `cadmind_einstein/judge.py` | the device judge: one prompt per version (`judge_prompt_1.3b.md` is the validators'), four modes, versions 1.2b, 1.3, 1.3b and their -tools variants, strict replies, the digest, the subscription transport; `cadmind-judge` |
 | `cadmind_einstein/judge_tools.py` | the tools judge's read-only instruments (the proxy and the MCP server) |
 | `cadmind_einstein/judge_workspace.py` | a delivered project loaded into a Watt workspace for the tools judge (our pipeline only) |
 | `cadmind_einstein/votes.py` | our validator's votes: the review queue, counted/shadow, signed votes, their report section |

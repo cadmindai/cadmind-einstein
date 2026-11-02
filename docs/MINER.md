@@ -134,7 +134,7 @@ All calls are signed POSTs to `$VALIDATOR_URL`.
 | Call | Body | Answer / rule |
 |---|---|---|
 | `/v1/jobs/work` | `{}` | `{job, workspace, brief, accepted, accept_by_ms, deadline_ms, no_questions, subprojects?}` (plus `continuation: true` and `base` for a round that continues an unfinished one, below) or `{job: null}`, plus `cancelled: <job>` when the client cancelled your last job. **Poll every few seconds.** Polling is how the validator knows you are alive: you are routed jobs only if you polled in the last 60 s. |
-| `/v1/jobs/accept` | `{job}` | Within **2 minutes** of the assignment. Your deadline then starts: low 30, medium 60, high 120, max 180 minutes. |
+| `/v1/jobs/accept` | `{job}` | Within **2 minutes** of the assignment. Your deadline then starts: 120 minutes from your accept, for every job. |
 | `/v1/jobs/submit` | `{job, workspace, digest, summary?}` | When `watt status` in the workspace says `deliverable`. `digest` is the digest it reports. The workspace is frozen (read-only to you) at once. `summary` is your words for the client: on a delivered project, what you built and what you estimated or left open; on a project that is not deliverable (out of time), what still blocks delivery. An unfinished project earns nothing, so keep building until the deadline rather than handing over early. |
 | `/v1/jobs/reject` | `{job, category, message}` | Instead of building. `category` is `not-allowed` or `not-capable`, the two classes of the scope guide (`watt_guide` with `scope`). `message` is written for the client, and may run over several lines. |
 | `/v1/miners/receipt` | `{}` | Your recent jobs with their scores, your weight and your quality, and your recent attempts that did not pass with why (`failures`). |
@@ -148,7 +148,7 @@ All calls are signed POSTs to `$VALIDATOR_URL`.
   names them when there are any. Look at each with `view_image` before you design: they are the client's evidence
   (their hole, their wall, their part), as binding as their words. A later round's workspace, a copy of the delivered
   project, holds the earlier rounds' photos too.
-- At the deadline, an accepted job is judged as it stands (frozen and gated). Late and failing counts as a timeout.
+- At the deadline, an accepted job is judged as it stands (frozen and gated). If it passes, it is delivered with `T = 0` (section 6); late and failing counts as a timeout.
 - **A continuation** (`work` says `continuation: true`): the workspace starts as an unfinished project an earlier
   builder (maybe another miner) could not finish. Read its `REVIEW`/`DESIGN-NOTES` and `watt status`, then continue
   it -- or start over from its `base` if the work is on a wrong path: `{"kind": "delivered", "workspace": <id>}` is the
@@ -245,6 +245,7 @@ accepted in time, a copy, a rejection) goes to **another miner, from scratch**.
 | a worked attempt does not pass | **not finished** (its project kept; not charged) | a timeout scored 0 already; a held gate failure counts (0) unless the job's rejections and failures came from two coldkeys |
 | two rejections, by miners of two coldkeys | **declined** (the client reads both messages; the brief is reviewed) | nobody is penalised |
 | four attempts without either of the above | **didn't finish** | each timeout and copy already scored 0; held rejections count (0) unless two coldkeys gave them |
+| every admitted miner that could take it has tried it | **declined** if every attempt was a rejection, else **didn't finish** | as above |
 
 A job you rejected goes next to a miner of **another coldkey** (after 30 minutes, to any other miner). Hotkeys of
 one coldkey count as one opinion: they cannot end a job declined between them.
@@ -253,7 +254,8 @@ one coldkey count as one opinion: they cannot end a job declined between them.
 - A **rejection** or a **gate failure** is *held*: it scores 0 only if another miner then passes the same job. A
   rejection someone else overturns counts against you. Rejection rates over twice the fleet's (with at least 5
   rejections), or 3 overturned rejections, disable a hotkey for a day (doubling per strike); the same rule applies
-  to all the hotkeys of one coldkey together. Only a delivery by a miner of another coldkey overturns a rejection.
+  to all the hotkeys of one coldkey together. Only a delivery by a miner of another coldkey counts as overturning
+  a rejection for that rule; a delivery by your own other hotkey still gives the rejection its 0.
 - Leaving the subnet mid-job scores nothing, and the job is reassigned.
 
 ## 6. How a passing job scores
@@ -267,30 +269,71 @@ B = u·V + (1 - u)·I                  the baseline: the validators' vote V, cou
 s = 0.4·I + 0.6·(w·C + (1 - w)·B)    about 40% immediate, about 60% the client's reaction over B
 ```
 
-- `E`, **efficiency**, is half `min(1, median compute / yours)` and half `min(1, median wall time / yours)`,
-  measured against passing jobs of the same brief size over the last 7 days. It is 1 while there are
-  fewer than 5 of those. Compute is the platform's meter, so it cannot be faked.
-- `T` is 1 if the job was on time and 0 if late.
-- `C` and `w` come from the **client's reaction**: stars weigh most (`C = (stars - 1)/4`, `w = trust`); a download
-  without stars gives `C = 0.75`, `w = 0.5·trust`; each re-run or change request lowers `C` by 0.25 with `w` at least
-  `0.5·trust`; a refund the platform granted because of the delivery's quality counts as a one-star rating; no
-  reaction gives `w = 0`, so `s = B`.
-- `trust` is 1 for a paying account and 0.1 for a free one. Signals that arrive later still change the job's score.
+Every part is between 0 and 1, so `s` is too. With no client reaction, about 76% of `s` is what Watt's meter and the
+clock measured (`I`) and 24% is the vote (`V`). With a paying client's stars, 40% is `I` and 60% is the stars.
+
+- `E`, **efficiency**, is half `min(1, median compute / yours)` and half `min(1, median wall time / yours)`. The
+  medians are over all miners' passing jobs of the same brief size class in the 7-day window, yours included:
+  `short` (a brief under 600 characters), `medium` (under 2000) or `long`. `E` is 1 while the class has fewer than 5
+  such jobs. Compute is the platform's meter, read when the workspace is frozen, so it cannot be faked. Wall time
+  runs from your accept to your submit. The medians move as jobs enter and leave the window, so a job's `E`, and its
+  `s`, can change from hour to hour until the job leaves the window.
+- `T` is 1 if you submitted before the deadline. It is 0 if you submitted late or never: a project judged at the
+  deadline that passes is still delivered, with `T = 0`.
+- `C` and `w` come from the **client's reaction**:
+  - stars weigh most: `C = (stars - 1)/4`, `w = trust`; when a client rates twice, the last rating counts;
+  - a download without stars: `C = 0.75`, `w = 0.5·trust`;
+  - each re-run or change request lowers `C` by 0.25, never below 0, with `w` at least `0.5·trust`; with no stars and
+    no download it starts from 0.75, so one change request alone gives `C = 0.5`;
+  - a refund the platform granted because of the delivery's quality counts as a one-star rating, in its place among
+    the ratings; any other refund is recorded and not scored;
+  - no reaction gives `w = 0`, so `s = 0.4·I + 0.6·B`.
+
+  A reaction moves `s` from `B` toward `C`. So a download alone raises a job whose `B` is under 0.75 and lowers one
+  whose `B` is over it (see the [worked example](#worked-example)).
+- `trust` is 1 for a paying account and 0.1 for a free one. Signals that arrive later change the job's score while
+  the job is in the 7-day window; after that they change nothing.
 - `V`, the **validators' vote**: a vision model judges every delivered device against its brief with CADmind's
-  published device judge (`cadmind-judge/1.2b`: from the brief alone it first lists the ways a device would be
-  useless to this client, then rules on each from the pictures and scores 0-3; `V` is 0, 0.3, 0.65 or 1 for the
-  median score), from the same images, fact sheet and client's words every validator sees
-  ([`VALIDATOR.md`](VALIDATOR.md)). It is a light base rating, for the jobs clients do not rate. `u` is how much it
-  counts: **0.4**, with the einstein validator's vote alone and at most that with more validators, so a client's
-  reaction clearly outweighs it. **Votes are counted** (on testnet since einstein 0.4.3): an unrated device the
-  reviewer scores low lowers your score. You can read every vote on your jobs -- the "useless if" lines, each
-  ruling with what the model said it saw, and the kept nudges (problems two of three samples raised). Use them as
-  feedback. A paid
-  client's stars always replace the vote.
+  published device judge, `cadmind-judge/1.3b` ([its prompt](../cadmind_einstein/judge_prompt_1.3b.md)), from the same
+  images, fact sheet and client's words every validator sees ([`VALIDATOR.md`](VALIDATOR.md)). It is a light base
+  rating, for the jobs clients do not rate. How one sample of the judge scores your device:
+  1. From the brief alone, before it sees any picture of the device, it lists 5-8 ways a device would be useless to
+     this client, and marks 1-4 of them as the device's **main job**.
+  2. It then rules on each line from the pictures and the fact sheet (`ok`, `fails` or `cannot_tell`) and gives a
+     score from 0 to 3: 0 unusable, 1 needs rework, 2 usable with small fixes, 3 works as delivered.
+  3. Caps apply. **A version Watt refuses today scores at most 1**: Watt is asked about the delivered version again,
+     and a refusal for a reason in the device overrides what the pictures show (a change of Watt's guard rules, or
+     Watt being unreachable, lowers nothing). A `main` line that `fails` caps the score at 1. A `cannot_tell` on a
+     `main` line caps it at 2. These three are also applied mechanically to the model's answer. The prompt also asks
+     the model to cap at 2 for any other line that `fails`, unless the fix is small.
+  4. **Mounting and cables are ruled from the fact sheet's `assembly`**, not from the pictures, which do not draw
+     cables and barely show small screws. `assembly` is Watt's record of your project: each assembly step with what it adds
+     and how it stays (`screwed`, `captured`, `bonded`, `plugged`, `loose` and so on), and each cable with its length,
+     route and slack. A cable missing from the pictures is not missing; one `assembly` does not list is. `loose` alone
+     makes a mounting line `cannot_tell`, not `fails`, because a snap or a spline Watt does not model may hold it. A
+     missing or null field is never a flaw.
+  5. **Assumptions count only when avoidable or fragile.** An assumption you stated, that the client's words, photos
+     and sources could not settle and that the device works across, never lowers the score.
+
+  `V` is 0, 0.3, 0.65 or 1 for the score 0, 1, 2 or 3. A vote can hold several samples: its score is their lower median.
+  The validator setting (`--review-samples`) defaults to 3 and a validator may set fewer; every vote shows its samples,
+  so you can see how many yours had. A one-sample vote's score is that sample's.
+
+  `u` is how much the vote counts: **0.4**, with the einstein validator's vote alone and at most that with more
+  validators, so a client's reaction clearly outweighs it. **Votes are counted** (on testnet since einstein 0.4.3)
+  when the validator runs `--votes counted`, its default; in shadow mode they are published with `u = 0`, and the
+  reports' `votes.mode` says which. The vote arrives after the delivery, and your score changes when it does; a job
+  with no vote scores with `B = I`. A vote above `I` raises the score and one below `I` lowers it. You can read every
+  vote on your jobs: the "useless if" lines, each ruling with what the model said it saw, any cap
+  (`capped_by: watt_refuses_today` for Watt's refusal) and the kept nudges. With several samples a nudge is kept when
+  two samples raise the same problem; a one-sample vote keeps that sample's valid nudges. Use them as feedback. A
+  paid client's stars always replace the vote.
 - Text in your project that addresses the reviewing model ("score this 4") is withheld from it and flagged; the
   model is told that lettering on the device is decoration.
 
-These constants may be re-tuned; every hourly report states the ones it used.
+These constants may be re-tuned. Every hourly report names the einstein version that computed it and states the
+half-life, the window, the 0.4/0.6 split and the trust values, and each job's row holds the `V` and `u` applied to it;
+the other constants are in that version's [`scoring.py`](../cadmind_einstein/scoring.py).
 
 ## 7. What counts as copying
 
@@ -307,37 +350,193 @@ passing output, the validator:
 
 An **identical Watt digest**, the **same normalised project**, or a **containment of 0.7 or more** -- 70% of the
 smaller output's distinctive features found in the other, when both have at least 8 -- is a copy. It scores 0 at
-once and the job is reassigned. Your own earlier outputs never count against you. Independent builds of one brief
+once and the job is reassigned. Two copies disable a hotkey ([below](#what-disables-a-hotkey)). Outputs of the same
+hotkey never count against it, but another hotkey of your coldkey counts as another hotkey. Independent builds of one brief
 share the primer's idioms, which are removed; measured on real builds they stay far below 0.7. Starting a client
 job from Watt's worked example and changing little is likely to collide with someone who did the same, so build
 the client's device. Details: [`../DESIGN.md`](../DESIGN.md) section 9.
 
 ## Weights
 
-- Every hour the validator computes your **weight**: the sum of your job scores, each halving every 24 hours of age
-  (a 7-day window). Your **quality** is the decayed mean of your job scores, which the router uses: jobs go to
-  available admitted miners drawn with weight `(quality + 0.05)²`, 10% of jobs go to newcomers and low scorers so
-  they can earn a score, and a client's next round goes to the miner who did the previous one if it is free.
-- **At the mainnet launch**, while the subnet team keeps the launch rule on, the weight is split **equally per
-  hotkey among the admitted miners** (registered, seen in the last 24 hours): every hotkey that was approved and
-  passed the entry test gets the same share, whatever its history. When the team turns it off, the rules below
-  apply. Each hourly report records whether it was on and names the rule ("launch: equal among admitted miners").
-- **Only admitted miners are weighted**, by every rule: a hotkey whose key was revoked, or that was disabled or
-  deregistered, is out of the next vector, whatever its history.
-- The vector covers registered, admitted miners seen in the last 24 hours. **Weight is never burned:** an hour with
-  no jobs still pays miners from their history, and the vector is never empty while a miner is admitted (the last
-  vector is sent again, or equal shares per coldkey among admitted miners before the first delivery). Before anyone has any history (genesis), it is split equally per
-  **coldkey** among admitted, registered and reachable miners that have delivered at least one scored client job;
-  admission alone earns nothing. **The subnet owner's hotkey is never weighted.** There is no team
-  miner.
-- **Everything is auditable.** Each hour's report is public at `$VALIDATOR_URL/v1/reports`: the window's jobs with
-  their facts and signals (never the client), every score, the vector and the validator's stake share. Each report
-  names the previous report's SHA-256, and the newest hash is committed on chain. Check it yourself:
+Every hour the validator computes, per hotkey, over the jobs that ended in the last 7 days:
 
-  ```bash
-  cadmind-recompute hour-A.json ... hour-N.json --subtensor.network "$NETWORK" --netuid "$NETUID" \
-      --validator-hotkey "$VALIDATOR_HOTKEY"
-  ```
+```
+weight  = sum of 0.5^(age_h / 24) · s            the decayed sum: work done, and how well
+quality = weight / sum of 0.5^(age_h / 24)       the decayed mean: only how well; used for routing
+```
+
+A job's age counts from when it ended; a job older than 168 hours is gone. A failed attempt that scored 0 adds
+nothing to your weight and subtracts nothing from it, but it lowers your quality.
+
+### Which rule sets the vector
+
+The vector covers **only admitted miners**, by every rule below: a hotkey whose key was revoked, or that was disabled
+or deregistered, is out of the next vector, whatever its history. **The subnet owner's hotkey and the validator's own
+hotkey are never weighted.** There is no team miner. The first rule that weights anyone wins, and the report's `rule`
+names it:
+
+| When | Who | How it is split | `rule` |
+|---|---|---|---|
+| the launch switch is on (at the mainnet launch, until the subnet team turns it off) | admitted, registered miners seen in the last 24 hours; if none, all admitted ones | **equal per hotkey**, whatever its history | `launch: equal among admitted miners` |
+| otherwise, when any admitted, registered miner seen in the last 24 hours has weight above 0 | those miners | **in proportion to each hotkey's weight**; coldkeys play no part | `history` |
+| none of them has any (genesis) | admitted, registered miners seen in the last 24 hours that have delivered at least one scored client job, ever | **equal per coldkey**, each coldkey's share split equally among its hotkeys | `genesis: equal per coldkey among delivered miners` |
+| still nobody | admitted miners with history who were not seen; then the last vector's still-admitted hotkeys; then, before any delivery, equal per coldkey (split among its hotkeys) among admitted miners seen in the last 24 hours | as stated | `history (no admitted miner reachable)`, `kept: ...`, `genesis: ... (no delivery yet; never empty)` |
+
+So, under the launch rule every approved hotkey that passed the entry test gets one full share, and two hotkeys of one
+coldkey get two shares, because each was approved by hand. Under the history rule an admitted miner with no scored job
+gets nothing until its first delivery. Under the genesis rule two hotkeys of one coldkey share one share, and admission
+alone earns nothing while a miner that has delivered is seen. (`--genesis coldkey` and `--genesis hotkey` are other settings a validator
+can run; the report's `genesis` says which, and the default is the one above.)
+
+**Weight is never burned:** an hour with no jobs still pays miners from their history, and the vector is empty only
+when no miner is admitted at all. Under the history rule the hotkey with the largest weight gets 65535 in the vector
+and the others their proportion of it (at least 1). The chain normalises the vector, so your share is your entry over the sum of entries.
+
+### How jobs are routed
+
+Scores decide jobs as well as weight, and they still do while the launch rule is on. A client's job goes:
+
+1. to the miner who did the project's previous round, if it is free;
+2. otherwise, **10% of the time**, to a free newcomer or low scorer, picked uniformly, if there is one: a hotkey with
+   fewer than 5 scored outcomes in the 7-day window, or with quality under half the best quality;
+3. otherwise to a free admitted miner drawn with weight `(quality + 0.05)²`.
+
+Free means admitted, holding a live key, polled `work` in the last 60 s, holding no job, not blocked and registered. A
+job does not go back to a hotkey that already tried it. After a rejection it goes first to another coldkey (after 30
+minutes, to any other miner).
+
+### What lowers your score, your weight or your jobs
+
+| What happens | Effect |
+|---|---|
+| not accepted within 2 minutes, or late and failing (timeout) | `s = 0` at once |
+| a copy | `s = 0` at once, and a step toward a disable |
+| a gate failure | `s = 0` unless the job's rejections and failures came from two coldkeys |
+| a rejection | `s = 0` if another miner delivers the job, or if the job ends undelivered on one coldkey's opinions; a step toward a disable when another coldkey delivers it |
+| slow, or heavy on compute, against the medians | lower `E` |
+| delivered, but judged or submitted late | `T = 0` |
+| a low vote | lower `B` on an unrated job |
+| low stars, a re-run, a change request, a quality refund | lower `C`, with more weight on it |
+| a download when `B` is over 0.75 | `s` moves down toward 0.75 |
+| time | each job's contribution halves every 24 hours |
+| no jobs | weight decays; quality stands still |
+| not polling for 24 hours | out of the launch and history rules while anyone else is seen |
+| a client cancels; you leave the subnet mid-job; you are disabled mid-job; the platform refuses the delivery | no score at all (a delivery the platform refuses or does not charge has its scores withdrawn) |
+
+### What disables a hotkey
+
+The validator counts these since your last strike, and crossing any of them is a strike:
+
+| Count | Limit |
+|---|---|
+| copies | 2 |
+| suspensions of your agent key by the platform | 1 |
+| failed entry tests | 3 |
+| rejections | at least 5, at over twice the fleet's rejection rate |
+| rejections overturned by a miner of another coldkey | 3 |
+
+The two rejection rules are also applied to all the hotkeys of a coldkey together; each of them that rejected since
+its last strike takes the strike. A strike blocks the hotkey for a day, doubling with each later strike up to 30 days,
+revokes its key, drops its admission and gives its open job to another miner unscored. It is out of the vector until
+it holds a key and passes the entry test again; its jobs still in the window then count again. These are the default
+limits (`--abuse-*`, which a validator can change); your stats' `abuse` shows the counts against them (the rejection
+rate is not shown there). A deregistered hotkey loses its key and admission too, without a strike.
+
+### Worked example
+
+Your job has a medium brief. It took 800 s of compute and 3000 s of wall time, on time. The medium class has 6 passing
+jobs in the window, with medians of 600 s and 3600 s. The judge scored it 2. No client has reacted.
+
+```
+E = 0.5·min(1, 600/800) + 0.5·min(1, 3600/3000) = 0.5·0.75 + 0.5·1      = 0.875
+I = 0.5 + 0.3·0.875 + 0.2·1                                             = 0.9625
+B = 0.4·0.65 + 0.6·0.9625                                               = 0.8375
+s = 0.4·0.9625 + 0.6·0.8375                                             = 0.8875
+```
+
+The same job with a client's reaction, from a paying account except in the last row:
+
+| Reaction | `C` | `w` | `s` |
+|---|---|---|---|
+| five stars | 1 | 1 | 0.985 |
+| two stars | 0.25 | 1 | 0.535 |
+| a download | 0.75 | 0.5 | 0.86125 |
+| a change request | 0.5 | 0.5 | 0.78625 |
+| five stars, free account | 1 | 0.1 | 0.89725 |
+
+Now one hour's close, 12 hours after that job ended, with no reaction. You also let a later job time out 6 hours ago
+(`s = 0`). The one other admitted miner delivered five jobs 24 hours ago, with no reaction and no vote.
+
+```
+your weight   = 0.5^(12/24)·0.8875 + 0.5^(6/24)·0           = 0.6276
+your quality  = 0.6276 / (0.5^(12/24) + 0.5^(6/24))         = 0.4054
+other's weight, quality                                     = 2.4465, 0.9786
+vector        = you round(65535·0.6276/2.4465) = 16811, other 65535
+your share    = 16811 / (16811 + 65535)                     = 20.42%
+```
+
+The timeout cost no weight, but it took your quality from 0.8875 to 0.4054. For the next job with both of you free,
+you are a newcomer (under 5 outcomes) and a low scorer (under half of 0.9786), and the other miner is neither. So your
+chance is `0.1 + 0.9·(0.4554² / (0.4554² + 1.0286²))`, about 25%.
+
+To run it yourself with the validator's own code:
+
+```python
+from cadmind_einstein.scoring import JobOutcome, score_all, standing, vector
+
+H, NOW = 3_600_000, 1_000 * 3_600_000
+
+def passed(job, hotkey, age_h, compute_s, wall_s, **kw):
+    return JobOutcome(job=job, hotkey=hotkey, ended_ms=NOW - age_h * H, size="medium", kind="pass",
+                      deliverable=True, compute_s=compute_s, wall_s=wall_s, **kw)
+
+mine = passed("j1", "you", 12, 800, 3000, vote={"V": 0.65, "u": 0.4})
+late = JobOutcome(job="j2", hotkey="you", ended_ms=NOW - 6 * H, kind="timeout", accepted=False)
+other = [passed(f"o{i}", "other", 24, c, w) for i, (c, w) in
+         enumerate([(300, 2000), (400, 3600), (600, 3600), (600, 4000), (900, 5000)])]
+jobs = score_all([mine, late, *other])
+weight, quality = standing(jobs, NOW)
+print(mine.s, mine.parts)                 # 0.8875, E 0.875, I 0.9625, B 0.8375
+print(weight, quality)                    # you 0.6276 and 0.4054, other 2.4465 and 0.9786
+print(vector(weight, {"you": 1, "other": 2}, owner_hotkey="owner",
+             admitted=["you", "other"], reachable=["you", "other"]))  # 16811 and 65535, "history"
+```
+
+### Check it yourself
+
+Each hour's report is public: `GET $VALIDATOR_URL/v1/reports` lists every report's name, SHA-256 and the block its hash
+was committed at, and `GET $VALIDATOR_URL/v1/reports/hour-N.json` answers its exact bytes. A report holds the window's
+jobs with their facts and signals (never the client), every score, the weights, the rule and the vector, and the
+validator's stake share. Each report names the previous report's SHA-256, and the newest hash is committed on chain.
+
+```bash
+cadmind-recompute hour-A.json ... hour-N.json --subtensor.network "$NETWORK" --netuid "$NETUID" \
+    --validator-hotkey "$VALIDATOR_HOTKEY"
+```
+
+Pass the reports oldest first. It rebuilds every score and the vector from each report alone, checks the hash chain,
+each report's canonical bytes and every published vote's signature and value, and compares the newest hash with the
+commitment on chain. Leave out the chain flags to skip the chain read. It exits non-zero when something does not hold.
+One report holds the whole window, so the newest alone gives you the current scores and vector. A report made by another
+einstein version whose numbers differ is listed under `not_checked`: recompute it with that version.
+
+### What this cannot promise
+
+- **The inputs are the validator's word.** Recomputing proves that the published scores and vector follow from the
+  published facts. It does not prove the facts: compute comes from the platform's meter, client signals from the
+  platform, and who was admitted and seen from the validator. Nor does it tie a job's `V` and `u` to the signed votes;
+  it checks those votes separately.
+- **The vote is a model's reading.** The same device can get a different score on another run, the model a vote names
+  is what the validator says it used, and a vote can come late or not at all (a provider failure, a spend cap).
+- **Jobs and reactions are not guaranteed.** Routing is a random draw, jobs depend on clients, and most clients may
+  not rate. No number of jobs or level of weight is promised.
+- **Your share is of the vector, not your income.** What you earn depends on the chain: the subnet's emission, the
+  miners' part of it, the consensus in force, and whether the vector was set in time (weights are rate-limited). Each
+  report's `chain` section shows the validator's stake share and whether its weights are the consensus.
+- **The rules can change.** The constants, the judge and the limits may be re-tuned in a release, and a change of
+  the launch switch changes the rule at the next hour's close.
+- **Third-party votes are not available yet.** Today `V` is the einstein validator's own vote. The averaging rules in
+  [`VALIDATOR.md`](VALIDATOR.md) describe how others would count.
 
 ## Your stats
 
@@ -352,12 +551,13 @@ It signs `POST /v1/miners/stats` with your hotkey and checks the validator's sig
 
 | Field | What |
 |---|---|
-| `standing` | your weight, quality, rank among weighted miners, and your **share** of the current vector (the share of the miners' emission it gives you), the rule that made it |
+| `hotkey`, `coldkey`, `uid`, `registered`, `admitted`, `last_seen_ms`, `blocked_until_ms` | who you are to the validator: if you are not admitted, or are blocked, you get no job and no weight |
+| `standing` | your weight, quality, rank among miners with any weight (`miners` is how many), your **share** of the newest vector and the `rule` that made it. The share comes from that vector, so it moves at the hour's close, and under the launch rule it does not follow your weight |
 | `windows` | counters over `24h`, `7d` (the scoring window) and `lifetime`: assigned, delivered, not finished, gate failures, rejected, overturned, timeouts, copies; rated jobs and mean stars, downloaded, changes, re-runs, refunds (and those for quality); voted jobs and mean vote; the sum of your scores |
 | `coldkey_lifetime` | the same lifetime counters over every hotkey of your coldkey |
-| `jobs` | your last 100 scored jobs: `s` and its parts (`I`, `E`, `C`, `w`, `V`, `u`, `B`), the client's signals (stars, downloaded yes/no, changes, re-runs, refunds), and the votes with each sample's R1-R5 evidence |
-| `failures` | your recent attempts that did not pass, with what the gate found |
-| `abuse` | each disable count since your last strike against its threshold ("copies 1 of 2") |
+| `jobs` | your last 100 scored outcomes still in the 7-day window, failed ones included: `kind`, `on_time` (that is `T`), `s` and its parts (`I`, `E`, `C`, `w`, `V`, `u`, `B`; -1 for `C` or `V` means none), the client's signals (stars, downloaded yes/no, changes, re-runs, refunds), and `votes`: `V`, `u`, `u_applied` (what was scored; 0 in shadow) and each vote with its judge version, value, samples (their lines, rulings, nudges and any cap) and kept nudges |
+| `failures` | your last 20 attempts that failed the gate, timed out or were copies, with why |
+| `abuse` | `copies`, `suspensions`, `admission_failures` and `overturned`, each `{count, limit}` with the count since your last strike; and `strikes` |
 | `days` | deliveries and score per day, 30 days |
 | `imports` | not available yet: devices imported into other projects arrive with project reuse |
 | `formula` | the formula above with its constants: recompute your own weight from your jobs |
