@@ -342,7 +342,7 @@ def inputs_with_assumptions() -> jm.Inputs:
 
 REFUSED = {
     "deliverable": False,
-    "blocking": {"code": "W0804", "found": "neck_bus_lead is 120 mm; its route is 259 mm + 30 mm"},
+    "blocking": {"code": "W0804", "found": "lead is 120 mm; its route is 259 mm + 30 mm"},
 }
 
 
@@ -391,7 +391,7 @@ class TestJudge13b(unittest.TestCase):
     def test_1_3b_sees_the_assembly_and_the_rules_on_it(self) -> None:
         text = jm.Judge("1.3b").look_turn("rate", facing(REFUSED))[0]["text"]
         self.assertIn('"assembly"', text)
-        self.assertIn("neck_bus_lead is 120 mm", text)
+        self.assertIn("lead is 120 mm", text)
         self.assertIn("scores at most 1", jm.Judge("1.3b").look_question("rate"))
         self.assertIn("Watt's refusal.", jm.Judge("1.3b").system_prompt())
 

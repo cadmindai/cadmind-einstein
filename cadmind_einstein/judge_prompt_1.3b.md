@@ -2,8 +2,7 @@
 
 1.3b is 1.3's prompt (`judge_prompt_1.3.md`) plus Watt's refusal and the fact sheet's `assembly`: a version Watt
 refuses today scores at most 1, and mounting and cables are ruled from the facts, not from pictures that cannot show
-them (the anchor test of 2026-11-03: the judge missed all four planted flaws Watt caught). Everything else is 1.3's,
-word for word, except that a nudge may rest on what the fact sheet states.
+them. Everything else is 1.3's, word for word, except that a nudge may rest on what the fact sheet states.
 
 This file IS the judge's prompt. `cadmind_einstein/judge.py` reads the sections between the `<!-- section: NAME -->`
 markers, verbatim, and hashes this whole file into each version's judge digest: any edit here is a new digest, and a
