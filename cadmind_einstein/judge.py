@@ -199,7 +199,11 @@ VERSIONS = {
     ),
 }
 VERSIONS["1.3b"] = replace(
-    VERSIONS["1.3"], name="1.3b", prompt="judge_prompt_1.3b.md", watt_today=True
+    VERSIONS["1.3"],
+    name="1.3b",
+    prompt="judge_prompt_1.3b.md",
+    watt_today=True,
+    aggregate=VERSIONS["1.3"].aggregate + "; a vote of one sample keeps that sample's valid nudges",
 )
 VERSIONS["1.3b-tools"] = replace(
     VERSIONS["1.3-tools"], name="1.3b-tools", prompt="judge_prompt_1.3b.md", watt_today=True
@@ -907,8 +911,10 @@ class Judge:
         """The nudges raised by ``nudge_keep`` or more samples. 1.2b: one text-only call groups the
         samples' valid nudges by problem; a group from enough distinct samples is kept, worded as
         its earliest member (two failed grouping calls: nothing kept, fail closed). The tools
-        version keeps its one sample's valid nudges as they are."""
+        version, and from 1.3b a vote of one sample, keeps that sample's valid nudges as they are."""
         keep = self.spec.nudge_keep
+        if self.spec.watt_today:  # 1.3b: one sample cannot raise a nudge twice; before it, it kept none
+            keep = min(keep, max(1, len(samples)))
         pool = {
             f"S{si}{n['id']}": (si, n)
             for si, s in enumerate(samples, 1)

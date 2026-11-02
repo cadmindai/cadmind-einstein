@@ -12,6 +12,7 @@ All notable changes to this project are listed here. The format follows
 - **Judge 1.3b is the validators' judge** (`cadmind_einstein/judge_prompt_1.3b.md`). A version Watt refuses today
   scores at most 1, in the prompt and mechanically (`capped_by: watt_refuses_today`), and the judge reads Watt's
   message. Mounting and cables are ruled from the fact sheet's new `assembly` section, which the pictures cannot show.
+  A vote of one sample now keeps that sample's valid nudges; before, a nudge needed two samples, so it kept none.
   Judges 1.3 and 1.2b are unchanged and withhold that section.
 
 ## [0.5.4] - 2026-10-27

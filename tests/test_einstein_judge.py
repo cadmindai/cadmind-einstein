@@ -395,6 +395,16 @@ class TestJudge13b(unittest.TestCase):
         self.assertIn("scores at most 1", jm.Judge("1.3b").look_question("rate"))
         self.assertIn("Watt's refusal.", jm.Judge("1.3b").system_prompt())
 
+    def test_one_sample_keeps_its_valid_nudges_as_it_never_did_before(self) -> None:
+        sample = {"nudges": [
+            {"id": "N1", "text": "a", "part": "p", "view": "v", "quote": "q", "line": "", "void": None},
+            {"id": "N2", "text": "b", "part": "p", "view": "v", "quote": "q", "line": "", "void": "bad"},
+        ]}
+        kept, info = jm.Judge("1.3b").merge_nudges([sample], None)
+        self.assertEqual([n["text"] for n in kept], ["a"])
+        self.assertEqual(info["filed"], 1)
+        self.assertEqual(jm.Judge("1.3").merge_nudges([sample], None)[0], [])
+
     def test_a_validator_votes_with_it_and_refuses_its_tools_judge(self) -> None:
         self.assertEqual(jm.for_validator("1.3b").name, "1.3b")
         with self.assertRaises(jm.ValidatorJudgeError):
