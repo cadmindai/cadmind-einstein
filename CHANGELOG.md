@@ -5,6 +5,26 @@ All notable changes to this project are listed here. The format follows
 [Semantic Versioning](https://semver.org/). Each release's spec version (`10000*MAJOR + 100*MINOR + PATCH`) is the
 `version_key` the validator sets weights with.
 
+## [0.5.7] - 2026-11-03
+
+### Changed
+
+- **Every job now has 240 minutes**, from the accept, up from 120 (`JOB_DEADLINE_S`, `--job-deadline-min`). The entry
+  test has the same deadline.
+- **A round that builds nothing is no longer a copy.** A later round handed in at the digest of the version it started
+  from used to fail as a copy of that version (or, for the miner that built that version, to be delivered and charged).
+  - When the client only answered questions, each by picking an offered option, the round ends **no change**: its
+    project, with the answers recorded, is handed back uncharged and goes to no other miner. Nobody is scored or
+    penalised. Watt's digest stays only when such an answer picks the assumption the device was built on.
+  - Any other such round (a change request, a photo, an answer in the client's own words, a style round, a
+    continuation back at its delivered version) fails the gate at stage `unchanged`, with the reason kept, and ends
+    **not finished**.
+
+### Fixed
+
+- The gate keeps the specific cause of every failure, and the fake miner waits out a proxy error and decides what it
+  may not ask.
+
 ## [0.5.6] - 2026-11-02
 
 ### Changed

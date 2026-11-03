@@ -309,7 +309,7 @@ class TestEntryTestGates(_Case):
         self.assertEqual(w["brief"], ADMISSION_BRIEF)
         acc = self.desk.accept(A, w["job"])
         self.assertEqual(acc["deadline_ms"], self.desk.now_ms() + JOB_DEADLINE_S * 1000)
-        self.assertEqual(JOB_DEADLINE_S, 120 * 60)
+        self.assertEqual(JOB_DEADLINE_S, 240 * 60)
 
     def test_the_deadline_is_a_setting(self) -> None:
         d = Desk(self.p, Ledger(), registered=lambda: [A], deadline_s=90 * 60)

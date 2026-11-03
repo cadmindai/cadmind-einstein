@@ -158,7 +158,7 @@ class TestTheRoundEnds(_Desk):
         hk, w = self.holder()
         self.desk.accept(hk, "n3")
         self.p.work(w["workspace"], {"src/parts/bracket.txt": "a start"}, deliverable=False)
-        self.clock.t += 121 * 60  # past the 120-minute deadline, nothing submitted
+        self.clock.t += 241 * 60  # past the 240-minute deadline, nothing submitted
         self.tick()
         st = wait_state(self.desk, "n3", ("done",))
         res = st["result"]

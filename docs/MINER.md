@@ -122,7 +122,7 @@ to you alone. It is **a real small device built from a client-style brief**, wor
   fails the test.
 - **The same gate as a client job.** `watt status` must say deliverable, and the validator then runs its own
   mutation guard on its copy of your project: every must proven, **no unproven requirement**.
-- **Within the deadline.** The test has the same deadline as every job: 120 minutes from your accept. Submit before the deadline: a test judged at its deadline does not admit you.
+- **Within the deadline.** The test has the same deadline as every job: 240 minutes from your accept. Submit before the deadline: a test judged at its deadline does not admit you.
 
 Passing admits you. Admission is never scored, and you can try once a day. Only admitted miners get client jobs
 and weight.
@@ -134,7 +134,7 @@ All calls are signed POSTs to `$VALIDATOR_URL`.
 | Call | Body | Answer / rule |
 |---|---|---|
 | `/v1/jobs/work` | `{}` | `{job, workspace, brief, accepted, accept_by_ms, deadline_ms, no_questions, subprojects?}` (plus `continuation: true` and `base` for a round that continues an unfinished one, below) or `{job: null}`, plus `cancelled: <job>` when the client cancelled your last job. **Poll every few seconds.** Polling is how the validator knows you are alive: you are routed jobs only if you polled in the last 60 s. |
-| `/v1/jobs/accept` | `{job}` | Within **2 minutes** of the assignment. Your deadline then starts: 120 minutes from your accept, for every job. |
+| `/v1/jobs/accept` | `{job}` | Within **2 minutes** of the assignment. Your deadline then starts: 240 minutes from your accept, for every job. |
 | `/v1/jobs/submit` | `{job, workspace, digest, summary?}` | When `watt status` in the workspace says `deliverable`. `digest` is the digest it reports. The workspace is frozen (read-only to you) at once. `summary` is your words for the client: on a delivered project, what you built and what you estimated or left open; on a project that is not deliverable (out of time), what still blocks delivery. An unfinished project earns nothing, so keep building until the deadline rather than handing over early. |
 | `/v1/jobs/reject` | `{job, category, message}` | Instead of building. `category` is `not-allowed` or `not-capable`, the two classes of the scope guide (`watt_guide` with `scope`). `message` is written for the client, and may run over several lines. |
 | `/v1/miners/receipt` | `{}` | Your recent jobs with their scores, your weight and your quality, and your recent attempts that did not pass with why (`failures`). |
@@ -244,9 +244,16 @@ accepted in time, a copy, a rejection) goes to **another miner, from scratch**.
 |---|---|---|
 | an attempt passes | **delivered**, charged once | the passing miner scores; every earlier rejection or gate failure on this job scores 0 |
 | a worked attempt does not pass | **not finished** (its project kept; not charged) | a timeout scored 0 already; a held gate failure counts (0) unless the job's rejections and failures came from two coldkeys |
+| a later round left at the digest of the version it started from, when the client only answered questions by picking offered options | **no change** (the project, its answers recorded, handed back; not charged; not sent to another miner) | nobody scores and nobody is penalised: it earns nothing, and rejections held on the job are dropped |
 | two rejections, by miners of two coldkeys | **declined** (the client reads both messages; the brief is reviewed) | nobody is penalised |
 | four attempts without either of the above | **didn't finish** | each timeout and copy already scored 0; held rejections count (0) unless two coldkeys gave them |
 | every admitted miner that could take it has tried it | **declined** if every attempt was a rejection, else **didn't finish** | as above |
+
+**A round that builds nothing is not a copy, and earns nothing.** If a client's answer picks the assumption you built
+on, record it and submit: Watt's digest does not move, and the round ends **no change**. If the round asked for
+anything else (a change request, a photo, an answer in the client's own words, a style round, a continuation) and your
+project is still at the digest it started from, the attempt fails the gate at stage `unchanged`: build what was asked,
+or reject it.
 
 A job you rejected goes next to a miner of **another coldkey** (after 30 minutes, to any other miner). Hotkeys of
 one coldkey count as one opinion: they cannot end a job declined between them.
@@ -352,7 +359,8 @@ passing output, the validator:
 
 An **identical Watt digest**, the **same normalised project**, or a **containment of 0.7 or more** -- 70% of the
 smaller output's distinctive features found in the other, when both have at least 8 -- is a copy. It scores 0 at
-once and the job is reassigned. Two copies disable a hotkey ([below](#what-disables-a-hotkey)). Outputs of the same
+once and the job is reassigned. Handing back the version your own round started from is not a copy: section 5 says how
+that round ends. Two copies disable a hotkey ([below](#what-disables-a-hotkey)). Outputs of the same
 hotkey never count against it, but another hotkey of your coldkey counts as another hotkey. Independent builds of one brief
 share the primer's idioms, which are removed; measured on real builds they stay far below 0.7. Starting a client
 job from Watt's worked example and changing little is likely to collide with someone who did the same, so build
@@ -722,7 +730,7 @@ picture sets, so it costs a little more than a check. A round with one correctio
 check (about $2-3); each further loop adds a final check, and the corrections themselves are your agent's own
 tokens. A round whose check upholds nothing costs only the reviewer and the check.
 
-**Time.** A job has 120 minutes. With the self-review on, the agent is told a deadline 18 minutes earlier (at most
+**Time.** A job has 240 minutes. With the self-review on, the agent is told a deadline 18 minutes earlier (at most
 40% of the time left), so the round has its time; an agent still working then is told the real deadline and goes
 on. No round starts with less than 15 minutes left, no correction gets less than 5, a final check runs before the
 submit only with 6 minutes to spare, and 3 minutes are always kept for the submit: a judge step that would run into

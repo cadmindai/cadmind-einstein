@@ -9,7 +9,7 @@ A job's life:
 2. **assigned** -- the router chose one available miner (section 6) and the platform made a job
    workspace granted to that miner's key, from the brief (or the job's seed, for a later round of a
    client's project). The miner sees it on ``work`` and must ``accept`` within ``accept_s``.
-3. **working** -- accepted; every job has one deadline, 120 minutes (``JOB_DEADLINE_S``). The
+3. **working** -- accepted; every job has one deadline, 240 minutes (``JOB_DEADLINE_S``). The
    builder may submit sooner.
 4. **judging** -- the miner submitted (it is free for another job from then on), or its deadline
    passed: the workspace is frozen, the
@@ -95,6 +95,7 @@ from dataclasses import asdict, dataclass, field
 from typing import Any, Protocol
 
 from . import __version__
+from .answers import answers_only, report_digest
 from .answers import check as answers_check
 from .platform import PlatformError, RoleFrozenError
 from .scoring import JobOutcome, Ledger, size_class
@@ -105,7 +106,7 @@ from .style import check as style_check
 
 SUSPENDED = "agent_suspended"
 """The platform's code for a miner Watt's telemetry suspended (its key deleted, none minted)."""
-JOB_DEADLINE_S = 120 * 60
+JOB_DEADLINE_S = 240 * 60
 """the one deadline of every job, from its acceptance (the daemon's ``--job-deadline-min``);
 there are no effort levels. A builder may submit sooner"""
 ALIVE_S = 60.0
@@ -117,14 +118,17 @@ CATEGORIES = ("not-allowed", "not-capable")
 """What an agent may reject a job as (:meth:`Desk.reject`)."""
 SUBSTANTIVE = ("reject", "gate")
 """attempt kinds that are an opinion on the job (it cannot or should not be done)"""
-UNCOUNTED = ("dereg", "disabled", "revoked", "stale", "ours", "lost")
+NO_CHANGE = "no change"
+"""how a round ends, and the kind of its one attempt, when the client's answers leave the design as
+it was: the project at the seed's digest is handed back, uncharged, and nobody is scored"""
+UNCOUNTED = ("dereg", "disabled", "revoked", "stale", "ours", "lost", NO_CHANGE)
 """attempt kinds that do not count toward a job's attempt cap and score nobody: the miner left the
 subnet, was disabled for abuse, or had its key revoked by the operator while it held the job
 (``dereg``, ``disabled``, ``revoked``); the first
 assignment after a cancel was not accepted in time because the miner was still stopping the
 cancelled job (``stale``); the validator could not judge it, on its own side (``ours``); the
 platform took the job back when the validator's lease lapsed (``lost``: its miner may take it
-again when it is claimed again)"""
+again when it is claimed again); the client's answers changed nothing (``NO_CHANGE``)"""
 REFUSED_DELIVERY = ("delivery_not_of_job", "delivery_digest_mismatch")
 """the platform's refusals of a delivered result whose provenance it cannot accept (the workspace
 does not descend from the job's own grant, or is not at the digest the validator gated): a
@@ -490,6 +494,8 @@ def _gate_summary(kind: str, verdict: Mapping[str, Any]) -> str:
     gate's error, as the validator read them."""
     stage = str(verdict.get("stage") or "")
     error = " ".join(str(verdict.get("error") or "").split())
+    if stage == "unchanged":
+        return f"{error[:1].upper()}{error[1:]}."
     head = (
         "The builder's time ran out before the project passed Watt's checks"
         if kind == "timeout"
@@ -2954,9 +2960,12 @@ class Desk:
         )
         base: frozenset[bytes] = frozenset()
         mine: frozenset[bytes] = frozenset()
+        no_change = False
         if verdict["deliverable"] and job.kind == "client":
+            seeded, started = b"", b""
             try:
-                base = fingerprint(self.platform.export(job.seed)).features if job.seed else base
+                seeded = self.platform.export(job.seed) if job.seed else b""
+                base = fingerprint(seeded).features if seeded else base
             except Exception:  # noqa: BLE001 -- the seed is ours: unread, nothing is subtracted
                 base = frozenset()
             start = str(job.continuation.get("base") or "")
@@ -2964,7 +2973,20 @@ class Desk:
                 # a continuation's builder may have started over from the last delivered version:
                 # its features are subtracted too, as the seed's are
                 with contextlib.suppress(Exception):  # ours too: unread, nothing more subtracted
-                    base = base | fingerprint(self.platform.export(start)).features
+                    started = self.platform.export(start)
+                    base = base | fingerprint(started).features
+            if self._built_nothing(job, str(verdict["digest"]), seeded, started):
+                no_change = self._answers_changed_nothing(job, seeded, export)
+                if not no_change:
+                    verdict = {
+                        **verdict,
+                        "deliverable": False,
+                        "stage": "unchanged",
+                        "error": "what the client asked for was not built: the project is still at"
+                        " the digest of the version this round started from",
+                    }
+                    outcome.deliverable, outcome.stage = False, "unchanged"
+        if verdict["deliverable"] and job.kind == "client" and not no_change:
             try:
                 mine = fingerprint(export).features
             except Exception as e:  # noqa: BLE001 -- the miner's export: unreadable fails it
@@ -2993,6 +3015,9 @@ class Desk:
                 retries=a.retries,
                 last_retry=a.last_retry,
             )
+            if no_change:
+                self._end_no_change(job, a, fork, verdict, on_time)
+                return
             copy = None
             if verdict["deliverable"] and job.kind == "client":
                 copy = self.copies.check(
@@ -3083,6 +3108,51 @@ class Desk:
                 job.result["summary"], job.result["summary_by"] = a.summary, "builder"
             self._outbox.append(job.job)
             self._event("ended", job.job, label="delivered", hotkey=a.hotkey, score=s)
+
+    @staticmethod
+    def _built_nothing(job: Job, digest: str, seeded: bytes, started: bytes) -> bool:
+        """Whether a passing attempt leaves the design where its round began: at the digest of the
+        delivered version it was forked from, or, on a continuation (whose seed is an unfinished
+        project, never delivered: handing that in unchanged is a first delivery), of its base."""
+        began = started if job.continuation else seeded
+        return bool(digest) and bool(began) and report_digest(began) == digest
+
+    @staticmethod
+    def _answers_changed_nothing(job: Job, seeded: bytes, export: bytes) -> bool:
+        """Whether a round that built nothing owes nothing: the client only answered questions, each
+        by picking an offered option (:func:`.answers.answers_only`). Watt's digest stays only when
+        such an answer picks the assumption the device was built on; any other choice moves it. A
+        change request, a photo or an answer in the client's own words asks for something a builder
+        can ignore, as a continuation or a style round does: those fail the gate instead."""
+        return not job.continuation and not job.style and answers_only(seeded, export)
+
+    def _end_no_change(
+        self, job: Job, a: Attempt, fork: str, verdict: dict[str, Any], on_time: bool
+    ) -> None:
+        """Inside a mutation: the round ends "no change", its project (the answers recorded in it)
+        handed back for the client, never charged and never sent to another miner. Nobody earns or
+        loses anything by it: no outcome reaches the ledger, and failures held for this job (a
+        rejection before it) are dropped, since no other miner delivered anything."""
+        a.outcome, a.kind = "the client's answers changed nothing", NO_CHANGE
+        job.pending.clear()
+        self._release(a.hotkey, job.job)
+        job.state = "done"
+        job.result = {
+            "label": NO_CHANGE,
+            "charge": False,
+            "review": False,
+            "hotkey": a.hotkey,
+            "workspace": fork,
+            "digest": verdict["digest"],
+            "digest_claimed": a.digest,
+            "stage": verdict["stage"],
+            "on_time": on_time,
+            "attempts": len(job.attempts),
+        }
+        if a.summary:
+            job.result["summary"], job.result["summary_by"] = a.summary, "builder"
+        self._outbox.append(job.job)
+        self._event("ended", job.job, label=NO_CHANGE, hotkey=a.hotkey)
 
     def _overturns(
         self,

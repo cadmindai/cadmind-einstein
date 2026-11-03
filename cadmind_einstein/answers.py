@@ -32,6 +32,7 @@ from __future__ import annotations
 
 import calendar
 import io
+import json
 import re
 import time
 import tomllib
@@ -50,6 +51,11 @@ MAX_CHAIN = 16
 """How far a ``superseded_by`` chain is followed."""
 SAID = 3
 """How many problems the gate's reason names (the rest are counted)."""
+MAX_REPORT_BYTES = 64_000_000
+"""A report larger than this is not read for its digest."""
+JOB_STATEMENT = re.compile(r"^job-\d{4}-\d{2}-\d{2}-\d{6}\.toml$")
+"""A later round's ``brief/job-<date>-<HHMMSS>.toml``: the platform restating whether the client may
+be asked; it asks for no change."""
 
 
 @dataclass(frozen=True)
@@ -261,6 +267,61 @@ def project_files(export: bytes) -> tuple[dict[str, str], dict[str, str]]:
             ):
                 specs[rel] = z.read(info).decode("utf-8", errors="replace")
     return briefs, specs
+
+
+def _project_entries(z: zipfile.ZipFile) -> dict[str, zipfile.ZipInfo]:
+    """An open export's files by their path in the project (one top directory taken off)."""
+    infos = [i for i in z.infolist() if not i.is_dir()]
+    tops = {i.filename.split("/", 1)[0] for i in infos if "/" in i.filename}
+    top = ""
+    if len(tops) == 1 and all("/" in i.filename for i in infos):
+        only = next(iter(tops))
+        if only not in ("brief", "spec", "build"):
+            top = only + "/"
+    return {i.filename.removeprefix(top): i for i in infos}
+
+
+def report_digest(export: bytes) -> str:
+    """The digest a project export's own ``build/report.json`` states; '' when it says none or
+    cannot be read."""
+    try:
+        with zipfile.ZipFile(io.BytesIO(export)) as z:
+            info = _project_entries(z).get("build/report.json")
+            if info is None or info.file_size > MAX_REPORT_BYTES:
+                return ""
+            report = json.loads(z.read(info))
+    except (zipfile.BadZipFile, OSError, ValueError, RecursionError):
+        return ""
+    return str(report.get("digest") or "") if isinstance(report, dict) else ""
+
+
+def answers_only(seed: bytes, export: bytes) -> bool:
+    """Whether what the client sent for this round, read from the ``brief/`` files the platform
+    wrote and the builder cannot write, is nothing but answers picking an offered option: at least
+    one new ``answer-*`` file, each a chosen option with no words of the client's, and no other new
+    file (no ``change-*``, no photo). The brief's text is not read for this: a client may type
+    anything there. Unreadable: False."""
+    try:
+        with zipfile.ZipFile(io.BytesIO(seed)) as z:
+            before = set(_project_entries(z))
+        with zipfile.ZipFile(io.BytesIO(export)) as z:
+            entries = _project_entries(z)
+            new = {
+                rel: info
+                for rel, info in entries.items()
+                if rel not in before and rel.startswith("brief/") and rel.count("/") == 1
+            }
+            answers = []
+            for rel, info in new.items():
+                name = rel.removeprefix("brief/")
+                if JOB_STATEMENT.match(name):
+                    continue
+                if not ANSWER_NAME.match(name) or info.file_size > MAX_ANSWER_BYTES:
+                    return False
+                answers.append(parse_answer(rel, z.read(info).decode("utf-8", errors="replace")))
+    except (zipfile.BadZipFile, OSError, ValueError):
+        return False
+    return bool(answers) and all(a is not None and a.choice and not a.words for a in answers)
 
 
 def check(

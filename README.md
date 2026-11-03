@@ -17,6 +17,7 @@ miners' AI agents as checked engineering projects.
    and gates the result with the hosted Watt check (running the mutation guard again itself). A passing result
    is delivered to the client. A worked attempt that fails or runs late ends the round "not finished": its project
    is kept, and the client may pay for a round that continues it; a copied one goes to another miner from scratch.
+   When a client's answers change nothing in the design, the round ends "no change": not charged, nobody scored.
    Each job is scored
    from the gate, efficiency, timeliness, the **client's own reaction** (download, stars, change requests, a
    quality refund) and the validators' **quality vote** -- a vision model's evaluation of the delivered device on a
@@ -204,7 +205,7 @@ cadmind-einstein --state-dir ~/.local/share/cadmind-einstein \
   weights (`bt.SetWeights`, plain or commit-reveal as the subnet runs, within `weights_rate_limit`) and commit each
   report's SHA-256 (`set_commitment`).
 - `--max-inflight` caps jobs in flight (the hosted bench's capacity); `--sync-s` is the metagraph re-read interval;
-  `--accept-s` the acceptance window; `--job-deadline-min` every job's one deadline from its accept (120 by default); `--abuse-*` the disable policy (0 turns a rule off); `--copy-*` the copy
+  `--accept-s` the acceptance window; `--job-deadline-min` every job's one deadline from its accept (240 by default); `--abuse-*` the disable policy (0 turns a rule off); `--copy-*` the copy
   check (`--copy-containment` 0.7, `--copy-min-features` 8, `--copy-common-coldkeys` 3, `--copy-window` 500, and
   `--copy-corpus PATH`, repeatable: public example projects whose features never count as evidence);
   `--second-opinion-coldkeys` (2) and `--second-opinion-wait-s` (1800) the second-opinion rule; `--genesis`

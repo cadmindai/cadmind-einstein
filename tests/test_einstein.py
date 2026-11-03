@@ -931,7 +931,7 @@ def test_every_job_has_one_120_minute_deadline() -> None:
     """No effort levels: one deadline for every job, whatever effort an older platform sends."""
     from cadmind_einstein import desk
 
-    assert desk.JOB_DEADLINE_S == 7200
+    assert desk.JOB_DEADLINE_S == 14400
     assert not hasattr(desk, "DEADLINE_S")
 
 

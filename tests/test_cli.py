@@ -80,7 +80,7 @@ class TestDaemonFlags(unittest.TestCase):
         a = self.parse()
         self.assertEqual(
             (a.key_approval, a.job_deadline_min, a.launch_equal, a.pending_message_file),
-            ("manual", 120, None, None),
+            ("manual", 240, None, None),
         )
         # --admission-effort is still accepted, and ignored
         a = self.parse(

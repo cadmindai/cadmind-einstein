@@ -92,7 +92,7 @@ validator: freeze on submit, fork, read Watt's verdict (the gate), copy check, s
   from the brief (or, for a later round of a client's project, from the delivered project), granted to that miner's
   key. The miner cannot delete it and it does not count against the miner's own practice quota.
 - **Accept, work, submit -- or reject.** The miner sees the job on `work`, must `accept` within 2 minutes, and
-  `submit {job, workspace, digest, summary?}` before the job's deadline: one deadline for every job, 120 minutes from the accept (there are no
+  `submit {job, workspace, digest, summary?}` before the job's deadline: one deadline for every job, 240 minutes from the accept (there are no
   effort levels; the builder may submit sooner). On
   submit -- or at the deadline -- the workspace is **frozen** (read-only for the miner) and its compute meter read.
   `summary`, optional, is the builder's own words on what still blocks delivery when it hands over a project that
@@ -148,9 +148,19 @@ validator: freeze on submit, fork, read Watt's verdict (the gate), copy check, s
   |---|---|---|---|
   | an attempt passes the gate | **delivered** | yes, once | the passing miner scores; every earlier rejection or gate failure on this job scores 0 |
   | a worked attempt does not pass (gate failure, or late and failing) | **not finished**: its project kept, the builder's summary for the client | no | a timeout already scored 0; held rejections and the gate failure count (0) unless two coldkeys gave them |
+  | a later round passes at the digest of the version it started from, and the client only answered questions, each by picking an offered option | **no change**: its project, the answers recorded, handed back | no | nobody scored or penalised; held rejections dropped |
   | two rejections, from two coldkeys | **declined**: the client reads both messages; the brief is flagged for review | no | nobody penalised |
   | four attempts without either of the above (timeouts before accepting, copies) | **didn't finish** | no | each timeout and copy already scored 0; held rejections count (0) unless two coldkeys gave them |
   | every admitted miner that could take it has tried it (the second-opinion wait still applies) | **declined** if every attempt was a rejection, else **didn't finish** | no | as above |
+
+  **A round that builds nothing.** A later round is compared with where it began: the digest stated by the report of
+  its seed (on a continuation, of its delivered base, since its seed was never delivered). At the same digest the copy
+  check does not run. What decides is what the client sent, read from the `brief/` files the platform wrote and the
+  builder cannot write, never the brief's text: only new `answer-*` files, each a chosen option with no words of the
+  client's, make it **no change**. That is sound because Watt's digest stays only for an answer that picks the
+  assumption the device was built on. Every other such round (a change request, a photo, words of the client's, a style
+  round) asked for something a builder can ignore, so it fails the gate at stage `unchanged` and ends **not finished**.
+  It scores as any gate failure. It earns nothing either way: no score for submitting nothing.
 
   Earlier releases also ended a job **out of reach** (two substantive failures from two coldkeys); a worked failure
   now ends the round at once, so that ending is no longer reached.
@@ -280,7 +290,7 @@ scratch, throwing the first builder's work away; after two or four tries the job
 - **Admission.** Before any client job, an approved key holder passes an entry test: `POST /v1/miners/admission`
   creates a job assigned to it alone, at most once a day. It is a real small device built from a client-style
   brief (`--admission-brief-file`; a generic built-in brief otherwise), with the one job deadline
-  (120 minutes; `--admission-effort` is accepted and ignored). There is no client, so the job carries `no_questions`: the builder decides every
+  (240 minutes; `--admission-effort` is accepted and ignored). There is no client, so the job carries `no_questions`: the builder decides every
   open question. It passes only through the client jobs' gate -- deliverable on the validator's own guard run, no
   unproven must, no client decision left open -- and only when submitted before its deadline. Passing admits the
   miner; it is never scored. Only admitted miners get client jobs and weight.
@@ -376,7 +386,8 @@ the worked example), and the **common set** -- features present in non-copy outp
 distinct coldkeys other than the two compared. Outputs judged copies never feed the common set, and one coldkey's
 hotkeys count once, so a copier cannot make its victim's features common.
 
-An output copies a recent output (the last `--copy-window`, 500) of **another** hotkey when the Watt digests are
+A round left at the digest it began from is not compared at all (section 4). Otherwise, an output copies a recent
+output (the last `--copy-window`, 500) of **another** hotkey when the Watt digests are
 identical; when their normalised features are identical (a small project is compared this way, not skipped); or,
 when both have at least `--copy-min-features` (8) distinctive features, when the **containment** -- the share of the
 smaller one's distinctive features found in the other -- reaches `--copy-containment` (0.7). Containment rather
