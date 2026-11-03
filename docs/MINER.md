@@ -224,9 +224,10 @@ assumption you build on, why, and what it affects -- and may answer while you wo
 
 **The gate is Watt's own verdict.** The validator forks your frozen workspace and reads `watt status` there: the
 project must be **deliverable** (every check passes and the mutation guard is recorded for the current digest). It
-then runs the mutation guard again on its fork, with its own draw of the mutants, and you pass only if that run
-passes too. Your record is one sample of the mutants; a design that passes only a lucky sample fails the gate. Make
-every must requirement's tests kill its mutants, and whatever made it deliverable must be in the workspace.
+then runs the mutation guard again on its fork, and you pass only if that run passes too. The hosted Watt runs the whole
+guard, every mutant, for you and for the validator alike, so a design that passes on your run passes on the validator's
+unless something changed. Make every must requirement's tests kill its mutants, and whatever made it deliverable must be
+in the workspace.
 
 **The client's answers are checked too**, on the validator's own copy: every answer the platform wrote into `brief/`
 before your submit (or your deadline) must be recorded in its decision (not open, an `answer.from` quoting the file,

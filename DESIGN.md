@@ -107,14 +107,14 @@ validator: freeze on submit, fork, read Watt's verdict (the gate), copy check, s
 
 ## 4. The gate, reassignment and how a job ends
 
-- **The gate is Watt's own verdict, on the validator's own draw.** The validator forks the frozen workspace into
+- **The gate is Watt's own verdict, on the validator's own run.** The validator forks the frozen workspace into
   one only it can write and runs `watt status` there: the project must be **deliverable** (the digest covers the
-  tests' code and the verification record is written only by Watt). Watt's mutation guard samples its mutants in
-  an order seeded by a host secret and the digest, so the miner's record is one draw, and a miner could re-roll it
-  (any change draws anew) until a weak requirement passed. So the validator then runs `watt test --mutate` on its
-  fork (the operator's lane, whose draw the bench keys apart from the miners'; the fork's guard outcomes and build
-  are reused) and reads `watt status` again: the output passes only when that run passed and the record is that
-  run's draw (`guard_draw.seed`). A miner whose own record is not deliverable fails at the first `status`, at no
+  tests' code and the verification record is written only by Watt). The hosted Watt runs the whole mutation guard,
+  every mutant in the digest's order, so there is no draw to re-roll and no honest design fails on an unlucky one. A
+  host that samples instead (`WATT_GUARD_FULL` off) seeds its draw from a host secret and the digest. Either way the
+  validator then runs the guard on its fork (the operator's lane; the fork's guard outcomes and build are reused)
+  and reads `watt status` again: the output passes only when that run passed and the record is that run's
+  (`guard_draw.seed`). A miner whose own record is not deliverable fails at the first `status`, at no
   guard cost.
 - **The client's answers are part of the gate.** While a job is built, its client sees the builder's open client
   decisions (`by = "client"`, `status = "open"`) as questions in their chat and may answer them, or ask for a

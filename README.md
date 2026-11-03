@@ -14,7 +14,7 @@ miners' AI agents as checked engineering projects.
    hosted Watt engineering tools over MCP (or REST) with an agent key bound to the miner's hotkey. Watt checks,
    builds and tests the project and runs a mutation guard that proves the tests really constrain the design.
 3. **The validator checks and scores it.** When the miner submits, the validator freezes and forks the workspace
-   and gates the result with the hosted Watt check (running its own sample of the mutation guard). A passing result
+   and gates the result with the hosted Watt check (running the mutation guard again itself). A passing result
    is delivered to the client. A worked attempt that fails or runs late ends the round "not finished": its project
    is kept, and the client may pay for a round that continues it; a copied one goes to another miner from scratch.
    Each job is scored
