@@ -240,6 +240,38 @@ W0825), ``read`` (its mutants only read by a measure) and ``excused`` (only harm
 mutants reached it)."""
 
 
+_STAGE_WORDS = {
+    "none": "the design has errors",
+    "check": "the design passes its checks, but no build passed on it",
+    "build": "the design builds, but its tests did not pass on it",
+    "test": "its tests pass, but no guard is recorded for this design",
+}
+"""What a stage means when ``watt status`` stops there: the furthest step passed on this digest."""
+
+
+def _not_deliverable(run: Mapping[str, Any], status: Mapping[str, Any]) -> dict[str, Any]:
+    """Why the miner's own record is not deliverable, from the ``watt status`` run itself: its
+    stage, and the codes of the errors it reports, with what the first of them found. All of it is
+    what the miner's own ``watt status`` says, so nothing of the validator's guard is in it."""
+    stage = str(status.get("stage") or "none")
+    errors = [
+        d
+        for d in (run.get("data") or {}).get("diagnostics") or []
+        if isinstance(d, Mapping) and d.get("severity") == "error" and d.get("code")
+    ]
+    codes = sorted({str(d["code"]) for d in errors})
+    words = _STAGE_WORDS.get(stage, f"it stopped at stage {stage}")
+    if codes:
+        words += f": {', '.join(codes[:8])}"
+        found = " ".join(str(errors[0].get("found") or "").split())
+        words += f" ({found[:200]})" if found else ""
+    return {"error": words, "cause": {"stage": stage, "codes": codes[:8]}}
+
+
+def _status_of(run: Mapping[str, Any]) -> dict[str, Any]:
+    return dict(((run.get("data") or {}).get("status")) or {})
+
+
 def _survivors(guard: Any) -> str:
     """The must requirements a refused guard run names unguarded, unproven, read or excused, for the
     verdict's words: the unguarded ones from its ``survivors``, every one from its per-requirement
@@ -2650,8 +2682,7 @@ class Desk:
         return e.ours or e.status in (0, 408, 429) or e.status >= 500 or e.code in OURS_BUSY
 
     def _status(self, fork: str) -> dict[str, Any]:
-        st = self.platform.run(fork, "status", {})
-        return dict(((st.get("data") or {}).get("status")) or {})
+        return _status_of(self.platform.run(fork, "status", {}))
 
     def _gate(self, fork: str, job: Job | None = None, a: Attempt | None = None) -> dict[str, Any]:
         """The Watt gate on the validator's fork of a frozen workspace.
@@ -2694,7 +2725,8 @@ class Desk:
                 "digest": digest,
             }
         else:
-            before = self._status(fork)
+            asked = self.platform.run(fork, "status", {})
+            before = _status_of(asked)
             digest = str(before.get("digest") or "")
             verdict = {
                 "deliverable": False,
@@ -2702,7 +2734,7 @@ class Desk:
                 "digest": digest,
             }
             if not before.get("deliverable"):
-                return verdict
+                return {**verdict, **_not_deliverable(asked, before)}
         # the guard and the delivery's files in ONE run (`watt report --mutate`): one machine start,
         # and the files are made from the very design this run guards (2026-10-16)
         stop = threading.Event()
@@ -2787,6 +2819,7 @@ class Desk:
                 + (f" (stopped: {limit})" if limit else "")
                 + _survivors(guard)
             )
+            verdict["cause"] = {"stage": "test", "limit": limit}
             return verdict
         after = self._status(fork)
         draw = after.get("guard_draw") or {}

@@ -136,6 +136,8 @@ class FakePlatform:
             weak=src.get("weak", False),
             draw=src.get("draw", ""),
             report_fails=src.get("report_fails", False),
+            stage=src.get("stage", "check"),
+            diagnostics=src.get("diagnostics", []),
             hotkey="validator",
         )
 
@@ -165,12 +167,13 @@ class FakePlatform:
             w.update(deliverable=True, draw="sha256:validator")
             guard = {"digest": digest, "sampled": {"seed": "sha256:validator"}, "survivors": []}
             return {"state": "done", "ok": True, "data": {"guard": guard}}
-        stage = "deliverable" if w["deliverable"] else "check"
+        stage = "deliverable" if w["deliverable"] else w.get("stage", "check")
         draw = {"sampled": [3, 9], "seed": w.get("draw") or "sha256:miner"}
         return {
             "state": "done",
             "ok": True,
             "data": {
+                "diagnostics": w.get("diagnostics", []),
                 "status": {
                     "deliverable": w["deliverable"],
                     "stage": stage,

@@ -16,6 +16,7 @@ from __future__ import annotations
 import argparse
 import base64
 import json
+import re
 import sys
 import time
 import tomllib
@@ -124,13 +125,15 @@ class Mcp:
                 "Content-Type": "application/json",
             },
         )
-        for wait in (2, 5, 10, 20, 30, 0):  # the platform's per-key request rate: wait it out
+        # the platform's per-key request rate, and a restart or a busy moment behind its proxy (502,
+        # 503, 504, as the agent miner's own send): wait it out
+        for wait in (2, 5, 10, 20, 30, 0):
             try:
                 with urllib.request.urlopen(req, timeout=180) as r:  # noqa: S310
                     out = json.loads(r.read())
                 break
             except urllib.error.HTTPError as e:
-                if e.code != 429 or not wait:
+                if e.code not in (429, 502, 503, 504) or not wait:
                     raise
                 time.sleep(min(60.0, float(e.headers.get("Retry-After") or wait)))
         if "error" in out:
@@ -183,7 +186,23 @@ def answers(mcp: Mcp, ws: str, after: int, log: Any) -> int:
     return int(out.get("cursor") or after)
 
 
-def build(mcp: Mcp, ws: str, project: Path, log: Any) -> str:
+def decide_open(decisions: str) -> str:
+    """A ``decisions.toml`` with every open client decision made the builder's own, on the option it
+    was built on, as a job that may not ask has it (the agent primer's rule). The reference project
+    is free to keep a question open: Watt's worked example does, to show one; an entry test, which
+    has no client to answer it, would fail the gate on it."""
+    client, opened = r'(?m)^by\s*=\s*"client"', r'(?m)^status\s*=\s*"open"'
+
+    def decided(block: str) -> str:
+        if not (re.search(client, block) and re.search(opened, block)):
+            return block
+        mine = re.sub(opened, 'status = "decided"', re.sub(client, 'by = "agent"', block))
+        return re.sub(r"(?m)^assumption\s*=", "choice =", mine)
+
+    return "".join(decided(block) for block in re.split(r"(?m)^(?=\[)", decisions))
+
+
+def build(mcp: Mcp, ws: str, project: Path, log: Any, *, no_questions: bool = False) -> str:
     """Rebuild the reference project in the workspace; answer the digest Watt reports."""
     sources = tomllib.loads((project / "spec" / "sources.toml").read_text()).get("source", {})
     for s in sources.values():
@@ -195,12 +214,11 @@ def build(mcp: Mcp, ws: str, project: Path, log: Any) -> str:
         + sorted(project.glob("tests/test_*.py"))
     )
     for f in files:
-        mcp.call(
-            "write_file",
-            workspace=ws,
-            path=f.relative_to(project).as_posix(),
-            content=f.read_text(),
-        )
+        path = f.relative_to(project).as_posix()
+        content = f.read_text()
+        if no_questions and path == "spec/decisions.toml":
+            content = decide_open(content)
+        mcp.call("write_file", workspace=ws, path=path, content=content)
     log(f"wrote {len(files)} files")
     cursor = 0
     for command, args in (("check", {}), ("build", {}), ("test", {}), ("test", {"mutate": True})):
@@ -273,7 +291,9 @@ def main(argv: list[str] | None = None) -> int:
         signed(kp, a.validator, "/v1/jobs/accept", {"job": job}, a.validator_hotkey)
         log(f"accepted {job} in {ws}")
         digest = (
-            "" if a.fail and not job.startswith("admission-") else build(mcp, ws, a.project, log)
+            ""
+            if a.fail and not job.startswith("admission-")
+            else build(mcp, ws, a.project, log, no_questions=work.get("no_questions") is True)
         )
         code, out = signed(
             kp,
