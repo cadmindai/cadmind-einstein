@@ -6,6 +6,7 @@ and budgeted before the platform is asked."""
 from __future__ import annotations
 
 import base64
+import json
 import tempfile
 import threading
 import time
@@ -238,6 +239,63 @@ class TestOurErrors(_Cases):
         st = wait_state(self.desk, "o13", ("queued", "done"))
         self.assertEqual(st["result"]["label"], "not finished")
         self.assertEqual(self.desk.jobs["o13"].attempts[0].kind, "gate")
+
+
+class TestGateKeepsItsCause(_Cases):
+    def failed(self, job: str, **state: Any) -> dict[str, Any]:
+        hk, w = self.start(job)
+        self.p.work(w["workspace"], GOOD, deliverable=False)
+        self.p.ws[w["workspace"]].update(state)
+        self.desk.submit(hk, job, w["workspace"], "d")
+        return wait_state(self.desk, job, ("queued", "done"))["result"]
+
+    def test_the_errors_of_a_design_that_does_not_build_are_named(self) -> None:
+        r = self.failed(
+            "w1",
+            stage="none",
+            diagnostics=[
+                {"code": "W0825", "severity": "warning", "found": "a warning"},
+                {"code": "E0100", "severity": "error", "found": "the  hook\nhas no plate"},
+                {"code": "E0100", "severity": "error", "found": "again"},
+                {"code": "E0200", "severity": "error", "found": "the peg"},
+            ],
+        )
+        self.assertEqual(r["label"], "not finished")
+        self.assertEqual(r["stage"], "none")
+        self.assertEqual(r["cause"], {"stage": "none", "codes": ["E0100", "E0200"]})
+        self.assertEqual(
+            r["why"],
+            "did not pass the Watt gate: the design has errors: E0100, E0200"
+            " (the hook has no plate)",
+        )
+
+    def test_a_design_stopped_early_says_how_far_it_got(self) -> None:
+        for job, stage, said in (
+            ("w2", "check", "no build passed"),
+            ("w3", "build", "its tests did not pass"),
+            ("w4", "test", "no guard is recorded"),
+        ):
+            with self.subTest(stage=stage):
+                r = self.failed(job, stage=stage)
+                self.assertIn(said, r["why"])
+                self.assertEqual(r["cause"], {"stage": stage, "codes": []})
+
+    def test_a_refused_guard_keeps_the_requirements_and_the_limit(self) -> None:
+        hk, w = self.start("w5")
+        self.p.work(w["workspace"], GOOD, deliverable=True, weak=True)
+        self.desk.submit(hk, "w5", w["workspace"], "d")
+        r = wait_state(self.desk, "w5", ("queued", "done"))["result"]
+        self.assertIn("unguarded R.holds", r["why"])
+        self.assertEqual(r["cause"], {"stage": "test", "limit": ""})
+
+    def test_the_draw_and_what_the_guard_built_stay_out_of_it(self) -> None:
+        hk, w = self.start("w6")
+        self.p.work(w["workspace"], GOOD, deliverable=True, weak=True)
+        self.desk.submit(hk, "w6", w["workspace"], "d")
+        r = wait_state(self.desk, "w6", ("queued", "done"))["result"]
+        said = json.dumps({k: r[k] for k in ("why", "error", "cause")})
+        self.assertNotIn("sha256:validator", said)
+        self.assertNotIn("drop hook", said)
 
 
 class TestUncharged(_Cases):
