@@ -41,8 +41,8 @@ good); its **quality**, for the router, is the decayed MEAN.
 **Remix credit.** A delivered job that remixes a project built on this subnet names that project's
 original miners (``credit``, from the platform's claim, :meth:`.desk.Desk.create`). They share
 :data:`REMIX_CREDIT` of the job's score, split equally, in their weight only: it decays with the
-job, moves with its score and leaves with it. The miner that built the remix keeps its full score, and
-nobody's quality changes. It is computed from the outcome, never stored as a score of its own, so a
+job, moves with its score and leaves with it. The miner that built the remix keeps its full score,
+and nobody's quality changes. It is computed from the outcome, never stored as a score of its own, so a
 job counts once however often it is judged or the validator restarts, and :func:`recompute` rebuilds
 it from the report. A credited miner that has left is out of the vector like any other.
 
