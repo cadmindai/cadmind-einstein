@@ -477,7 +477,8 @@ def _credit_of(value: Any) -> list[dict[str, str]]:
         if not isinstance(entry, Mapping):
             continue
         job, hotkey = entry.get("job"), entry.get("hotkey")
-        if isinstance(job, str) and job and len(job) <= 80 and isinstance(hotkey, str) and HOTKEY.match(hotkey):
+        good = isinstance(hotkey, str) and HOTKEY.match(hotkey)
+        if isinstance(job, str) and job and len(job) <= 80 and good:
             out.append({"job": job, "hotkey": hotkey})
     return out
 
@@ -1784,7 +1785,7 @@ class Desk:
             ):
                 self._event("credit-refused", job_id, of=entry["job"], hotkey=entry["hotkey"])
                 logging.getLogger("cadmind_einstein.desk").warning(
-                    "ALERT: claim %s credits %s for job %s, which this validator did not see it deliver",
+                    "ALERT: claim %s credits %s for job %s, not seen delivered here",
                     job_id,
                     entry["hotkey"],
                     entry["job"],
