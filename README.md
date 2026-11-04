@@ -466,7 +466,7 @@ s = 0.4·I + 0.6·(w·C + (1 - w)·B)       the client's reaction C, weighted by
 where `E` compares the job's compute and wall time with the median of similar passing jobs, and `C`/`w` come from
 the client's stars, download, re-run, change request or quality refund (one star), weighted by account trust
 (paid 1, free 0.1). The vote counts with `u = 0.4`, so a client's stars clearly dominate it; in shadow (`u = 0`) an unrated job scores exactly `I`. A miner's weight is the sum of its job scores decayed with a 24-hour half-life (7-day
-window); the hourly vector is proportional to it over registered, admitted, recently seen miners (at the mainnet
+window), plus its share of 25% of the score of each delivered remix of a project it built (the remix miner keeps its full score; see [`DESIGN.md`](DESIGN.md)); the hourly vector is proportional to it over registered, admitted, recently seen miners (at the mainnet
 launch, while the operator's launch switch is on, it is equal per admitted hotkey instead). Only admitted miners are ever
 weighted, by every rule and fallback. Weight is never
 burned and the subnet owner's hotkey is never weighted; at genesis (nobody has history) the weight is split

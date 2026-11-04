@@ -5,6 +5,18 @@ All notable changes to this project are listed here. The format follows
 [Semantic Versioning](https://semver.org/). Each release's spec version (`10000*MAJOR + 100*MINOR + PATCH`) is the
 `version_key` the validator sets weights with.
 
+## [0.5.8] - Unreleased
+
+### Added
+
+- **Remix credit.** A delivered job that remixes a project built on this subnet pays its original miners a credit in
+  weight: together they share 25% of the job's score, split equally. It decays with the job, moves with its score and
+  leaves with it (`JobOutcome.credit`, `standing`). The miner that built the remix keeps its full score, and nobody's
+  quality changes. The platform's claim names the original miners (`remix_credit`); the validator checks them against
+  what it saw delivered. A remix of a remix credits the original at the root of the chain only. Hourly reports carry
+  `credit` on such a job and `constants.remix_credit`, and `cadmind-recompute` rebuilds it; a report with no remix is
+  unchanged. Miner stats list them under `standing.remix_credits`.
+
 ## [0.5.7] - 2026-11-03
 
 ### Changed

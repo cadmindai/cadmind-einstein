@@ -85,6 +85,7 @@ import contextlib
 import json
 import logging
 import random
+import re
 import secrets
 import statistics
 import threading
@@ -438,6 +439,10 @@ class Job:
     """the operator's calibration tag of the job (the claim's ``calibration``: ``{set, id,
     generator, ...}``, e.g. a canary), kept for the archive and the operator's analysis. Never in
     the miner's ``work``: a builder cannot tell a canary from a client's job. Empty on most jobs."""
+    credit: list[dict[str, str]] = field(default_factory=list)
+    """a remix's original miners, from the claim (:func:`_credit_of`): ``{job, hotkey}``, each the
+    delivered round of the original that miner built. Never in the miner's ``work``: its delivery
+    pays them (:data:`.scoring.REMIX_CREDIT`). Empty on most jobs."""
 
     @property
     def current(self) -> Attempt | None:
@@ -454,6 +459,27 @@ def _style_of(value: Any) -> dict[str, Any]:
     if not isinstance(baseline, Mapping) or not baseline.get("contract"):
         return {}
     return {"baseline": dict(baseline)}
+
+
+CREDIT_MAX = 64
+"""the most original miners a claim's ``remix_credit`` may name: more is no project's history"""
+HOTKEY = re.compile(r"^[1-9A-HJ-NP-Za-km-z]{46,48}$")
+
+
+def _credit_of(value: Any) -> list[dict[str, str]]:
+    """A claim's ``remix_credit``, each entry checked: a delivered job of the original and the
+    hotkey that built it. Anything else is dropped; a list past :data:`CREDIT_MAX` is dropped whole.
+    Only the platform's claim reaches this, over the queue key: no miner or client writes it."""
+    if not isinstance(value, list) or len(value) > CREDIT_MAX:
+        return []
+    out: list[dict[str, str]] = []
+    for entry in value:
+        if not isinstance(entry, Mapping):
+            continue
+        job, hotkey = entry.get("job"), entry.get("hotkey")
+        if isinstance(job, str) and job and len(job) <= 80 and isinstance(hotkey, str) and HOTKEY.match(hotkey):
+            out.append({"job": job, "hotkey": hotkey})
+    return out
 
 
 CALIBRATION_MAX = 2000
@@ -1700,6 +1726,7 @@ class Desk:
                 old.style = _style_of(body.get("style"))
                 old.continuation = _continuation_of(body.get("continuation"))
                 old.calibration = _calibration_of(body.get("calibration"))
+                old.credit = self._credit_checked(job_id, body.get("remix_credit"))
                 old.state, old.result = "queued", {}
                 old.queued_ms = self.now_ms()
                 if job_id in self._outbox:
@@ -1739,8 +1766,32 @@ class Desk:
                 style=_style_of(body.get("style")),
                 continuation=_continuation_of(body.get("continuation")),
                 calibration=_calibration_of(body.get("calibration")),
+                credit=self._credit_checked(job_id, body.get("remix_credit")),
             )
         return self.status(job_id)
+
+    def _credit_checked(self, job_id: str, value: Any) -> list[dict[str, str]]:
+        """A claim's credit against this validator's own record (:func:`_credit_of` for its form):
+        an entry naming a job this validator ran is kept only when that job was delivered by that
+        hotkey. A job it does not know (before its state began) is the platform's word. A dropped
+        entry is an ALERT: the platform's record and the validator's disagree."""
+        kept: list[dict[str, str]] = []
+        for entry in _credit_of(value):
+            known = self.jobs.get(entry["job"])
+            if known is not None and (
+                known.result.get("label") != "delivered"
+                or known.result.get("hotkey") != entry["hotkey"]
+            ):
+                self._event("credit-refused", job_id, of=entry["job"], hotkey=entry["hotkey"])
+                logging.getLogger("cadmind_einstein.desk").warning(
+                    "ALERT: claim %s credits %s for job %s, which this validator did not see it deliver",
+                    job_id,
+                    entry["hotkey"],
+                    entry["job"],
+                )
+                continue
+            kept.append(entry)
+        return kept
 
     def admission(self, hotkey: str) -> dict[str, Any]:
         """A miner's entry test: a job assigned to it alone, once a day -- a small device from a
@@ -2957,6 +3008,7 @@ class Desk:
             stage=verdict["stage"],
             compute_s=compute_s,
             wall_s=max(0.0, (end - a.accepted_ms) / 1000),
+            credit=sorted({c["hotkey"] for c in job.credit}) if job.kind == "client" else [],
         )
         base: frozenset[bytes] = frozenset()
         mine: frozenset[bytes] = frozenset()

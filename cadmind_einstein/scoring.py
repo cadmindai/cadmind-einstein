@@ -36,7 +36,17 @@ another miner passes the same job -- the desk decides that). A **passing** job s
 
 **Weights, every hour, never burned.** Each job counts with a weight halving every 24 hours of age
 (a 7-day window). A miner's **weight** is the decayed SUM of its job scores (work done and how
-good); its **quality**, for the router, is the decayed MEAN. The vector is proportional to the
+good); its **quality**, for the router, is the decayed MEAN.
+
+**Remix credit.** A delivered job that remixes a project built on this subnet names that project's
+original miners (``credit``, from the platform's claim, :meth:`.desk.Desk.create`). They share
+:data:`REMIX_CREDIT` of the job's score, split equally, in their weight only: it decays with the job,
+moves with its score and leaves with it. The miner that built the remix keeps its full score, and
+nobody's quality changes. It is computed from the outcome, never stored as a score of its own, so a
+job counts once however often it is judged or the validator restarts, and :func:`recompute` rebuilds
+it from the report. A credited miner that has left is out of the vector like any other.
+
+The vector is proportional to the
 weight over registered, admitted miners seen in the last 24 hours. An hour with no work or no
 success still emits, from that history. **Genesis** -- no admitted miner has any history in the
 window -- follows ``genesis``:
@@ -90,6 +100,8 @@ HOUR_MS = 3_600_000
 MIN_BUCKET = 5
 TRUST = {"paid": 1.0, "free": 0.1}
 W_IMMEDIATE, W_CLIENT = 0.4, 0.6
+REMIX_CREDIT = 0.25
+"""The part of a delivered remix's score its original miners share, on top of the remix miner's own."""
 POSITIVE_C = 0.75
 """A client's ``C`` at or over this is positive: it never pulls a job's score below its baseline."""
 
@@ -120,6 +132,8 @@ class JobOutcome:
     vote: dict[str, float] = field(default_factory=dict)
     """the validators' vote on a passing job, as scored: {"V": value in [0, 1], "u": the weight it
     is applied with (0.4 counted, 0 in shadow)}; empty when there is none"""
+    credit: list[str] = field(default_factory=list)
+    """the original miners this job's delivery credits (a remix: :data:`REMIX_CREDIT`), hotkeys"""
     s: float = 0.0
     parts: dict[str, float] = field(default_factory=dict)
 
@@ -217,14 +231,25 @@ def decay(age_ms: int) -> float:
 
 
 def standing(jobs: Iterable[JobOutcome], now_ms: int) -> tuple[dict[str, float], dict[str, float]]:
-    """(weight, quality) per miner: the decayed sum and the decayed mean of its job scores."""
+    """(weight, quality) per miner: the decayed sum and the decayed mean of its job scores. A
+    delivered remix's credit adds to its original miners' weight, once per job (the first passing
+    outcome of it), and to nobody's quality."""
     total: dict[str, float] = defaultdict(float)
     norm: dict[str, float] = defaultdict(float)
+    credits: dict[str, float] = defaultdict(float)
+    credited: set[str] = set()
     for o in jobs:
         k = decay(now_ms - o.ended_ms)
         total[o.hotkey] += k * o.s
         norm[o.hotkey] += k
+        if o.credit and o.passed and o.job not in credited:
+            credited.add(o.job)
+            miners = sorted(set(o.credit))
+            for h in miners:
+                credits[h] += REMIX_CREDIT * k * o.s / len(miners)
     quality = {h: total[h] / norm[h] for h in norm if norm[h] > 0}
+    for h, v in credits.items():
+        total[h] += v
     return dict(total), quality
 
 
@@ -336,8 +361,16 @@ def _key(o: JobOutcome) -> str:
     return f"{o.job}/{o.hotkey}/{o.ended_ms}"
 
 
+def _public(o: JobOutcome) -> dict[str, Any]:
+    """An outcome as a report publishes it: ``credit`` only on a job that has one."""
+    row = asdict(o)
+    if not row["credit"]:
+        del row["credit"]
+    return row
+
+
 def _row(o: JobOutcome) -> dict[str, Any]:
-    return {k: v for k, v in asdict(o).items() if k not in ("s", "parts")}
+    return {k: v for k, v in _public(o).items() if k not in ("s", "parts")}
 
 
 @dataclass
@@ -508,7 +541,7 @@ class Ledger:
             "hour": now_ms // self.hour_ms,
             "at_ms": now_ms,
             "prev_sha256": self.last_sha256(),
-            "jobs": [asdict(o) for o in window],
+            "jobs": [_public(o) for o in window],
             "weight": weight,
             "quality": quality,
             "uids": dict(uid_by_hotkey),
@@ -533,6 +566,7 @@ class Ledger:
                 "immediate": W_IMMEDIATE,
                 "client": W_CLIENT,
                 "trust": TRUST,
+                "remix_credit": REMIX_CREDIT,
             },
         }
         raw = report_bytes(rep)

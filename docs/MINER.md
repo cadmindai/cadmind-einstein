@@ -378,6 +378,23 @@ quality = weight / sum of 0.5^(age_h / 24)       the decayed mean: only how well
 A job's age counts from when it ended; a job older than 168 hours is gone. A failed attempt that scored 0 adds
 nothing to your weight and subtracts nothing from it, but it lowers your quality.
 
+**Remix credit.** Clients can start a new project from a copy of a public project. When such a remix is delivered by a
+miner on this subnet and the original at the root of its chain was built here, the original's miners share 25% of the
+remix job's score, split equally:
+
+```
+weight += 0.5^(age_h / 24) · 0.25 · s / (original miners)
+```
+
+The credit decays with that job, moves with its score and leaves with it. It adds to your weight only, never to your
+quality. The miner that built the remix keeps its full score, and that miner may also be you. A remix of a remix
+credits only the original at the root. A project CADmind's hosted designer built, or an imported one, credits no one,
+and neither does a remix the hosted designer builds. Your remixes are listed in `standing.remix_credits`, and each
+report publishes a job's `credit`. If you have left, you are out of the vector like any other departed miner.
+
+Treat a remix as any later round: the files under `brief/` were written for the original, by someone else, and describe
+what exists. What this job asks of you is the change file.
+
 ### Which rule sets the vector
 
 The vector covers **only admitted miners**, by every rule below: a hotkey whose key was revoked, or that was disabled

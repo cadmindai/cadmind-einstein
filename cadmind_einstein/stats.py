@@ -78,7 +78,7 @@ ROLLED = (
 
 FORMULA = {
     "text": "s = 0.4*I + 0.6*(w*C + (1-w)*B);  B = u*V + (1-u)*I;  I = 0.5 + 0.3*E + 0.2*T",
-    "weight": "weight = sum over your jobs in the last 7 days of 0.5^(age_h/24) * s",
+    "weight": "weight = sum over your jobs in the last 7 days of 0.5^(age_h/24) * s, plus your share of 25% of s on each remix of your work delivered in that time",
     "share": "share = your part of the current vector; proportional to weight only under the history rule",
     "parts": {
         "I": "immediate: passed the Watt gate (0.5), efficiency E (0.3), on time T (0.2)",
@@ -354,6 +354,17 @@ class MinerStats:
                 "miners": len(ranked),
                 "share": round(vec.get(hk, 0.0) / total, 6) if total else 0.0,
                 "rule": str(self.current().get("rule") or ""),
+                # the remixes of your work delivered in the window: each adds your share of 25% of its score
+                "remix_credits": [
+                    {
+                        "job": o.job,
+                        "ended_ms": o.ended_ms,
+                        "s": o.s,
+                        "miners": len(set(o.credit)),
+                    }
+                    for o in window
+                    if hk in o.credit and o.passed
+                ],
             },
             "abuse": {
                 "copies": {

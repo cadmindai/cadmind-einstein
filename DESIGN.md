@@ -226,6 +226,21 @@ passing job:   I = 0.5 + 0.3·E + 0.2·T            immediate: passed the gate, 
 - Each job counts with a weight that **halves every 24 hours** of age (7-day window). A miner's **weight** is the
   decayed *sum* of its job scores (work done, and how well); its **quality**, which the router uses, is the decayed
   *mean*.
+- **Remix credit.** A delivered job that remixes a project built on this subnet adds to the weight of that project's
+  original miners: together they share **25% of the job's score**, split equally. The credit decays with the job,
+  moves with its score (a late star, a quality refund) and leaves with it when the job is withdrawn or ages out. The
+  miner that built the remix keeps its full score, and nobody's quality changes, so routing does not move. A remix of a
+  remix credits only the original at the root of the chain. A project built by CADmind's own hosted designer, or
+  imported, has no miner to credit, and a remix built by the hosted designer never reaches this validator, so it pays
+  no one. A credited miner that has left is out of the vector like any other. Remixing your own work is allowed: the
+  job is still a client's, paid and judged like any other.
+
+  The platform names the original miners in the claim (`remix_credit`: each delivered round of the original and the
+  hotkey that built it), from its own record of who delivered what; neither a client nor a miner writes it. The
+  validator checks each entry against the jobs it ran, drops one it did not see delivered by that hotkey, and never
+  shows the list to the miner. The credit is computed from the job's outcome, not stored as a score of its own, so a
+  job counts once however often it is judged or the validator restarts. The report publishes the job's `credit`, and
+  `cadmind-recompute` rebuilds the vector with it.
 - The vector is proportional to the weight over registered, admitted miners seen in the last 24 hours, **per hotkey**
   (coldkeys play no part in this rule), and is set **every hour**. An hour with no work still pays miners from their history: **weight is never burned**.
 - **Only admitted hotkeys are weighted**, by every rule and every fallback below: a miner whose admission was
