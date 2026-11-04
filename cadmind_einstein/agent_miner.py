@@ -194,7 +194,10 @@ designs its own parts and defines each sub-device's interface ([subproject.<id>]
 contract) and is delivered at that stage (DONE); it never builds a sub-device: the client starts \
 each sub-device's job when they want, and a later round assembles them. A workspace with \
 brief/contract.toml is a sub-device: meet that contract (W0230) and publish spec/contract.toml; \
-brief/parent.md, when there, is the parent's brief, for context.
+brief/parent.md, when there, is the parent's brief, for context. \
+A workspace with brief/references.toml is an accessory of another device, `@<id>` in the brief: \
+read the `references` topic first; you check against references/<id>/, numbers and shapes, which \
+you never write. Its parts and files are not yours to deliver.
 If the scope guide says we may not or cannot build any of it, end with:
 REJECT <not-allowed|not-capable>: <message for the client>
 (the last thing you write)

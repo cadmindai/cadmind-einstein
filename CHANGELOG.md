@@ -5,6 +5,14 @@ All notable changes to this project are listed here. The format follows
 [Semantic Versioning](https://semver.org/). Each release's spec version (`10000*MAJOR + 100*MINOR + PATCH`) is the
 `version_key` the validator sets weights with.
 
+## [Unreleased]
+
+### Added
+
+- A builder is told about a workspace with `brief/references.toml`: an accessory of another device, checked against that
+  device's package under `references/<id>/`. Nothing else changes for a miner: the platform writes the package before the
+  workspace is handed over, and the gate reads it from the frozen workspace.
+
 ## [0.5.7] - 2026-11-03
 
 ### Changed
