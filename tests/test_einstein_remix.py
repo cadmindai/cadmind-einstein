@@ -182,7 +182,13 @@ class TestReports(unittest.TestCase):
 class TestClaimForm(unittest.TestCase):
     def test_only_well_formed_entries_are_kept(self) -> None:
         self.assertEqual(_credit_of([ORIGINAL]), [ORIGINAL])
-        for bad in ("x", {"hotkey": A}, [{"job": "j"}], [{"job": "", "hotkey": A}], [{"job": "j", "hotkey": "../x"}]):
+        for bad in (
+            "x",
+            {"hotkey": A},
+            [{"job": "j"}],
+            [{"job": "", "hotkey": A}],
+            [{"job": "j", "hotkey": "../x"}],
+        ):
             self.assertEqual(_credit_of(bad), [])
         self.assertEqual(_credit_of([{"job": "j", "hotkey": A}] * (CREDIT_MAX + 1)), [])
 
@@ -268,7 +274,9 @@ class TestDesk(DeskRig):
     def test_a_failed_attempt_and_its_retry_count_once(self) -> None:
         self.desk.work(A), self.desk.work(B), self.desk.work(C)
         credit = [{"job": "original-1", "hotkey": C}]
-        self.enqueue({"job": "r3", "brief": "a change", "seed": self.seed(), "remix_credit": credit})
+        self.enqueue(
+            {"job": "r3", "brief": "a change", "seed": self.seed(), "remix_credit": credit}
+        )
         # the first builder declines; the job goes to another, whose delivery is the one credited
         first, _ = self.assigned()
         self.desk.reject(first, "r3", "not-capable", "not for me")
@@ -318,7 +326,12 @@ class TestDesk(DeskRig):
         self.desk.work(A), self.desk.work(B), self.desk.work(C)
         self.enqueue({"job": "open", "brief": "still queued, or taken"})
         self.enqueue(
-            {"job": "forged2", "brief": "x", "seed": self.seed(), "remix_credit": [{"job": "open", "hotkey": A}]}
+            {
+                "job": "forged2",
+                "brief": "x",
+                "seed": self.seed(),
+                "remix_credit": [{"job": "open", "hotkey": A}],
+            }
         )
         self.assertEqual(self.desk.jobs["forged2"].credit, [])
 

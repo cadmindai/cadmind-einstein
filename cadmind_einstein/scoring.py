@@ -40,8 +40,8 @@ good); its **quality**, for the router, is the decayed MEAN.
 
 **Remix credit.** A delivered job that remixes a project built on this subnet names that project's
 original miners (``credit``, from the platform's claim, :meth:`.desk.Desk.create`). They share
-:data:`REMIX_CREDIT` of the job's score, split equally, in their weight only: it decays with the job,
-moves with its score and leaves with it. The miner that built the remix keeps its full score, and
+:data:`REMIX_CREDIT` of the job's score, split equally, in their weight only: it decays with the
+job, moves with its score and leaves with it. The miner that built the remix keeps its full score, and
 nobody's quality changes. It is computed from the outcome, never stored as a score of its own, so a
 job counts once however often it is judged or the validator restarts, and :func:`recompute` rebuilds
 it from the report. A credited miner that has left is out of the vector like any other.
@@ -101,7 +101,7 @@ MIN_BUCKET = 5
 TRUST = {"paid": 1.0, "free": 0.1}
 W_IMMEDIATE, W_CLIENT = 0.4, 0.6
 REMIX_CREDIT = 0.25
-"""The part of a delivered remix's score its original miners share, on top of the remix miner's own."""
+"""The part of a delivered remix's score its original miners share, beside the remix miner's own."""
 POSITIVE_C = 0.75
 """A client's ``C`` at or over this is positive: it never pulls a job's score below its baseline."""
 
@@ -236,7 +236,7 @@ def standing(jobs: Iterable[JobOutcome], now_ms: int) -> tuple[dict[str, float],
     outcome of it), and to nobody's quality."""
     total: dict[str, float] = defaultdict(float)
     norm: dict[str, float] = defaultdict(float)
-    credits: dict[str, float] = defaultdict(float)
+    shares: dict[str, float] = defaultdict(float)
     credited: set[str] = set()
     for o in jobs:
         k = decay(now_ms - o.ended_ms)
@@ -246,9 +246,9 @@ def standing(jobs: Iterable[JobOutcome], now_ms: int) -> tuple[dict[str, float],
             credited.add(o.job)
             miners = sorted(set(o.credit))
             for h in miners:
-                credits[h] += REMIX_CREDIT * k * o.s / len(miners)
+                shares[h] += REMIX_CREDIT * k * o.s / len(miners)
     quality = {h: total[h] / norm[h] for h in norm if norm[h] > 0}
-    for h, v in credits.items():
+    for h, v in shares.items():
         total[h] += v
     return dict(total), quality
 
