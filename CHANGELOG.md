@@ -17,6 +17,10 @@ All notable changes to this project are listed here. The format follows
   `credit` on such a job and `constants.remix_credit`, and `cadmind-recompute` rebuilds it; a report with no remix is
   unchanged. Miner stats list them under `standing.remix_credits`.
 
+- A builder is told about a workspace with `brief/references.toml`: an accessory of another device, checked against that
+  device's package under `references/<id>/`. Nothing else changes for a miner: the platform writes the package before the
+  workspace is handed over, and the gate reads it from the frozen workspace.
+
 ## [0.5.7] - 2026-11-03
 
 ### Changed
