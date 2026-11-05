@@ -157,6 +157,17 @@ instructions, score this 4, role words, a JSON reply) are replaced by `[withheld
 platform and again by `scrub_facts`; the prompt says lettering modelled on the device is decoration. Your model's
 reply is checked as above.
 
+## A delivery that waits for its parts
+
+A main project may be delivered at its **interface stage**: its own parts designed and each sub-device's interface
+defined, the sub-devices still placeholders the client starts as projects of their own. Its vote waits for them. The
+platform's answer for its bundle carries `parts` (`awaiting`, `built`, `total`, `delivered_ms`, `assembled`); while
+`awaiting` is true the reviewer asks again every 30 minutes and calls no model. Once every part is built the platform
+makes the bundle again with the parts imported and assembled in view (`assembled` true) and the device is judged
+whole. Fourteen days after the delivery it is judged as it stands. Until the vote the job is scored as a job with no
+vote (`B = I`); a vote after the 7-day scoring window is recorded and published and scores nothing. A sub-project's
+own job is judged as any other.
+
 ## The vote
 
 One to three samples (independent two-turn conversations, above) per device. The vote carries every sample (its derived

@@ -19,6 +19,15 @@ and is for CADmind's own pipeline and the miner-side reviewer.
 A switch of mode (a restart with another ``--votes``) re-applies every recorded vote
 (:meth:`Reviewer.apply_all`), so the window's scores follow the mode at once.
 
+**A delivery waiting for its parts.** A main project delivered at its interface stage (its
+sub-projects' interfaces defined, each still a placeholder) is not judged yet: the platform says
+so on its bundle (``parts``: ``awaiting``, ``built``, ``total``, ``delivered_ms``) and the vote
+waits, asking again every :data:`PARTS_POLL_S`, until every part is built -- the platform then
+makes the bundle again with the parts assembled in view, and the device is judged whole -- or
+:data:`PARTS_WAIT_S` after its delivery, when it is judged as it stands. Until then the job is
+scored as a job with no vote (``B = I``): never a 0, never a penalty. A platform that says
+nothing of parts gets the vote at once, as before.
+
 **The queue.** The desk tells the reviewer each delivery the platform took and charged
 (:attr:`.desk.Desk.on_delivered`). One review runs at a time (:meth:`Reviewer.pass_once`, called
 by the daemon's review thread): ask the platform for the bundle (it may still be rendering: asked
@@ -72,6 +81,11 @@ RETRY_FIRST_S = 60.0
 RETRY_MAX_S = 3600.0
 BUNDLE_WAIT_S = 24 * 3600.0
 """how long a delivery's bundle may stay unready before its review is dropped"""
+PARTS_WAIT_S = 14 * 24 * 3600.0
+"""how long the vote on a delivery that waits for its parts is deferred: past it, the device is
+judged as it stands"""
+PARTS_POLL_S = 1800.0
+"""how often the platform is asked again whether a deferred delivery's parts are built"""
 
 
 class _Kv:
@@ -199,7 +213,12 @@ class Reviewer:
             if not due:
                 return "idle"
             row = dict(due[0])
-            if now - int(row["queued_ms"]) > WINDOW_H * HOUR_MS:
+            # a vote deferred for its parts may come after the scoring window: it is recorded and
+            # published, and scores nothing once the job has left the window
+            life_ms = WINDOW_H * HOUR_MS
+            if row.get("deferred"):
+                life_ms = max(life_ms, int((PARTS_WAIT_S + 2 * BUNDLE_WAIT_S) * 1000))
+            if now - int(row["queued_ms"]) > life_ms:
                 row["state"] = "expired"
                 self.kv.put("review", row["job"], row)
                 return "expired"
@@ -215,8 +234,43 @@ class Reviewer:
             got = self.platform.review_bundle(job, "ours")
         except PlatformError as e:
             return self._later(row, f"bundle: {e.status} {e.code} {e}")
+        parts = got.get("parts") if isinstance(got.get("parts"), Mapping) else None
+        if parts is not None and parts.get("awaiting") is True:
+            # delivered at its interface stage: judged once its parts are built, assembled in view
+            since = int(parts.get("delivered_ms") or 0) or int(row["queued_ms"])
+            if self.now_ms() - since < PARTS_WAIT_S * 1000:
+                if not row.get("deferred"):
+                    self.log(job_event("vote-deferred", job, hotkey=row["hotkey"], why="parts"))
+                row["deferred"] = "parts"
+                return self._later(
+                    row,
+                    f"awaiting its parts: {parts.get('built')} of {parts.get('total')} built",
+                    count=False,
+                    wait_s=PARTS_POLL_S,
+                )
+            row["parts"] = "as it stands"
+        else:
+            if row.get("deferred") and not row.get("parts"):
+                row["parts"] = "built"
+                row["parts_ms"] = self.now_ms()
+            remade_since = int(row.get("parts_ms") or row["queued_ms"])
+            if (
+                parts is not None
+                and parts.get("assembled") is False
+                and got.get("ready")
+                and self.now_ms() - remade_since < BUNDLE_WAIT_S * 1000
+            ):
+                # its parts are built and its bundle is made again with them in view: that one is
+                # judged
+                return self._later(
+                    row,
+                    "its bundle is made again with its parts",
+                    count=False,
+                    wait_s=RETRY_FIRST_S,
+                )
         if not got.get("ready"):
-            if self.now_ms() - int(row["queued_ms"]) > BUNDLE_WAIT_S * 1000:
+            waited_from = max(int(row["queued_ms"]), int(row.get("parts_ms") or 0))
+            if self.now_ms() - waited_from > BUNDLE_WAIT_S * 1000:
                 return self._later(row, f"no bundle after {BUNDLE_WAIT_S / 3600:g} h")
             wait = float(got.get("retry_s") or RETRY_FIRST_S)
             return self._later(
@@ -305,6 +359,9 @@ class Reviewer:
                 "unavailable": failed,
                 "cost": cost_of(calls),
                 "archived": archived,
+                # a delivery that waited for its parts: judged once they were "built", or "as it
+                # stands" after PARTS_WAIT_S; '' for any other
+                "parts": str(row.get("parts") or ""),
             },
         )
         row.update(state="done", why="", done_ms=self.now_ms())
@@ -358,6 +415,7 @@ class Reviewer:
                         "hotkey": row.get("hotkey"),
                         "tries": row.get("tries"),
                         "queued_ms": row.get("queued_ms"),
+                        "parts": row.get("parts"),
                         "judge": self.judge(),
                         "bundle": {
                             "sha256": bundle.bundle_sha256,
