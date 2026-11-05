@@ -5,6 +5,21 @@ All notable changes to this project are listed here. The format follows
 [Semantic Versioning](https://semver.org/). Each release's spec version (`10000*MAJOR + 100*MINOR + PATCH`) is the
 `version_key` the validator sets weights with.
 
+## [0.5.9] - 2026-11-05
+
+### Changed
+
+- **The reference miner runs Claude Code isolated from the operator's own Claude Code configuration.** The agent
+  learns Watt from `watt_guide` alone, so an operator's skills, memory, hooks or `CLAUDE.md` no longer change a run or
+  add instructions to it. `cadmind-einstein-miner` now passes `--setting-sources project,local` (no user settings),
+  `--settings` turning off claude.ai-synced skills and plugins, auto-memory and every plugin, and
+  `--disable-slash-commands`; it denies the `Skill` tool; and it sets `CLAUDE_CODE_DISABLE_CLAUDE_MDS=1` and
+  `CLAUDE_CODE_DISABLE_AUTO_MEMORY=1` in the agent's environment (the first run, every resume and every self-review
+  correction). An `--agent-command` agent is unchanged.
+- An operator whose model provider is configured in `~/.claude/settings.json` moves it into the miner's environment,
+  or passes the new **`--agent-user-settings`** (off by default), which reads the user settings again; everything
+  else stays isolated. `--agent-arg` flags still come last and win.
+
 ## [0.5.8] - 2026-11-04
 
 ### Added

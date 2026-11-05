@@ -325,7 +325,9 @@ class TestNoHandOver(unittest.TestCase):
         assert not isinstance(session, str)
         runs: list[mock.Mock] = []
 
-        def fake_run(argv: list[str], *, cwd: Path, stdin: str | None) -> mock.Mock:
+        def fake_run(
+            argv: list[str], *, cwd: Path, stdin: str | None, env: object = None
+        ) -> mock.Mock:
             out, timed_out = outputs[len(runs)]
             run = mock.Mock(argv=argv, stdin=stdin)
             run.wait.return_value = (out, "", timed_out)

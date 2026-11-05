@@ -688,6 +688,26 @@ This repository ships two miners:
   `--agent-command` runs any other agent CLI from an argv template. Your CLI uses whatever credentials you have
   configured for it.
 
+  **The agent never sees your own Claude Code configuration.** It learns Watt from the platform's `watt_guide`,
+  which matches the platform's version and is the same for every miner; your skills, memory, hooks or `CLAUDE.md`
+  would make its runs unrepeatable and could add instructions to them. So the command line also carries:
+
+  | Setting | How | What it keeps out |
+  | --- | --- | --- |
+  | `--setting-sources project,local` | flag | `~/.claude/settings.json`: its hooks, plugins, permission mode, `env` (the agent's directory, `<state>/empty`, has no project or local settings) |
+  | `--settings '{"syncClaudeAiSkills":false,"syncClaudeAiPlugins":false,"autoMemoryEnabled":false,"enabledPlugins":{}}'` | flag | skills and plugins synced from your claude.ai account, auto-memory, any plugin |
+  | `--disable-slash-commands` | flag | every skill and custom command |
+  | `Skill` in `--disallowedTools` | flag | the skill tool |
+  | `CLAUDE_CODE_DISABLE_CLAUDE_MDS=1` | environment | every `CLAUDE.md` (yours, or one in a parent directory) |
+  | `CLAUDE_CODE_DISABLE_AUTO_MEMORY=1` | environment | auto-memory, read or written |
+
+  Your login (`claude login`) and the environment you start the miner with still reach the CLI. If you configure
+  your model provider in `~/.claude/settings.json` (its `env` block or `apiKeyHelper`), either move it into the
+  miner's environment or pass `--agent-user-settings`, which adds `user` back to `--setting-sources` (off by
+  default; everything else in the table stays on). `--agent-arg` flags come after the miner's own and win, so a
+  `--settings` of yours there replaces the miner's. An `--agent-command` agent gets none of this: its isolation
+  is yours to configure.
+
   ```bash
   pip install -e .                 # from a checkout of this repository
   cadmind-einstein-miner --wallet.name miner --wallet.hotkey m1 \

@@ -55,6 +55,16 @@ named ``cadmind-fetch``): it downloads a public document from the miner's own co
 refuse the platform's address) and uploads it into the job's workspace, as the hosted ``fetch``
 stores one. It is a fenced download, not a shell; ``--no-local-fetch`` leaves it out.
 
+Claude Code's CLI runs **isolated from the operator's own Claude Code configuration**: the agent
+learns Watt from the platform's ``watt_guide``, which matches the platform's version and is the same
+for every miner, so no operator skill, memory, hook or ``CLAUDE.md`` may change a run or add
+instructions to it. The command line carries ``--setting-sources project,local`` (the user settings
+stay out; the empty work directory has no project or local ones), ``--settings`` with
+:data:`ISOLATION_SETTINGS` (no claude.ai-synced skills or plugins, no auto-memory, no plugin) and
+``--disable-slash-commands``; ``Skill`` is denied with the other built-in tools; and the environment
+carries :data:`ISOLATION_ENV` (no ``CLAUDE.md``, no auto-memory). ``--agent-user-settings`` lets the
+user settings back in (for a provider configured there); ``--agent-arg`` flags come last and win.
+
 **Self-review** (``--self-review on``, the default; :mod:`.self_review`): after the agent's
 ``DONE`` and before the submit, the validators' own judge (:mod:`.judge`, on the miner's own model
 key: ``--self-review-model``, ``--self-review-key-file``) reviews the built device on a review
@@ -127,16 +137,41 @@ BUILTIN_TOOLS = (
     "NotebookRead",
     "Task",
     "TodoWrite",
+    "Skill",
 )
 """Claude Code's built-in tools, denied by name: ``--allowedTools`` only pre-approves the MCP tools,
 it does not take the built-ins away, and a hostile brief must not steer the agent into reading or
-sending anything from the miner's machine. ``WebSearch`` is not here: it runs on the model
-provider's side and touches nothing on this machine (``WEB_SEARCH``). ``WebFetch`` stays denied, so
-every page the agent uses is downloaded with ``fetch_to_workspace`` (or the hosted ``fetch``),
-stored in the project and cited."""
+sending anything from the miner's machine. ``Skill`` is denied with them: the agent's knowledge
+comes from Watt's ``watt_guide`` (see :data:`ISOLATION_SETTINGS`). ``WebSearch`` is not here: it
+runs on the model provider's side and touches nothing on this machine (``WEB_SEARCH``).
+``WebFetch`` stays denied, so every page the agent uses is downloaded with ``fetch_to_workspace``
+(or the hosted ``fetch``), stored in the project and cited."""
 WEB_SEARCH = "WebSearch"
 """Claude Code's web search, pre-approved: the agent needs real drawings and dimensions of every
 product the device fits (positions of ports, buttons, cameras), not only a spec sheet's outline."""
+SETTING_SOURCES = "project,local"
+"""Claude Code's ``--setting-sources``: not ``user``, so the operator's own
+``~/.claude/settings.json`` (its hooks, plugins, permission mode, environment) never reaches a
+miner session. The agent runs in
+the empty ``<state>/empty`` directory, which holds no project or local settings.
+``--agent-user-settings`` adds ``user`` back."""
+ISOLATION_SETTINGS: dict[str, Any] = {
+    "syncClaudeAiSkills": False,
+    "syncClaudeAiPlugins": False,
+    "autoMemoryEnabled": False,
+    "enabledPlugins": {},
+}
+"""The session's own settings (``--settings``): no skills or plugins synced from a claude.ai
+account, no auto-memory, no plugin enabled. With ``--disable-slash-commands``, ``Skill`` denied and
+:data:`ISOLATION_ENV`, the agent sees nothing of the operator's own Claude Code configuration:
+it learns Watt from ``watt_guide``, served by the platform and matched to its version, so a run is
+repeatable and no operator skill, memory or ``CLAUDE.md`` can add instructions to it."""
+ISOLATION_ENV: dict[str, str] = {
+    "CLAUDE_CODE_DISABLE_CLAUDE_MDS": "1",
+    "CLAUDE_CODE_DISABLE_AUTO_MEMORY": "1",
+}
+"""Set in the agent's environment for Claude Code's CLI: no ``CLAUDE.md`` is read (the user's, or
+one in any parent directory) and auto-memory is neither read nor written."""
 KILL_GRACE_S = 10.0
 
 PROMPT = """You are a CADmind einstein miner. Build this client's device in the Watt workspace \
@@ -343,12 +378,34 @@ def agent_argv(
         allowed_tools(a),
         "--disallowedTools",
         ",".join(BUILTIN_TOOLS),
+        "--setting-sources",
+        setting_sources(a),
+        "--settings",
+        json.dumps(ISOLATION_SETTINGS, separators=(",", ":")),
+        "--disable-slash-commands",
         "--output-format",
         "text",
     ]
     if a.model:
         argv += ["--model", a.model]
     return argv + list(a.agent_arg)
+
+
+def setting_sources(a: argparse.Namespace) -> str:
+    """Claude Code's ``--setting-sources``: :data:`SETTING_SOURCES`, with ``user`` first only when
+    the operator asked for it (``--agent-user-settings``)."""
+    if getattr(a, "agent_user_settings", False):
+        return "user," + SETTING_SOURCES
+    return SETTING_SOURCES
+
+
+def agent_env(a: argparse.Namespace, base: Mapping[str, str] | None = None) -> dict[str, str]:
+    """The agent's environment: the miner's own (``base``), plus :data:`ISOLATION_ENV` for Claude
+    Code's CLI. An ``--agent-command`` agent gets the environment unchanged."""
+    env = dict(os.environ if base is None else base)
+    if not a.agent_command:
+        env.update(ISOLATION_ENV)
+    return env
 
 
 def allowed_tools(a: argparse.Namespace) -> str:
@@ -376,7 +433,13 @@ class AgentRun:
     started: SIGTERM to the group, SIGKILL after ``grace_s``."""
 
     def __init__(
-        self, cmd: list[str], *, cwd: Path, stdin: str | None, grace_s: float = KILL_GRACE_S
+        self,
+        cmd: list[str],
+        *,
+        cwd: Path,
+        stdin: str | None,
+        env: Mapping[str, str] | None = None,
+        grace_s: float = KILL_GRACE_S,
     ) -> None:
         self.grace_s, self.stopped = grace_s, threading.Event()
         self._stdin = stdin
@@ -387,6 +450,7 @@ class AgentRun:
             stderr=subprocess.PIPE,
             text=True,
             cwd=cwd,
+            env=None if env is None else dict(env),
             start_new_session=True,
         )
 
@@ -513,17 +577,19 @@ def build(
     watch: Any,
     log: Any,
     job: str,
+    env: Mapping[str, str] | None = None,
 ) -> Build:
     """Run the agent; while it ends without ``DONE`` or ``REJECT`` with more than
     :data:`RESUME_MIN_LEFT_S` before the deadline, run it again, up to :data:`MAX_RESUMES` times
     (there is no hand-over: an unfinished project earns nothing): the same session, or a new one
     told of its earlier work when the session is dead (:func:`dead`). ``watch(run)`` is told the
     running :class:`AgentRun` (``None`` once it ends), so a cancelled job can stop it. Each run's
-    exit code and error output are logged and kept in the record."""
+    exit code and error output are logged and kept in the record. ``env``: the agent's environment
+    (:func:`agent_env`; None: the miner's own)."""
 
     def one(argv: list[str], stdin_: str | None, timeout: float) -> tuple[str, str, bool, bool]:
         nonlocal record
-        run = AgentRun(argv, cwd=cwd, stdin=stdin_)
+        run = AgentRun(argv, cwd=cwd, stdin=stdin_, env=env)
         watch(run)
         try:
             out, err, timed_out = run.wait(timeout)
@@ -790,7 +856,7 @@ def corrector(
                 a, prompt=text, prompt_file=prompt_file, mcp_file=mcp_file, ws=ws, job=job
             )
             stdin = text
-        run = AgentRun(argv, cwd=work_dir, stdin=stdin)
+        run = AgentRun(argv, cwd=work_dir, stdin=stdin, env=agent_env(a))
         watch(run)
         try:
             out, err, timed_out = run.wait(budget_s)
@@ -821,6 +887,13 @@ def parser() -> argparse.ArgumentParser:
     ap.add_argument("--agent-cli", default="claude", help="Claude Code's CLI (default: claude)")
     ap.add_argument("--model", default="", help="passed to the agent; empty: the CLI's default")
     ap.add_argument("--agent-arg", action="append", default=[], help="extra CLI argument")
+    ap.add_argument(
+        "--agent-user-settings",
+        action="store_true",
+        help="Claude Code's CLI also reads your user settings (~/.claude/settings.json: its hooks, "
+        "plugins, environment); off by default, so no operator configuration reaches the agent. "
+        "CLAUDE.md, auto-memory, skills and slash commands stay off either way",
+    )
     ap.add_argument("--agent-command", default="", help="any agent CLI: an argv template")
     ap.add_argument("--prompt-file", type=Path, help="a prompt template replacing the built-in one")
     ap.add_argument("--max-jobs", type=int, default=0, help="0: run forever")
@@ -1075,6 +1148,7 @@ def main(argv: list[str] | None = None) -> int:
                 watch=watch,
                 log=log,
                 job=job,
+                env=agent_env(a),
             )
             if overrun is not None:
                 overrun.cancel()

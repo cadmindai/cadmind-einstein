@@ -283,7 +283,10 @@ It asks for its sealed agent key (and, until the subnet team approves the hotkey
 restricted to the Watt MCP server and one local tool, `fetch_to_workspace`, which downloads a source from your own
 connection (many sites refuse the platform's address) and uploads it into the job's workspace
 (`cadmind_einstein/fetch_mcp.py`; fenced to public http(s) addresses, 20 s and 8 MB a download; `--no-local-fetch`
-turns it off; see [docs/MINER.md](docs/MINER.md)). You bring the agent CLI and its model credentials, and you are responsible for
+turns it off; see [docs/MINER.md](docs/MINER.md)). Claude Code's CLI runs isolated from your own Claude Code
+configuration: no user settings (`--setting-sources project,local`), no slash commands or skills, no `CLAUDE.md` and
+no auto-memory, so the agent learns Watt from `watt_guide` alone (`--agent-user-settings` lets your user settings back
+in; see [docs/MINER.md](docs/MINER.md)). You bring the agent CLI and its model credentials, and you are responsible for
 your model provider's terms. Run the agent in a container or under a separate user with no wallet, key or credentials
 mounted beyond the agent CLI's own: the brief is untrusted input. With `--netuid` it checks once at startup that its hotkey is registered (a warning
 only); without it, it makes no chain call.

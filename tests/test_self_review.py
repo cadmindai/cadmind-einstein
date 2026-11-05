@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import io
 import json
+import os
 import struct
 import tempfile
 import threading
@@ -327,9 +328,13 @@ class TestWiring(unittest.TestCase):
 
 class FakeRun:
     made: ClassVar[list[tuple[list[str], str | None]]] = []
+    envs: ClassVar[list[dict[str, str] | None]] = []
 
-    def __init__(self, cmd: list[str], *, cwd: Path, stdin: str | None) -> None:
+    def __init__(
+        self, cmd: list[str], *, cwd: Path, stdin: str | None, env: dict[str, str] | None = None
+    ) -> None:
         FakeRun.made.append((cmd, stdin))
+        FakeRun.envs.append(env)
         self.stopped = threading.Event()
         self.proc = mock.Mock(returncode=0)
 
@@ -340,6 +345,7 @@ class FakeRun:
 class TestCorrector(unittest.TestCase):
     def setUp(self) -> None:
         FakeRun.made = []
+        FakeRun.envs = []
 
     def test_claude_code_resumes_its_session(self) -> None:
         got = built()
@@ -367,6 +373,10 @@ class TestCorrector(unittest.TestCase):
             FakeRun.made[0][0], ["claude", "--resume", "sid-1", "-p", "FIX N1", "--model", "m"]
         )
         self.assertIn("SELF-REVIEW", got.record)
+        env = FakeRun.envs[0]
+        assert env is not None
+        for name, value in agent_miner.ISOLATION_ENV.items():
+            self.assertEqual(env[name], value)  # the resumed session stays isolated
 
     def test_an_agent_command_runs_fresh_told_of_its_work(self) -> None:
         got = built()
@@ -397,6 +407,7 @@ class TestCorrector(unittest.TestCase):
         self.assertIn("already holds your earlier work", written)
         self.assertIn("DONE d1", written)
         self.assertTrue(written.endswith("FIX N1"))
+        self.assertEqual(FakeRun.envs[0], dict(os.environ))  # another agent CLI: the miner's own
 
 
 def stl(tris: list[tuple[tuple[float, float, float], ...]]) -> bytes:
