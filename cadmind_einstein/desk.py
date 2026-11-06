@@ -135,6 +135,14 @@ REFUSED_DELIVERY = ("delivery_not_of_job", "delivery_digest_mismatch")
 does not descend from the job's own grant, or is not at the digest the validator gated): a
 security ALERT, never sent again, and the job's scores withdrawn -- the validator's side, not the
 miner's (see :meth:`Desk._refused_delivery`)"""
+REFUSED_BUILD = ("parts_dropped", "change_unfounded")
+"""the platform's refusals of a delivered result for what the BUILDER did: an assembly round that
+dropped a part it was given with the part's contract unchanged and no change request for it
+(``parts_dropped``), or a change request whose failing check passes with the part imported
+(``change_unfounded``). The builder's failure: its attempt fails (counted, scored 0), the job goes
+to another miner from scratch, and the platform's words are in the miner's ``failures`` (see
+:meth:`Desk._refused_build`)"""
+PRACTICE_ID = re.compile(r"^practice-[0-9a-f]{6,32}$")
 OURS_BUSY = (
     "run_in_progress",
     "busy",
@@ -351,6 +359,9 @@ class Platform(Protocol):
     def lease(self, jobs: list[str], working: list[str] | None = None) -> dict[str, Any]: ...
     def claimed(self) -> list[dict[str, Any]]: ...
     def complete(self, job: str, result: dict[str, Any]) -> Any: ...
+    # practice jobs (:mod:`.practice`); a platform without them gives no practice
+    def practice_brief(self, hotkey: str) -> dict[str, Any]: ...
+    def grant_practice(self, hotkey: str, *, brief: str, name: str) -> str: ...
 
 
 class DeskError(Exception):
@@ -400,6 +411,9 @@ class Attempt:
     delivered version), from which the builder may start over; '' when the base is the brief"""
     summary: str = ""
     """the builder's own words on what blocks delivery, given with its submit (optional)"""
+    setup: str = ""
+    """the miner's own label for the setup it built this attempt with (its model, its prompt),
+    given with its submit (optional): what its practice results are grouped by"""
 
 
 @dataclass
@@ -415,7 +429,8 @@ class Job:
     created_ms: int = 0
     result: dict[str, Any] = field(default_factory=dict)
     kind: str = "client"
-    """client | admission (one miner's entry test: assigned to it alone, never scored)"""
+    """client | admission (one miner's entry test: assigned to it alone, never scored) | practice
+    (a miner's practice on a public brief: assigned to it alone, never scored, :mod:`.practice`)"""
     target: str = ""
     queued_ms: int = 0
     pending: list[JobOutcome] = field(default_factory=list)
@@ -443,6 +458,9 @@ class Job:
     """a remix's original miners, from the claim (:func:`_credit_of`): ``{job, hotkey}``, each the
     delivered round of the original that miner built. Never in the miner's ``work``: its delivery
     pays them (:data:`.scoring.REMIX_CREDIT`). Empty on most jobs."""
+    practice: dict[str, Any] = field(default_factory=dict)
+    """a practice job's ``title`` and ``reference_job`` (the delivered version of the brief, voted
+    beside the miner's result), from the platform's practice brief. Empty on every other job."""
 
     @property
     def current(self) -> Attempt | None:
@@ -649,8 +667,17 @@ class Desk:
         on_delivered: Callable[[str, str], None] | None = None,
         archive: Any = None,
         judge: Callable[[], Mapping[str, Any]] | None = None,
+        practice_per_day: int = 0,
     ) -> None:
+        from .practice import PRACTICE_PER_DAY, PracticeBook  # noqa: PLC0415 -- it reads votes
+
         self.platform, self.ledger, self.registered = platform, ledger, registered
+        self.practice_per_day = practice_per_day or PRACTICE_PER_DAY
+        """practice jobs a miner may start per UTC day (the platform's own cap, mirrored)"""
+        self.practice_book = PracticeBook(platform, store=store, clock=clock, log=log)
+        """the practice records, their votes and reports (:mod:`.practice`); the daemon gives it
+        the reviewer and runs its steps"""
+        self._practice_asking: set[str] = set()
         self.on_delivered = on_delivered
         self.archive = archive
         """the calibration archive (:class:`.archive.Archive`): each job's row as it ended and as
@@ -1405,6 +1432,8 @@ class Desk:
                 if job.kind == "admission" and job.target == r.hotkey and job.state == "queued":
                     job.state = "done"
                     job.result = {"label": "not admitted", "charge": False, "why": "revoked"}
+                if job.kind == "practice" and job.target == r.hotkey and job.state == "queued":
+                    self._end_practice(job, None, deliverable=False, why="revoked")
             self.log(f"key revoked by the operator: {r.hotkey}: {why}")
             out = asdict(r)
             out["freed_job"] = freed
@@ -1450,6 +1479,8 @@ class Desk:
                 "deadline_ms": a.deadline_ms,
                 # the client asked not to be asked questions: decide them, leave none open
                 "no_questions": job.no_questions,
+                # a practice job: never scored (docs/MINER.md "Trying a new setup")
+                **({"practice": True} if job.kind == "practice" else {}),
                 # whether the client allows sub-projects (brief/job.toml; W0233 if false)
                 **({"subprojects": job.subprojects} if job.subprojects is not None else {}),
                 # a style round: printed shapes only; Watt refuses a change of function (W0220)
@@ -1475,7 +1506,9 @@ class Desk:
                 {"job": j.job, "kind": a.kind, "why": a.outcome[:1200], "at_ms": a.submitted_ms}
                 for j in self.jobs.values()
                 for a in j.attempts
-                if a.hotkey == hotkey and a.kind in ("gate", "timeout", "copy")
+                if a.hotkey == hotkey
+                and a.kind in ("gate", "timeout", "copy", "refused")
+                and j.kind != "practice"  # its results are on GET /v1/practice
             ]
         return sorted(rows, key=lambda r: r["at_ms"])[-limit:]
 
@@ -1498,10 +1531,19 @@ class Desk:
             return {"job": job_id, "workspace": a.workspace, "deadline_ms": a.deadline_ms}
 
     def submit(
-        self, hotkey: str, job_id: str, workspace: str, digest: str, summary: str = ""
+        self,
+        hotkey: str,
+        job_id: str,
+        workspace: str,
+        digest: str,
+        summary: str = "",
+        setup: str = "",
     ) -> dict[str, Any]:
         """The hand-over. ``summary``, optional: the builder's own words on what blocks delivery
-        (shown to the client when the round ends not finished)."""
+        (shown to the client when the round ends not finished). ``setup``, optional: the miner's
+        own label for the setup it built with (its practice results are grouped by it)."""
+        from .practice import clean_setup  # noqa: PLC0415
+
         with self._mut():
             self._miner(hotkey)
             job = self.jobs.get(job_id)
@@ -1517,6 +1559,7 @@ class Desk:
                 raise DeskError("no such job in progress for this hotkey", 404)
             a.submitted_ms, a.digest = self.now_ms(), str(digest or "")[:100]
             a.summary = " ".join(str(summary or "").split())[:SUMMARY_MAX]
+            a.setup = clean_setup(setup)
             job.state = "judging"
             # the miner's part is over: it is free for another job while the validator judges this
             # one (``max_inflight`` still counts the judgement)
@@ -1571,7 +1614,8 @@ class Desk:
                 raise DeskError("no such assignment", 404)
             self._spawn(self._freeze_quietly, a.workspace)
             a.category, a.message = category, text
-            self.rejected[hotkey] = self.rejected.get(hotkey, 0) + 1
+            if job.kind != "practice":  # practice is in no telemetry
+                self.rejected[hotkey] = self.rejected.get(hotkey, 0) + 1
             self._event("rejected", job_id, hotkey=hotkey, category=category)
             self._leased_ms = 0  # no builder now: the platform hears so on the next beat
             self._fail(job, a, f"rejected ({category})", kind="reject")
@@ -1832,6 +1876,165 @@ class Desk:
         self.tick()
         return self.status(job_id)
 
+    # -- practice (a miner trying a setup on a public brief; never scored) ------------------------
+
+    def _client_job_for(self, m: Miner) -> Job | None:
+        """A queued client job ``m`` could take: it is admitted and has not tried it. While one
+        waits, no practice job is handed out to ``m``."""
+        if not m.admitted:
+            return None
+        for job in self.jobs.values():
+            if job.kind == "client" and job.state == "queued" and m.hotkey not in self._tried(job):
+                return job
+        return None
+
+    def _practice_view(self, job: Job) -> dict[str, Any]:
+        """A practice job as its miner reads it (never the delivered version's job id)."""
+        return {
+            "practice": job.job,
+            "state": job.state,
+            "title": str(job.practice.get("title") or ""),
+            "result": {k: v for k, v in job.result.items() if k in ("deliverable", "why")},
+        }
+
+    def practice(self, hotkey: str) -> dict[str, Any]:
+        """A practice job for ``hotkey`` (docs/MINER.md "Trying a new setup"): a delivered public
+        project's brief from the platform, run as a job assigned to this miner alone, with no
+        client to ask (``no_questions``), on the platform's practice lane, and gated as any job.
+        It is never in the ledger, quality, weights or routing; its result is voted on beside the
+        delivered version and reported (:mod:`.practice`). An approved key holder, admitted or
+        not; one open at a time, ``practice_per_day`` a UTC day, and none while the miner holds a
+        job or a client job it could take is queued."""
+        now = self.now_ms()
+        with self._mut():
+            m = self._miner(hotkey)
+            if not self.approved(hotkey):
+                raise DeskError("your agent key is not approved yet: ask for it first", 403)
+            if not m.key_id:
+                raise DeskError("ask for your agent key first")
+            if m.blocked_until_ms > now:
+                raise DeskError("this hotkey is disabled for now", 403)
+            mine = [j for j in self.jobs.values() if j.kind == "practice" and j.target == hotkey]
+            live = [j for j in mine if j.state != "done"]
+            if live:
+                return self._practice_view(live[-1])
+            if m.job:
+                raise DeskError("you hold a job: practice once it is over", 409)
+            if self._client_job_for(m) is not None:
+                raise DeskError(
+                    "a client job you can take is waiting: practice runs only when none is", 409
+                )
+            today = now // 86_400_000
+            if sum(1 for j in mine if j.created_ms // 86_400_000 == today) >= self.practice_per_day:
+                raise DeskError(f"{self.practice_per_day} practice jobs a day", 429)
+            if hotkey in self._practice_asking:
+                raise DeskError("a practice brief is being asked for: retry in a moment", 409)
+            self._practice_asking.add(hotkey)
+        try:
+            try:
+                got = self.platform.practice_brief(hotkey)
+            except PlatformError as e:
+                if e.status == 404:
+                    raise DeskError("no practice brief is left for you", 404) from None
+                if e.status == 429:
+                    raise DeskError(
+                        f"the platform's practice cap is reached: {str(e)[:200]}", 429
+                    ) from None
+                raise DeskError("no practice brief now: retry later", 503) from None
+            pid = str(got.get("practice_id") or "")
+            brief = str(got.get("brief") or "")
+            if not PRACTICE_ID.match(pid) or not brief.strip():
+                raise DeskError("the platform's practice brief is malformed: retry later", 503)
+            with self._mut():
+                if pid in self.jobs:
+                    raise DeskError("the platform handed out a practice id twice", 503)
+                self.jobs[pid] = Job(
+                    job=pid,
+                    brief=brief,
+                    kind="practice",
+                    no_questions=True,
+                    target=hotkey,
+                    created_ms=self.now_ms(),
+                    queued_ms=self.now_ms(),
+                    practice={
+                        "title": " ".join(str(got.get("title") or "").split())[:200],
+                        "reference_job": str(got.get("reference_job") or "")[:100],
+                    },
+                )
+                self._event("practice-queued", pid, hotkey=hotkey)
+        finally:
+            with self._lock:
+                self._practice_asking.discard(hotkey)
+        self.tick()
+        with self._lock:
+            return self._practice_view(self.jobs[pid])
+
+    def practice_status(self, hotkey: str) -> dict[str, Any]:
+        """A miner's practice: its open practice job, if any, and its results by ``setup``."""
+        with self._lock:
+            self._miner(hotkey)
+            live = [
+                self._practice_view(j)
+                for j in self.jobs.values()
+                if j.kind == "practice" and j.target == hotkey and j.state != "done"
+            ]
+            today = self.now_ms() // 86_400_000
+            started = sum(
+                1
+                for j in self.jobs.values()
+                if j.kind == "practice"
+                and j.target == hotkey
+                and j.created_ms // 86_400_000 == today
+            )
+        out = self.practice_book.status(hotkey, live)
+        out["today"] = {"started": started, "cap": self.practice_per_day}
+        return out
+
+    def _end_practice(
+        self,
+        job: Job,
+        a: Attempt | None,
+        *,
+        deliverable: bool,
+        why: str,
+        fork: str = "",
+        verdict: Mapping[str, Any] | None = None,
+        on_time: bool = False,
+    ) -> None:
+        """Inside a mutation: a practice job ends -- never scored, never sent to another miner.
+        Its record goes to the practice book, which votes on a deliverable result (its copy,
+        ``fork``, kept until then) and reports it; any other ending is reported with its reason
+        and no vote."""
+        if a is not None:
+            self._release(a.hotkey, job.job)
+            self._drop_gate(job.job, a, keep_fork=deliverable)
+        job.pending.clear()
+        job.state = "done"
+        job.result = {"label": "practice", "charge": False, "deliverable": deliverable, "why": why}
+        end = (a.submitted_ms or a.deadline_ms or self.now_ms()) if a is not None else 0
+        minutes = None
+        if a is not None and a.accepted_ms:
+            minutes = round(max(0, end - a.accepted_ms) / 60_000, 1)
+        self.practice_book.ended(
+            {
+                "practice_id": job.job,
+                "hotkey": job.target,
+                "title": str(job.practice.get("title") or ""),
+                "reference_job": str(job.practice.get("reference_job") or ""),
+                "setup": a.setup if a is not None else "",
+                "deliverable": deliverable,
+                "why": why[:1200],
+                "workspace": fork if deliverable else "",
+                "digest": str((verdict or {}).get("digest") or ""),
+                "watt": str((verdict or {}).get("watt") or ""),
+                "minutes": minutes,
+                "on_time": on_time,
+                "created_ms": job.created_ms,
+                "ended_ms": self.now_ms(),
+            }
+        )
+        self._event("ended", job.job, label="practice", hotkey=job.target, deliverable=deliverable)
+
     def signal(self, job_id: str, body: Mapping[str, Any]) -> dict[str, Any]:
         """The client's reaction to a delivered job, from the platform: download, stars (1-5),
         change, or a refund the platform granted (``quality``: true when it was granted for the
@@ -1966,7 +2169,9 @@ class Desk:
                 if m.admitted and m.key_id and now - m.last_seen_ms <= ALIVE_S * 1000
             ]
             free = sum(1 for m in active if not m.job)
-            held = sum(1 for j in self.jobs.values() if j.state == "queued")
+            held = sum(
+                1 for j in self.jobs.values() if j.state == "queued" and j.kind != "practice"
+            )
         recent = sorted((o for o in self.ledger.outcomes if o.passed), key=lambda o: o.ended_ms)[
             -20:
         ]
@@ -2088,6 +2293,10 @@ class Desk:
         free = self._available(job)
         if job.kind == "admission":
             return next((m for m in free if m.hotkey == job.target), None)
+        if job.kind == "practice":
+            # its own miner, and only while no client job it could take waits
+            m = next((m for m in free if m.hotkey == job.target), None)
+            return m if m is not None and self._client_job_for(m) is None else None
         free = [m for m in free if m.admitted]
         if not free:
             return None
@@ -2337,6 +2546,9 @@ class Desk:
                         if e.code in REFUSED_DELIVERY:
                             self._refused_delivery(job_id, e)
                             continue
+                        if e.code in REFUSED_BUILD and result.get("label") == "delivered":
+                            self._refused_build(job_id, e)
+                            continue
                         local = e.code == "backoff" or isinstance(e, RoleFrozenError)
                         if not local:  # the platform answered THIS result: it backs off alone
                             self._outbox_refused(job_id, e)
@@ -2452,6 +2664,94 @@ class Desk:
             f"its scores withdrawn, the job held for review"
         )
 
+    def _refused_build(self, job_id: str, e: PlatformError) -> None:
+        """The platform refused a delivered result for what the builder did (:data:`REFUSED_BUILD`:
+        an assembly round that dropped a part it was given, or a change request its failing check
+        does not reproduce). Nothing was kept or charged; the result is not sent again.
+
+        **Whose failure.** The builder's: its attempt fails (``refused``, counted toward the job's
+        attempt cap, scored 0 at once like a timeout), the platform's words are its ``outcome``
+        (the miner's ``failures`` show them), and the job goes back to the queue for ANOTHER miner,
+        from scratch (its brief or seed). The job's pass is withdrawn -- the delivery did not
+        happen -- and what the pass had settled is undone: a held rejection or gate failure is held
+        again, a timeout or a copy keeps its 0. Past the cap the job ends "didn't finish"."""
+        with self._mut():
+            job = self.jobs.get(job_id)
+            if job is None or job.state != "done" or job.result.get("label") != "delivered":
+                return
+            if job_id in self._outbox:
+                self._outbox.remove(job_id)
+            self._outbox_retry.pop(job_id, None)
+            fork = str(job.result.get("workspace") or "")
+            a = next(
+                (x for x in reversed(job.attempts) if x.kind == "pass" and x.fork == fork), None
+            )
+            if a is None:
+                a = next((x for x in reversed(job.attempts) if x.kind == "pass"), None)
+            gone = self.ledger.withdraw(job_id)
+            self._unscore(job, gone)
+            for o in gone:
+                if o.kind == "pass":
+                    continue
+                if o.kind in ("timeout", "copy", "refused"):
+                    self.ledger.add(o)  # scored 0 at once, before this delivery
+                else:
+                    job.pending.append(o)  # held again: another miner may still pass the job
+            parts = e.detail.get("parts") if isinstance(e.detail, Mapping) else None
+            words = " ".join(str(e).split())[:1000]
+            if isinstance(parts, list) and parts:
+                named = ", ".join(str(p)[:60] for p in parts[:12])
+                words += f" (parts: {named})" if named not in words else ""
+            why = f"the platform refused the delivery ({e.code}): {words}"
+            hotkey = str(job.result.get("hotkey") or (a.hotkey if a else ""))
+            if a is not None:
+                a.outcome, a.kind = why, "refused"
+                self.ledger.add(
+                    JobOutcome(
+                        job=job.job,
+                        hotkey=a.hotkey,
+                        ended_ms=self.now_ms(),
+                        size=size_class(job.brief),
+                        accepted=True,
+                        on_time=bool(job.result.get("on_time")),
+                        deliverable=False,
+                        stage=e.code,
+                        kind="refused",
+                    )
+                )
+            if fork:
+                self._spawn(self._drop_quietly, "", fork)
+            self._final.discard(job_id)
+            self._event("delivery-refused", job_id, hotkey=hotkey, code=e.code, why=words[:200])
+            counted = [x for x in job.attempts if x.kind not in UNCOUNTED]
+            if len(counted) < self.max_attempts:
+                job.state, job.result = "queued", {}
+                job.queued_ms = self.now_ms()
+                self._event("requeued", job_id, attempts=len(job.attempts))
+            else:
+                for held in job.pending:
+                    held.ended_ms = self.now_ms()
+                    self.ledger.add(held)
+                job.pending.clear()
+                job.state = "done"
+                job.result = {
+                    "label": "didn't finish",
+                    "charge": False,
+                    "review": False,
+                    "why": why,
+                    "messages": [
+                        {"category": x.category, "message": x.message}
+                        for x in job.attempts
+                        if x.kind == "reject"
+                    ],
+                    "hotkey": hotkey,
+                    "workspace": "",
+                    "attempts": len(job.attempts),
+                }
+                self._outbox.append(job_id)
+                self._event("ended", job_id, label="didn't finish", attempts=len(job.attempts))
+        self.log(f"job {job_id}: the platform refused {hotkey[:10]}'s delivery ({e.code}): {words}")
+
     def _uncharged(self, job_id: str, answer: Mapping[str, Any]) -> None:
         """The platform took a delivered result and charged nothing (the client cancelled while it
         was sent, or the delivery could not be kept): no delivery happened, so the job's scores are
@@ -2477,7 +2777,9 @@ class Desk:
     def _assign(self, job: Job, m: Miner) -> None:
         reference = ""
         try:
-            if job.continuation:
+            if job.kind == "practice":
+                ws = self.platform.grant_practice(m.hotkey, brief=job.brief, name=job.job)
+            elif job.continuation:
                 ws, reference = self.platform.grant_continuation(
                     m.hotkey,
                     seed=job.seed,
@@ -2505,7 +2807,8 @@ class Desk:
                 if job.state == "assigning":
                     job.state = "queued"
                 return
-            self.assigned[m.hotkey] = self.assigned.get(m.hotkey, 0) + 1
+            if job.kind != "practice":  # practice is in no telemetry
+                self.assigned[m.hotkey] = self.assigned.get(m.hotkey, 0) + 1
             if m.cancelled_job == job.job:  # its job again, after a lapsed lease: not "cancelled"
                 m.cancelled_job = ""
             job.attempts.append(
@@ -2556,6 +2859,9 @@ class Desk:
         a.outcome, a.kind = why, kind
         if kind != "reject":  # a rejection logged its own line
             self._event("attempt-failed", job.job, hotkey=a.hotkey, kind=kind, why=why[:200])
+        if job.kind == "practice":
+            self._end_practice(job, a, deliverable=False, why=why, on_time=False)
+            return
         if job.kind == "admission":
             self._release(a.hotkey, job.job)
             self._event("ended", job.job, label="not admitted", hotkey=a.hotkey)
@@ -2713,6 +3019,10 @@ class Desk:
         and the held failures are dropped; the miner is freed and the fork deleted."""
         a.outcome = f"the validator could not judge it: {why[:200]}"
         a.kind = "ours"
+        if job.kind == "practice":
+            self._end_practice(job, a, deliverable=False, why=a.outcome)
+            self.log(f"practice {job.job} ended without a judgement on the validator's side")
+            return
         self._event("ended", job.job, label="didn't finish", hotkey=a.hotkey, ours=True)
         self._release(a.hotkey, job.job)
         self._drop_gate(job.job, a)
@@ -2967,8 +3277,9 @@ class Desk:
             verdict = self._gate(fork, job, a)
             if verdict["deliverable"]:
                 export = self.platform.export(fork)
-                if job.kind in ("client", "admission"):
-                    # an entry test has no client: no_questions, so no client decision left open
+                if job.kind in ("client", "admission", "practice"):
+                    # an entry test or a practice job has no client: no_questions, so no client
+                    # decision left open
                     kept_open = self._settled_open(job)
                     verdict = self._read_export(
                         verdict, lambda: self._answers_gate(job, a, verdict, export, kept_open)
@@ -3070,6 +3381,22 @@ class Desk:
             )
             if no_change:
                 self._end_no_change(job, a, fork, verdict, on_time)
+                return
+            if job.kind == "practice":
+                a.outcome = "practised" if verdict["deliverable"] else "did not pass the Watt gate"
+                a.kind = "pass" if verdict["deliverable"] else ("gate" if on_time else "timeout")
+                self._end_practice(
+                    job,
+                    a,
+                    deliverable=bool(verdict["deliverable"]),
+                    why=""
+                    if verdict["deliverable"]
+                    else "not deliverable"
+                    + (f": {verdict['error']}" if verdict.get("error") else ""),
+                    fork=fork,
+                    verdict=verdict,
+                    on_time=on_time,
+                )
                 return
             copy = None
             if verdict["deliverable"] and job.kind == "client":

@@ -47,7 +47,10 @@ meanwhile) (``cadmind-einstein-operator``, over the
 Bearer routes ``/v1/operator/...``); ``auto`` keeps the self-serve rule. An approved key holder
 passes the entry test once (``--admission-brief-file``; the one job deadline,
 ``--job-deadline-min``) before any job or weight. Every job has that one deadline: there are no
-effort levels.
+effort levels. An approved key holder may also practise on public briefs (``POST /v1/practice``,
+``--practice-per-day`` a UTC day, :mod:`.practice`): never scored, voted beside the delivered
+version, reported to the platform. ``cadmind-einstein practice [--status]`` is the miner's command
+for it (:func:`.agent_miner.practice_main`).
 Every answer on a miner's route is signed with the validator's hotkey.
 
 The platform's operator credential is split by role (:mod:`.platform`): ``--operator-key-file``
@@ -119,6 +122,7 @@ from .judge import VALIDATOR_VERSION, ValidatorJudgeError, for_validator, valida
 from .judge import VERSIONS as JUDGE_VERSIONS
 from .models import Prices, Spend, base_url_for, cost_problem, reports_cost
 from .platform import OperatorClient, PlatformError
+from .practice import PRACTICE_PER_DAY
 from .scoring import GENESIS, HOUR_MS, WINDOW_H, Ledger
 from .service import serve
 from .similarity import CopyPolicy, load_corpus
@@ -205,6 +209,13 @@ def parser() -> argparse.ArgumentParser:
         default="",
         help="deprecated and ignored: there are no effort levels (the entry test has the one"
         " job deadline)",
+    )
+    ap.add_argument(
+        "--practice-per-day",
+        type=int,
+        default=PRACTICE_PER_DAY,
+        help="practice jobs a miner may start per UTC day (the platform's cap is the same; "
+        f"default {PRACTICE_PER_DAY})",
     )
     ap.add_argument(
         "--key-approval",
@@ -437,7 +448,13 @@ def check_review_cost(a: Any) -> None:
 
 
 def main(argv: list[str] | None = None) -> int:
-    a = parser().parse_args(argv)
+    args = sys.argv[1:] if argv is None else list(argv)
+    if args[:1] == ["practice"]:
+        # the miner's command, under the subnet's main program name too
+        from .agent_miner import practice_main  # noqa: PLC0415
+
+        return practice_main(args[1:])
+    a = parser().parse_args(args)
     check_judge(a.judge)
     check_review_cost(a)
     setup_logging(a, prefix="[cadmind-einstein]")
@@ -547,6 +564,7 @@ def main(argv: list[str] | None = None) -> int:
         mint_per_coldkey_hour=a.mint_per_coldkey_hour,
         deadline_s=max(60, int(a.job_deadline_min * 60)),
         key_approval=a.key_approval,
+        practice_per_day=max(1, a.practice_per_day),
         **extra,
     )
     source = apply_launch_flag(desk, a.launch_equal)
@@ -598,6 +616,7 @@ def main(argv: list[str] | None = None) -> int:
         )
         desk.on_delivered = reviewer.enqueue
         desk.judge = reviewer.judge
+        desk.practice_book.reviewer = reviewer  # practice results are voted as deliveries are
         reviewer.apply_all()  # the recorded votes, under this mode (a switch counts at once)
         _log(
             f"votes {a.votes}: "
@@ -755,6 +774,17 @@ def main(argv: list[str] | None = None) -> int:
                 time.sleep(2 if done == "voted" else 10)
 
         threading.Thread(target=review_loop, name="review", daemon=True).start()
+
+    def practice_loop() -> None:
+        while True:
+            try:
+                done = desk.practice_book.pass_once()
+            except Exception as e:  # noqa: BLE001 -- practice outlives a hiccup
+                _log(f"practice: {type(e).__name__}: {e}")
+                done = "error"
+            time.sleep(2 if done not in ("idle", "error") else 15)
+
+    threading.Thread(target=practice_loop, name="practice", daemon=True).start()
     server = serve(
         desk,
         a.host,

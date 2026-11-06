@@ -8,7 +8,8 @@ role            key            calls
                                and delete on the validator's own forks
 ``keys``        ``mint_key``   mint and disable miners' keys
 ``queue``       ``queue_key``  claim, lease, claimed and complete (a delivered result charges the
-                               client), at ``queue_url``
+                               client), review bundles, and the practice routes (a brief, a
+                               bundle, a report), at ``queue_url``
 ==============  =============  ===================================================================
 
 An unset role key is the operator key (the platform's single-key mode).
@@ -63,6 +64,8 @@ class PlatformError(Exception):
     ) -> None:
         super().__init__(message)
         self.status, self.code, self.ours, self.held = status, code, ours, held
+        self.detail: dict[str, Any] = {}
+        """the platform's whole answer to a refused call (e.g. a refusal's ``parts``)"""
 
 
 class RoleFrozenError(PlatformError):
@@ -246,14 +249,18 @@ class OperatorClient:
                 err = json.loads(e.read() or b"{}")
             except ValueError:
                 err = {}
-            self._refused(
-                role,
-                e.code,
-                str(err.get("code") or ""),
-                str(err.get("error") or e.reason),
-                e.headers,
-                job=job,
-            )
+            try:
+                self._refused(
+                    role,
+                    e.code,
+                    str(err.get("code") or ""),
+                    str(err.get("error") or e.reason),
+                    e.headers,
+                    job=job,
+                )
+            except PlatformError as refused:
+                refused.detail = err if isinstance(err, dict) else {}
+                raise refused from None
             raise AssertionError("unreachable") from None  # pragma: no cover -- _refused raises
         except (urllib.error.URLError, TimeoutError, ConnectionError) as e:
             raise PlatformError(f"platform unreachable: {e}") from None
@@ -329,6 +336,14 @@ class OperatorClient:
         out = self._call("POST", "/api/agent/subnet/workspaces", body, timeout=320)
         return str(out["workspace"]), str(out.get("reference") or "")
 
+    def grant_practice(self, hotkey: str, *, brief: str, name: str) -> str:
+        """A practice job's workspace (``name`` the practice id the platform handed out for this
+        hotkey): on the platform's practice lane and its own quota, never a client grant's."""
+        body = {"hotkey": hotkey, "name": name, "brief": brief, "practice": True}
+        return str(
+            self._call("POST", "/api/agent/subnet/workspaces", body, timeout=320)["workspace"]
+        )
+
     def state(self, ws: str) -> dict[str, Any]:
         return dict(self._call("GET", f"/api/agent/subnet/workspaces/{self._ws(ws)}"))
 
@@ -389,6 +404,48 @@ class OperatorClient:
             "POST",
             f"/api/engine/einstein/jobs/{quote(job, safe='')}/result",
             {"result": dict(result)},
+            base=self.queue,
+            role=QUEUE,
+            job=True,
+        )
+        return dict(out) if isinstance(out, Mapping) else {}
+
+    # -- practice jobs (a miner trying a setup on a public brief; never scored) ------------------
+
+    def practice_brief(self, hotkey: str) -> dict[str, Any]:
+        """A practice brief for ``hotkey``: ``{practice_id, title, brief, reference_job}``, a
+        public delivered project's brief as its gallery page shows it. 404 ``no_practice_left``
+        when none is left for this miner; 429 ``practice_cap`` past the daily cap."""
+        out = self._call(
+            "GET",
+            f"/api/engine/einstein/practice?hotkey={quote(hotkey, safe='')}",
+            base=self.queue,
+            role=QUEUE,
+            timeout=30,
+            job=True,
+        )
+        return dict(out) if isinstance(out, Mapping) else {}
+
+    def practice_bundle(self, practice_id: str, workspace: str) -> dict[str, Any]:
+        """A practice result's review bundle, made from the validator's frozen copy of it: the same
+        answer as :meth:`review_bundle`."""
+        out = self._call(
+            "POST",
+            f"/api/engine/einstein/practice/{quote(practice_id, safe='')}/bundle",
+            {"workspace": workspace},
+            base=self.queue,
+            role=QUEUE,
+            job=True,
+        )
+        return dict(out) if isinstance(out, Mapping) else {}
+
+    def practice_result(self, practice_id: str, report: Mapping[str, Any]) -> dict[str, Any]:
+        """A practice job's report: ``{hotkey, setup, deliverable, why, score, reference_score,
+        judge, watt, minutes}``. Kept by the platform for the operator; never scored."""
+        out = self._call(
+            "POST",
+            f"/api/engine/einstein/practice/{quote(practice_id, safe='')}/result",
+            dict(report),
             base=self.queue,
             role=QUEUE,
             job=True,

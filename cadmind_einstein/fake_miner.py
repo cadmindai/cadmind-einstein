@@ -69,18 +69,23 @@ def signed(
     receiver: str,
     *,
     require_signed: bool = True,
+    method: str = "POST",
 ) -> tuple[int, Any]:
-    """POST a ``btauth/1``-signed request to the validator ``receiver``; its answer must carry the
-    validator's signature over this request (:func:`.service.verify_response`), or it is taken as
-    no answer (status 0) -- unless ``require_signed`` is off."""
+    """POST (or, ``method="GET"``, GET with no body) a ``btauth/1``-signed request to the
+    validator ``receiver``; its answer must carry the validator's signature over this request
+    (:func:`.service.verify_response`), or it is taken as no answer (status 0) -- unless
+    ``require_signed`` is off."""
     import bittensor.http_auth as btauth  # noqa: PLC0415
 
     from .service import verify_response  # noqa: PLC0415
 
-    raw = json.dumps(dict(body)).encode()
-    auth = btauth.sign(keypair, method="POST", path=path, body=raw, receiver_ss58=receiver)
-    headers = {"Content-Type": "application/json", **auth}
-    req = urllib.request.Request(base.rstrip("/") + path, data=raw, headers=headers)  # noqa: S310 -- configured
+    get = method.upper() == "GET"
+    raw = b"" if get else json.dumps(dict(body)).encode()
+    auth = btauth.sign(keypair, method=method.upper(), path=path, body=raw, receiver_ss58=receiver)
+    headers = {**({} if get else {"Content-Type": "application/json"}), **auth}
+    req = urllib.request.Request(  # noqa: S310 -- configured
+        base.rstrip("/") + path, data=None if get else raw, headers=headers, method=method.upper()
+    )
     try:
         with urllib.request.urlopen(req, timeout=60) as r:  # noqa: S310
             code, answer, got = r.status, r.read(), dict(r.headers.items())
@@ -92,7 +97,7 @@ def signed(
         got,
         answer,
         status=code,
-        method="POST",
+        method=method.upper(),
         path=path,
         nonce=auth["X-Bittensor-Nonce"],
         hotkey=auth["X-Bittensor-Hotkey"],

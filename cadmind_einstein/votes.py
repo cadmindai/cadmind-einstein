@@ -51,6 +51,7 @@ archive existed is archived as it is dropped).
 from __future__ import annotations
 
 import contextlib
+import statistics
 import threading
 import time
 from collections.abc import Callable, Iterable, Mapping
@@ -379,6 +380,54 @@ class Reviewer:
             )
         )
         return "voted"
+
+    def judge_bundle(self, got: Mapping[str, Any]) -> dict[str, Any]:
+        """One vote's samples on a ready bundle (``got``: the platform's answer naming it), made
+        exactly as a delivery's vote is -- the same judge, prompt, rubric and sample count -- and
+        recorded nowhere: a practice result and its reference (:mod:`.practice`). Answers
+        ``{score, value, scores, samples, image_set}`` (``score``: the 0-3 the vote's value is
+        made from). Raises ``ValueError`` when the bundle is unreadable or not the one named, or
+        too few samples are valid; anything the model raises goes through."""
+        data = self.platform.fetch_bundle(str(got.get("bundle_url") or ""), MAX_BUNDLE_BYTES)
+        try:
+            bundle = read_bundle(data)
+        except BundleError as e:
+            raise ValueError(f"bundle unreadable: {e}") from None
+        if got.get("bundle_sha256") and got["bundle_sha256"] != bundle.bundle_sha256:
+            raise ValueError("the bundle's bytes are not the digest the platform named")
+        if got.get("image_set") and got["image_set"] != bundle.image_set:
+            raise ValueError("the bundle's image set is not the one the platform named")
+        made = self.judge_cfg.run(
+            "rate",
+            inputs_from_bundle(bundle),
+            self.model,
+            samples=self.samples,
+            spend=self.spend,
+            calls=[],
+            parallel=False,
+        )
+        samples = list(made["samples"])
+        if made["abstain"] or len(samples) < min(MIN_SAMPLES, self.samples):
+            why = "; ".join(made["unavailable"])[:250]
+            raise ValueError(f"{len(samples)} valid sample(s): {why}")
+        vote = Vote(
+            review="practice",
+            image_set=bundle.image_set,
+            judge=self.digest,
+            model=str(getattr(self.model, "name", "") or "unknown"),
+            validator=self.me,
+            samples=samples,
+            at_ms=self.now_ms(),
+            judge_version=self.judge_cfg.version,
+        )
+        scores = vote.scores
+        return {
+            "score": statistics.median_low(scores) if scores else None,
+            "value": vote.value,
+            "scores": scores,
+            "samples": len(samples),
+            "image_set": bundle.image_set,
+        }
 
     def judge(self) -> dict[str, Any]:
         """The judge a vote is made under: what the archive and the platform's stamp name (the

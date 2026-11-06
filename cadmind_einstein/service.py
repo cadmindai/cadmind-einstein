@@ -10,9 +10,13 @@ the metagraph):
 - ``POST /v1/jobs/work`` -- the miner's assignment, if any (poll every few seconds: it is also how
   the validator knows the miner is alive), and ``cancelled``: the id of its last job when the
   client cancelled it (stop working on it; said until the miner accepts another job);
-- ``POST /v1/jobs/accept {job}``, ``POST /v1/jobs/submit {job, workspace, digest, summary?}``
+- ``POST /v1/jobs/accept {job}``, ``POST /v1/jobs/submit {job, workspace, digest, summary?,
+  setup?}``
   (410 for a job its client cancelled; ``summary``: the builder's words on what blocks delivery);
 - ``POST /v1/miners/admission`` -- its entry test, a job assigned to it alone;
+- ``POST /v1/practice`` -- a practice job on a public brief (never scored; :mod:`.practice`), and
+  ``GET /v1/practice`` (signed, no body) -- its practice results, grouped by the ``setup`` label
+  its submits carried (``submit``'s optional ``setup``);
 - ``POST /v1/miners/receipt`` -- its jobs, their scores, its weight and quality, and its recent
   attempts that did not pass with why (``failures``: a gate failure says what the gate found);
 - ``POST /v1/miners/stats`` -- everything that affects its weight (:mod:`.stats`): standing and
@@ -85,7 +89,7 @@ from .sealing import valid_public
 
 MAX_BODY = 4 * 1024 * 1024
 REPORT = re.compile(r"^hour-(\d{1,12})(?:-\d{1,6})?\.(json|sha256)$")
-SIGNED = ("/v1/miners/", "/v1/jobs/")
+SIGNED = ("/v1/miners/", "/v1/jobs/", "/v1/practice")
 """routes a miner signs (``btauth/1``)"""
 BEARER = (
     "/v1/cancel",
@@ -479,8 +483,31 @@ def serve(
             self.wfile.write(data)
             return True
 
+        def _practice_status(self) -> None:
+            """``GET /v1/practice``, signed by the miner (an empty body): its practice results."""
+            if not self._gate(True):
+                return
+            try:
+                caller = verify(
+                    dict(self.headers.items()),
+                    b"",
+                    method="GET",
+                    path=self.path,
+                    self_hotkey_ss58=validator_hotkey,
+                )
+            except Exception:  # noqa: BLE001 -- one refusal for every auth failure, echoing nothing
+                self._send(401, {"error": "btauth/1 signature required"})
+                return
+            try:
+                self._send(200, desk.practice_status(str(caller.hotkey_ss58)))
+            except DeskError as e:
+                self._send(e.status, {"error": str(e)})
+
         def do_GET(self) -> None:
             if self._public():
+                return
+            if self.path == "/v1/practice":
+                self._practice_status()
                 return
             if not self._bearer():
                 return
@@ -621,6 +648,7 @@ def serve(
                                 str(body.get("workspace") or ""),
                                 str(body.get("digest") or ""),
                                 str(body.get("summary") or ""),
+                                str(body.get("setup") or ""),
                             ),
                         )
                     elif self.path == "/v1/jobs/reject":
@@ -635,6 +663,8 @@ def serve(
                         )
                     elif self.path == "/v1/miners/admission":
                         self._send(200, desk.admission(hk))
+                    elif self.path == "/v1/practice":
+                        self._send(200, desk.practice(hk))
                     elif self.path == "/v1/miners/stats":
                         if stats is None:
                             self._send(404, {"error": "no stats here"})

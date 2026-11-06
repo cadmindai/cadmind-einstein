@@ -43,6 +43,11 @@ one), so the client reads the builder's own notes on a delivered project too; a 
 usage-limit notice is never sent as the builder's words. Every run's exit code and error output
 are kept in the job's log.
 
+Every submit carries the miner's ``setup`` label (``--setup``, else ``$CADMIND_MINER_SETUP``),
+by which the validator groups practice results. ``cadmind-einstein-miner practice [--status]``
+(also ``cadmind-einstein practice``; :func:`practice_main`) asks for a practice job on a public
+brief -- this running miner builds it like any job, never scored -- or prints the results.
+
 A submit or a reject the validator did not take (no answer, 429 or 5xx) is sent again with a
 backoff (:func:`send`). While idle, the miner checks every hour that its agent key still works and
 that it is admitted: a key the validator revoked (abuse, deregistration) is minted again, and a
@@ -227,7 +232,16 @@ decide at the walk-through to split it into sub-projects (`watt describe subproj
 project \
 designs its own parts and defines each sub-device's interface ([subproject.<id>] with its required \
 contract) and is delivered at that stage (DONE); it never builds a sub-device: the client starts \
-each sub-device's job when they want, and a later round assembles them. A workspace with \
+each sub-device's job when they want, and a later round assembles them. \
+An ASSEMBLY round (spec/subprojects.toml records with a `digest`, the built parts imported under \
+subprojects/<id>/) keeps every imported part: never remove a record's `digest` or `from` to make a \
+check pass; the platform refuses such a delivery (parts_dropped) and the job goes to another \
+miner. When a part truly breaks one of this project's checks with the part imported, write ONE \
+change request on that part's record ([subproject.<id>.change] with `test` = the failing check, \
+`measured` = its numbers with the part imported, `proposal` = what the part should change), keep \
+every other part imported, and deliver (DONE); the platform re-runs that check with the part \
+imported and refuses a request it does not reproduce (change_unfounded). Otherwise, when the parts \
+cannot be assembled, REJECT not-capable and say why. A workspace with \
 brief/contract.toml is a sub-device: meet that contract (W0230) and publish spec/contract.toml; \
 brief/parent.md, when there, is the parent's brief, for context. \
 A workspace with brief/references.toml is an accessory of another device, `@<id>` in the brief: \
@@ -645,7 +659,12 @@ def build(
     return got
 
 
-def outcome(job: str, ws: str, text: str) -> tuple[str, dict[str, Any]]:
+SETUP_ENV = "CADMIND_MINER_SETUP"
+"""The environment variable naming this miner's setup (its model, its prompt), sent as ``setup``
+with every submit: the validator groups practice results by it (``--setup`` overrides it)."""
+
+
+def outcome(job: str, ws: str, text: str, *, setup: str = "") -> tuple[str, dict[str, Any]]:
     """What to send for the agent's final output: ``("reject", body)`` for a ``REJECT`` line (not
     on an admission job; its message is everything from the line's message to the end, over
     several lines when it runs on), else ``("submit", body)``. The body carries a ``summary`` for
@@ -659,6 +678,8 @@ def outcome(job: str, ws: str, text: str) -> tuple[str, dict[str, Any]]:
         return "reject", {"job": job, "category": rej.group(1), "message": message}
     digest = fin.group(1) if fin else ""
     body: dict[str, Any] = {"job": job, "workspace": ws, "digest": digest}
+    if setup:
+        body["setup"] = setup
     left = _UNFINISHED.search(text)
     said = " ".join((left.group(1) if left else _DONE.sub("", text)).split())
     if said and not LIMIT.search(said):
@@ -725,6 +746,14 @@ def keep_admitted(call: Any, mint: Any, works: Any, *, log: Any) -> None:
             f"admission: {code} "
             f"{adm.get('job') or adm.get('error') if isinstance(adm, dict) else adm}"
         )
+
+
+def setup_label(a: argparse.Namespace) -> str:
+    """This miner's setup label: ``--setup``, else :data:`SETUP_ENV` (one line, 80 characters)."""
+    from .practice import clean_setup  # noqa: PLC0415
+
+    raw = a.setup if getattr(a, "setup", None) is not None else os.environ.get(SETUP_ENV, "")
+    return clean_setup(raw)
 
 
 def deadline_file(a: argparse.Namespace) -> Path | None:
@@ -948,6 +977,12 @@ def parser() -> argparse.ArgumentParser:
         f"(default {sr.DEFAULT_LOOPS})",
     )
     ap.add_argument(
+        "--setup",
+        default=None,
+        help=f"a short label for this setup (model, prompt), sent with each submit; practice "
+        f"results are grouped by it (default: ${SETUP_ENV})",
+    )
+    ap.add_argument(
         "--no-local-fetch",
         dest="local_fetch",
         action="store_false",
@@ -956,9 +991,104 @@ def parser() -> argparse.ArgumentParser:
     return ap
 
 
-def main(argv: list[str] | None = None) -> int:
-    ap = parser()
+def practice_parser() -> argparse.ArgumentParser:
+    """``practice [--status]``: the miner's own practice (docs/MINER.md "Trying a new setup")."""
+    ap = argparse.ArgumentParser(
+        prog="cadmind-einstein practice",
+        description="Ask the validator for one practice job on a public brief (never scored; "
+        "the running miner builds it), or show your practice results with --status.",
+    )
+    add_wallet_args(ap, help_name="the bittensor wallet holding the miner's hotkey")
+    ap.add_argument("--dev-uri", help="a development key (//Alice): local stacks only")
+    ap.add_argument("--validator", required=True, help="the validator's base URL")
+    ap.add_argument("--validator-hotkey", required=True, help="the validator's SS58 hotkey")
+    ap.add_argument("--status", action="store_true", help="your practice results so far")
+    ap.add_argument("--json", action="store_true", help="print the validator's answer as JSON")
+    return ap
+
+
+def _score(x: Any) -> str:
+    return "-" if x is None else f"{float(x):g}"
+
+
+def _q(x: Any) -> str:
+    return '"' + str(x or "") + '"'
+
+
+def practice_lines(got: Mapping[str, Any]) -> list[str]:
+    """The ``--status`` answer, a few lines per result and one per setup."""
+    out: list[str] = []
+    for o in got.get("open") or []:
+        out.append(f"{o.get('practice')}  {_q(o.get('title'))}  {o.get('state')}")
+    for r in got.get("results") or []:
+        head = f"{r.get('practice')}  {_q(r.get('title'))}"
+        if r.get("deliverable"):
+            head += f"  yours {_score(r.get('score'))}"
+            head += f"  delivered {_score(r.get('reference_score'))}"
+            head += f"  (judge {r.get('judge')})" if r.get("judge") else ""
+        else:
+            head += f"  not deliverable: {str(r.get('why') or '')[:160]}"
+        tail = f"{r.get('minutes')} min" if r.get("minutes") is not None else ""
+        if r.get("setup"):
+            tail += f"  setup {_q(r.get('setup'))}"
+        if r.get("unscored"):
+            tail += f"  no vote: {str(r.get('unscored'))[:80]}"
+        out.append(head)
+        out.append(f"    {r.get('state')}  {tail.strip()}")
+    for name, g in (got.get("by_setup") or {}).items():
+        out.append(
+            f"setup {_q(name or '(none)')}: {g.get('runs')} run(s), {g.get('deliverable')} "
+            f"deliverable, mean {_score(g.get('mean_score'))} vs delivered "
+            f"{_score(g.get('mean_reference_score'))} over {g.get('voted')} voted"
+        )
+    today = got.get("today") or {}
+    if today:
+        out.append(f"today: {today.get('started')} of {today.get('cap')} practice job(s) started")
+    if got.get("note"):
+        out.append(str(got["note"]))
+    return out or ["no practice yet"]
+
+
+def practice_main(argv: list[str] | None = None) -> int:
+    """``cadmind-einstein practice [--status]`` (also ``cadmind-einstein-miner practice``): ask
+    for one practice job -- the running miner picks it up on its next ``work`` like any job -- or
+    print the results so far."""
+    ap = practice_parser()
     a = ap.parse_args(argv)
+    if a.dev_uri:
+        from bittensor.sp_core import Keypair  # noqa: PLC0415
+
+        kp: Any = Keypair.create_from_uri(a.dev_uri)
+    else:
+        if not (a.wallet_name and a.wallet_hotkey):
+            ap.error("--wallet.name and --wallet.hotkey (or --dev-uri) are required")
+        import bittensor as bt  # noqa: PLC0415
+
+        kp = bt.Wallet(**wallet_kwargs(a)).hotkey
+    if a.status:
+        code, got = signed(kp, a.validator, "/v1/practice", {}, a.validator_hotkey, method="GET")
+    else:
+        code, got = signed(kp, a.validator, "/v1/practice", {}, a.validator_hotkey)
+    if a.json or code != 200 or not isinstance(got, dict):
+        sys.stdout.write(json.dumps({"status": code, "answer": got}, indent=1) + "\n")
+        return 0 if code == 200 else 1
+    if a.status:
+        sys.stdout.write("\n".join(practice_lines(got)) + "\n")
+    else:
+        sys.stdout.write(
+            f"practice {got.get('practice')} {_q(got.get('title'))}: {got.get('state')} -- the "
+            "running miner builds it like any job; nothing is scored\n"
+        )
+    return 0
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = sys.argv[1:] if argv is None else list(argv)
+    if args[:1] == ["practice"]:
+        return practice_main(args[1:])
+    ap = parser()
+    a = ap.parse_args(args)
+    setup = setup_label(a)
 
     if a.dev_uri:
         from bittensor.sp_core import Keypair  # noqa: PLC0415
@@ -985,6 +1115,8 @@ def main(argv: list[str] | None = None) -> int:
         logger.info("%s %s", time.strftime("%H:%M:%S"), msg)
 
     log(f"cadmind-einstein-miner {__version__} (spec {__spec_version__})")
+    if setup:
+        log(f"setup label: {setup!r} (sent with each submit; practice results are grouped by it)")
     if not a.no_version_check:
         check_latest(say=log)
     if a.netuid and not a.dev_uri:
@@ -1196,7 +1328,7 @@ def main(argv: list[str] | None = None) -> int:
             log(f"{job}: the job was cancelled; nothing submitted")
             done += 1
             continue
-        kind, body = outcome(job, ws, got.text)
+        kind, body = outcome(job, ws, got.text, setup=setup)
         if kind == "reject":
             code, out = send(call, "/v1/jobs/reject", body, log=log)
             log(f"rejected {job}: {code} {out}")
