@@ -18,11 +18,11 @@ miners' AI agents as checked engineering projects.
    is delivered to the client. A worked attempt that fails or runs late ends the round "not finished": its project
    is kept, and the client may pay for a round that continues it; a copied one goes to another miner from scratch.
    When a client's answers change nothing in the design, the round ends "no change": not charged, nobody scored.
-   Each job is scored
-   from the gate, efficiency, timeliness, the **client's own reaction** (download, stars, change requests, a
-   quality refund) and the validators' **quality vote** -- a vision model's evaluation of the delivered device on a
-   published judge (`cadmind-judge/1.3b`, counted with `u = 0.4`). No model decides whether a device is delivered. Every
-   hour the validator sets weights and publishes a report anyone can recompute.
+   A delivered job is scored by the **client's own reaction**: 0.5 untouched, 1 downloaded or rated 3-5 stars, 0
+   rated 1-2 stars or refunded for its quality; anything not delivered scores 0. The validators' **quality vote** -- a
+   vision model's evaluation of the delivered device on a published judge (`cadmind-judge/1.3b`) -- is recorded and
+   published, never scored. No model decides whether a device is delivered, a score or a weight. Every hour the
+   validator sets weights and publishes a report anyone can recompute.
 
 Watt itself, the agent bench that runs it, and the platform's accounts, job queue and billing are hosted services
 reached over HTTP. This repository contains no Watt code and needs none: it is the validator and two reference
@@ -32,20 +32,19 @@ miners.
 
 **How emissions flow.** The chain emits to the subnet every block and splits that emission between the subnet
 owner, the miners, and the validators and their stakers, by Bittensor's rules. The miners' share is divided in
-proportion to the weights the validator sets. Einstein's weights are a miner's job scores summed with a 24-hour
-half-life over a 7-day window; **weight is never burned and the subnet owner's hotkey is never weighted**, so the
+proportion to the weights the validator sets. Einstein's weights are a miner's job points summed over the last 7
+days; **weight is never burned and the subnet owner's hotkey is never weighted**, so the
 whole miner share goes to miners who did client work (while the launch switch is on, equally to every admitted hotkey
 instead). Details in [Scoring and weights](#scoring-and-weights) and
 [`DESIGN.md`](DESIGN.md) section 5.
 
-**What miners earn.** Emissions, in proportion to their weight: the more client jobs they deliver, the better
-clients rate them and the more efficiently they work, the more they earn. There are no benchmarks or synthetic
+**What miners earn.** Emissions, in proportion to their weight: the more client jobs they deliver that clients
+download or rate well, the more they earn. Jobs go to the free miners in turn (the one that waited longest first). There are no benchmarks or synthetic
 tasks; every job is a real client's.
 
 **What miners pay for.** Their own model and agent usage (API or plan of their choice, under their provider's
 terms) and the machine that runs their agent. The Watt tools run on CADmind's hosted service under the miner's
-hotkey-bound agent key, metered and quota-limited by the platform; the metered compute counts in the efficiency
-part of the score. Clients pay CADmind on the platform; client payments are not paid to miners directly.
+hotkey-bound agent key, metered and quota-limited by the platform. Clients pay CADmind on the platform; client payments are not paid to miners directly.
 
 ## Validation today
 
@@ -133,7 +132,7 @@ not on your machine. The full table is [`min_compute.yml`](min_compute.yml).
 
 **The main cost of mining is inference.** Your agent calls your model provider for every job; that usage is
 yours to choose, pay for and keep within your provider's terms (many consumer plans do not allow automated or
-commercial use). An efficient harness -- fewer, better model calls and less Watt compute -- also scores better.
+commercial use). An efficient harness -- fewer, better model calls and less Watt compute -- costs you less.
 
 ## Documents
 
@@ -233,8 +232,8 @@ cadmind-einstein --state-dir ~/.local/share/cadmind-einstein \
   A restart loses nothing.
 - The validator logs whether it is **stake-dominant** (its share of active validator stake above `kappa`), and
   publishes that in every report and at `GET /v1/chain`.
-- **Quality votes** ([`docs/VALIDATOR.md`](docs/VALIDATOR.md)): `--votes` (`counted` by default: voted, published
-  and scored with `u = 0.4`; `live` is its old name; `shadow`: voted and published, not scored; `off`), `--judge 1.3b` (the default; `1.3` and `1.2b` are still accepted; the `-tools` judges are refused), `--judge-backend
+- **Quality votes** ([`docs/VALIDATOR.md`](docs/VALIDATOR.md)): `--votes` (`shadow` by default: voted and published,
+  never scored; `counted` and `live` are accepted as its names; `off`), `--judge 1.3b` (the default; `1.3` and `1.2b` are still accepted; the `-tools` judges are refused), `--judge-backend
   openrouter|claude-cli` (`claude-cli`: a Claude subscription logged in for the service user, no key file, notional
   dollars counted toward the cap), `--review-model anthropic:<model>|openai:<model>` (a Claude model name with
   `claude-cli`) with `--review-key-file` (0600; install `cadmind-einstein[review]`), `--review-base-url` (for an
@@ -400,7 +399,7 @@ Every answer on these routes is signed by the validator's hotkey (`X-Einstein-Va
 | `POST /v1/jobs/reject` | `{job, category, message}` | `category`: `not-allowed` or `not-capable` |
 | `POST /v1/practice` | `{}` | a practice job on a public brief, assigned to this miner alone and never scored (approved key holders, admitted or not; 3 a UTC day, one open at a time, none while a client job the miner could take waits): `{practice, state, title}` |
 | `GET /v1/practice` | (none) | the miner's practice: its open job, its results (its score and the delivered version's, or why it was not deliverable) and their means per `setup` ([`docs/MINER.md`](docs/MINER.md#trying-a-new-setup)) |
-| `POST /v1/miners/receipt` | `{}` | the miner's recent jobs and scores, its weight and quality, and its recent attempts that did not pass with why (`failures`) |
+| `POST /v1/miners/receipt` | `{}` | the miner's recent jobs and their points, its weight and average (points per job), and its recent attempts that did not pass with why (`failures`) |
 | `POST /v1/miners/stats` | `{}` | everything that affects the miner's weight: standing and share, counters over 24 h, 7 days and lifetime (and its coldkey's), its last 100 jobs with score parts, signals and votes with their evidence, the weight formula ([`docs/MINER.md`](docs/MINER.md#your-stats)) |
 
 ### Platform and operator routes (`Authorization: Bearer <desk token>`)
@@ -409,10 +408,10 @@ Every answer on these routes is signed by the validator's hotkey (`X-Einstein-Va
 |---|---|
 | `GET /v1/capacity` | active and free admitted miners, median job time (the platform's queue computes ETAs) |
 | `POST /v1/cancel {job}` | the client cancelled a claimed job: frozen, miner freed, nobody scored, not charged |
-| `POST /v1/signals {job, kind, stars?, quality?, trust}` | the client's download, stars (1-5), change request, or a refund the platform granted (`quality`: true when for the delivery's quality); `trust`: `paid` or `free` |
+| `POST /v1/signals {job, kind, stars?, quality?}` | the client's download, stars (1-5), change request, or a refund the platform granted (`quality`: true when for the delivery's quality); a `trust` is ignored |
 | `GET /v1/stats/miners?hotkeys=a,b` | the stats of up to 20 hotkeys, as `/v1/miners/stats` answers each (the platform's miner dashboard) |
 | `GET /v1/jobs/{job}` | a job's state and attempts |
-| `GET /v1/scores` | scores, weights, quality, miners, rejection telemetry |
+| `GET /v1/scores` | job points, weights, averages, miners (with their wait clock `free_ms`), rejection telemetry |
 | `GET /v1/chain` | the validator's stake share, `kappa`, the weights path |
 | `POST /v1/weights/close` | close the hour now (dry runs, tests) |
 | `GET /v1/operator/key_requests?state=pending` | key requests (`pending`, `approved`, `refused`, `revoked` or `all`) |
@@ -427,7 +426,7 @@ Every answer on these routes is signed by the validator's hotkey (`X-Einstein-Va
 |---|---|
 | `GET /v1/reports` | every hourly report's name, SHA-256 and the block its hash was committed at |
 | `GET /v1/reports/hour-N.json` | a report's exact bytes |
-| `GET /v1/stats/network` | the leaderboard by hotkey: share of the vector, weight, quality, 7-day deliveries, mean stars, mean vote |
+| `GET /v1/stats/network` | the leaderboard by hotkey: share of the vector, weight, average, 7-day deliveries, mean stars, mean vote (shown, never scored) |
 
 ### What the validator calls on the platform
 
@@ -459,24 +458,18 @@ from the signed link it answers). See `cadmind_einstein/platform.py`.
 
 ## Scoring and weights
 
-A failed attempt scores 0 (timeouts and copies at once; rejections and gate failures only when another miner then
-passes the same job). A passing job scores
+A client job delivered by a builder that passes the validator's Watt gate scores **0.5** while the client has done
+nothing, **1** when the client downloaded it or rated it 3, 4 or 5 stars, and **0** when the client rated it 1 or 2
+stars or a refund was granted for its quality. The client's latest signal decides (a download then 1 star is 0; 1
+star then 5 stars is 1); free and paid clients count the same. Not delivered, failed the gate, timed out, handed
+back, a copy: **0**. The validators' vote is published and never scored.
 
-```
-I = 0.5 + 0.3·E + 0.2·T                 immediate: passed the gate, efficiency, on time
-B = u·V + (1 - u)·I                     the validators' vote V, counted u (0.4; 0 in shadow)
-s = 0.4·I + 0.6·(w·C + (1 - w)·B)       the client's reaction C, weighted by w
-```
-
-where `E` compares the job's compute and wall time with the median of similar passing jobs, and `C`/`w` come from
-the client's stars, download, re-run, change request or quality refund (one star), weighted by account trust
-(paid 1, free 0.1). The vote counts with `u = 0.4`, so a client's stars clearly dominate it; in shadow (`u = 0`) an unrated job scores exactly `I`. A miner's weight is the sum of its job scores decayed with a 24-hour half-life (7-day
-window), plus its share of 25% of the score of each delivered remix of a project it built (the remix miner keeps its full score; see [`DESIGN.md`](DESIGN.md)); the hourly vector is proportional to it over registered, admitted, recently seen miners (at the mainnet
-launch, while the operator's launch switch is on, it is equal per admitted hotkey instead). Only admitted miners are ever
-weighted, by every rule and fallback. Weight is never
-burned and the subnet owner's hotkey is never weighted; at genesis (nobody has history) the weight is split
-equally per coldkey, each coldkey's share among its hotkeys, among admitted miners that have delivered a scored client
-job. Under the usual rule each hotkey counts on its own; coldkeys play no part. The vector is **never empty**
+A miner's weight is the sum of its job points over the last 7 days (flat, no decay); the hourly vector is proportional
+to it over registered, admitted, recently seen miners (at the mainnet launch, while the operator's launch switch is
+on, it is equal per admitted hotkey instead). Only admitted miners are ever weighted, by every rule and fallback.
+Weight is never burned and the subnet owner's hotkey is never weighted; at genesis (nobody has points) the weight is
+split equally per coldkey, each coldkey's share among its hotkeys, among admitted miners that have delivered a scored
+client job. Under the usual rule each hotkey counts on its own; coldkeys play no part. The vector is **never empty**
 while a miner is admitted (under Null consensus an empty one spreads emission over every UID): the last non-empty
 vector is sent again, or, before the first, equal shares per coldkey among admitted, reachable miners. Details:
 [`docs/MINER.md`](docs/MINER.md#weights) (with a worked example and what the numbers cannot promise) and
@@ -531,7 +524,7 @@ still checked.
 |---|---|
 | `cadmind_einstein/daemon.py` | `cadmind-einstein`: the validator process (flags, main loop, hourly close) |
 | `cadmind_einstein/desk.py` | the job desk: claim, route, accept, deadlines, gate, reassignment, job endings, admission, abuse disables |
-| `cadmind_einstein/scoring.py` | per-job scores, decayed weights, the vector, hourly reports; `cadmind-recompute` (the auditor) |
+| `cadmind_einstein/scoring.py` | per-job points, 7-day weights, the vector, hourly reports; `cadmind-recompute` (the auditor) |
 | `cadmind_einstein/stats.py` | miner stats (24 h, 7 days, lifetime; the daily rollup), the leaderboard; `cadmind-miner-stats` |
 | `cadmind_einstein/review.py` | the review bundle and its checks, the signed vote (v2, and v1 still in the window), the average; `cadmind-review` |
 | `cadmind_einstein/judge.py` | the device judge: one prompt per version (`judge_prompt_1.3b.md` is the validators'), four modes, versions 1.2b, 1.3, 1.3b and their -tools variants, strict replies, the digest, the subscription transport; `cadmind-judge` |

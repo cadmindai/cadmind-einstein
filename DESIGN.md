@@ -27,15 +27,17 @@ recovers) is what miners compete on.
 
 - **One miner per client job.** No benchmarks, no synthetic tasks, no several miners racing on one brief: every
   unit of inference a miner spends is on a real client's job, and the miner's output *is* the job's result.
-- **Watt is the gate; clients and validators grade.** Watt decides whether an output is usable (deliverable). How
-  good it is comes from the client's own reaction and, for the many jobs a client never rates, from the validators'
-  **quality votes**: model evaluations of the delivered device by a fixed, published judge (section 13). No model
-  ever decides whether a device is delivered; model votes only score miners. A paid client's stars always win.
+- **Watt is the gate; clients grade.** Watt decides whether an output is usable (deliverable). A delivered job's
+  points come from its client's latest reaction alone: 0.5 untouched, 1 downloaded or rated 3-5 stars, 0 rated 1-2
+  stars or refunded for its quality (section 5). The validators' **quality votes** -- model evaluations of the
+  delivered device by a fixed, published judge (section 13) -- are recorded and published for calibration; no model
+  decides a delivery, a score, a weight or a route.
 - **Never throw away a builder's work.** An attempt a miner worked and did not finish ends the round "not
   finished": its project is kept, and the client may pay for a round that continues it (on any miner, free to start
   over from the base). Only an attempt nobody worked (not accepted, a copy, a rejection) goes to another miner from
   scratch.
-- **Nobody is penalised for a job nobody could do.** Fairness is judged on the whole job, not on one attempt.
+- **A failed attempt costs only its 0.** A miner's weight is a sum of points, so a job nobody could do takes
+  nothing away from anyone; it just adds nothing.
 - **All emission goes to miners.** Weights are never burned and the subnet owner's hotkey is never weighted. There
   is no team miner.
 - **Auditable.** Every hour the validator publishes a report from which anyone can recompute every score and the
@@ -146,11 +148,11 @@ validator: freeze on submit, fork, read Watt's verdict (the gate), copy check, s
 
   | What happened | The job | Charged | Scores |
   |---|---|---|---|
-  | an attempt passes the gate | **delivered** | yes, once | the passing miner scores; every earlier rejection or gate failure on this job scores 0 |
-  | a worked attempt does not pass (gate failure, or late and failing) | **not finished**: its project kept, the builder's summary for the client | no | a timeout already scored 0; held rejections and the gate failure count (0) unless two coldkeys gave them |
-  | a later round passes at the digest of the version it started from, and the client only answered questions, each by picking an offered option | **no change**: its project, the answers recorded, handed back | no | nobody scored or penalised; held rejections dropped |
-  | two rejections, from two coldkeys | **declined**: the client reads both messages; the brief is flagged for review | no | nobody penalised |
-  | four attempts without either of the above (timeouts before accepting, copies) | **didn't finish** | no | each timeout and copy already scored 0; held rejections count (0) unless two coldkeys gave them |
+  | an attempt passes the gate | **delivered** | yes, once | the passing miner scores (section 5); every earlier attempt scored 0 as it ended |
+  | a worked attempt does not pass (gate failure, or late and failing) | **not finished**: its project kept, the builder's summary for the client | no | that attempt scores 0 |
+  | a later round passes at the digest of the version it started from, and the client only answered questions, each by picking an offered option | **no change**: its project, the answers recorded, handed back | no | that attempt scores nothing |
+  | two rejections, from two coldkeys | **declined**: the client reads both messages; the brief is flagged for review | no | each rejection scored 0 |
+  | four attempts without either of the above (timeouts before accepting, copies) | **didn't finish** | no | each attempt scored 0 |
   | every admitted miner that could take it has tried it (the second-opinion wait still applies) | **declined** if every attempt was a rejection, else **didn't finish** | no | as above |
 
   **A round that builds nothing.** A later round is compared with where it began: the digest stated by the report of
@@ -168,83 +170,59 @@ validator: freeze on submit, fork, read Watt's verdict (the gate), copy check, s
 - **A second opinion is another owner's.** A job one miner rejected goes next to a miner of another
   coldkey; only after `--second-opinion-wait-s` (30 minutes) may any other miner take it, and that miner's opinion
   is then not a second one. A job ends declined or out of reach only on opinions from `--second-opinion-coldkeys`
-  (2) distinct coldkeys, and an undelivered job whose rejections and failures all came from fewer coldkeys counts
-  them (0) instead of dropping them. So hotkeys of one owner cannot end a hard job for free between them.
+  (2) distinct coldkeys, so hotkeys of one owner cannot end a hard job between them.
 
-- Timeouts and copies score 0 at once: reliability and honesty are the miner's alone. A rejection or a gate failure
-  is **held**: it scores 0 when another miner passes the same job, or when the job ends undelivered on the opinions
-  of fewer than two coldkeys -- so a round one miner ends "not finished" by a gate failure counts it 0. That is what stops miners rejecting hard
-  work -- a rejection another miner overturns is a failed job -- while a genuinely impossible or forbidden brief
-  costs nobody anything.
+- Every attempt that does not deliver -- a timeout, a copy, a rejection, a gate failure -- scores 0 at once (owner
+  2026-11-06; earlier releases held a rejection or a gate failure until another miner passed the job). A rejection
+  also sends its miner to the back of the router's line (section 6), and one another coldkey's miner overturns by
+  delivering the job counts toward the abuse limits (section 11).
 - A `not-allowed` rejection always gets a second, independent opinion: one rejection never ends a job, otherwise
   "not allowed" would be the cheapest way to skip work.
 - A miner that deregisters mid-job, or is disabled for abuse, loses the job without a score, and that attempt does
   not count toward the four-attempt cap; nothing of its workspace is kept.
-- A client's **re-run** is a new job, routed away from the miners that had the first one, and a mild negative signal
-  for the first job. A client may **cancel** a claimed job: it is frozen, its miner freed, nobody scored, nothing
+- A client's **re-run** is a new job, routed away from the miners that had the first one; on the first job it is
+  recorded as a signal, not scored. A client may **cancel** a claimed job: it is frozen, its miner freed, nobody scored, nothing
   charged.
 
 ## 5. The score: per job, graded by the client
 
-```
-timeout or copy:                                  s = 0, at once
-rejection or gate failure, another miner passes:  s = 0
-gate failure ending a round "not finished":       s = 0 (one owner's opinion)
-rejections from two coldkeys:                     no score (declined)
-passing job:   I = 0.5 + 0.3·E + 0.2·T            immediate: passed the gate, efficiency, on time
-               B = u·V + (1 - u)·I                the baseline: the validators' vote, anchored on I
-               s = 0.4·I + 0.6·(w·C + (1 - w)·B)  ~40% immediate, ~60% the client's signal over B
-```
+A client job delivered by a builder that passes the validator's Watt gate scores:
 
-- `E`, **efficiency**: half `min(1, median compute / own)` and half `min(1, median wall time / own)`, against the
-  passing jobs of the same bucket (the brief size class) in the 7-day window; 1 while the bucket has fewer than
-  5 jobs. Compute is the platform's meter, so a miner cannot fake it. `T` is 1 on time, 0 late.
-- `C`, the client's verdict in [0, 1], and `w`, how much it counts:
-  - **stars** (1-5) weigh most: `C = (stars - 1)/4`, `w = trust`;
-  - a **download** without stars: `C = 0.75`, `w = 0.5·trust`;
-  - a **re-run or change request**: `C` lowered by 0.25 each, `w` at least `0.5·trust`;
-  - a **refund** the platform granted for the delivery's quality counts as a one-star rating in its place among the
-    ratings (`C = 0`, `w = trust`; the last rating wins); a refund for any other reason is recorded and shown in the
-    miner's stats, never scored;
-  - **no reaction**: `w = 0`, so `s = 0.4·I + 0.6·B`.
-- `V`, the **validators' vote** on the delivered device (section 13), in [0, 1], and `u`, how much it counts:
-  **0.4**, with our validator's vote alone and at most that with third-party coldkeys too. The vote is a light base
-  rating for jobs clients do not rate (or rate late), so a client's stars clearly dominate it. Votes are counted
-  (`--votes counted`, the default). In shadow (`--votes shadow`) `u = 0`: the vote is recorded, published and shown
-  to the miner, and `B = I`, so an unrated job scores exactly its measured part `I`. A signal moves 60% of the score
-  from `B` toward the client's verdict, by its trust.
-- **Trust**: 1 for a paying account, 0.1 for a free one. Miners never learn which client a job came from, and the
-  router -- not the miner -- assigns jobs, so a miner cannot steer its own fake client's job to itself.
-- **Late signals** change the job's score when they arrive, while it is in the window; the next hourly vector reads
-  the current scores. A job's `E` also moves with the window's medians, so its `s` can change hourly until it leaves.
-- The constants (0.4/0.6, 0.5/0.3/0.2, 0.75, -0.25, trust 0.1) are expected to be re-tuned on real traffic; every
-  hourly report names the einstein version that computed it and publishes the half-life, the window, the 0.4/0.6 split
-  and the trust values; the rest are in that version's `scoring.py`.
+- **0.5** while the client has done nothing;
+- **1** when the client downloaded it (in the app or by API: the platform's `download` signal) or rated it 3, 4
+  or 5 stars;
+- **0** when the client rated it 1 or 2 stars, or a refund was granted for its quality (the platform's quality-refund
+  signal).
+
+The client's **latest** signal decides: a download then a 1-star rating is 0; a 1-star rating then a later 5-star one
+is 1. Only the job's own client's signals exist here. Free and paid count the same (a `trust` the platform still sends
+is ignored). A change request, a re-run or a refund for another reason is recorded and shown in the miner's stats,
+never scored.
+
+Not delivered, failed the gate, timed out, handed back (rejected), a copy: **0**, at once.
+
+- **No model scores.** The validators' votes (section 13) are recorded, published, shown to the miner and kept in the
+  calibration archive and the practice comparison; nothing in the score, the weights or the router reads them.
+- **Late signals** change the job's points when they arrive, while it is in the window; the next hourly vector reads
+  the current points.
+- Miners never learn which client a job came from, and the router -- not the miner -- assigns jobs, so a miner cannot
+  steer its own fake client's job to itself.
+- Every hourly report names the einstein version that computed it and publishes the rule's numbers (`constants`: the
+  window and the three point values); the code is that version's `scoring.py`.
 
 ### Weights
 
-- Each job counts with a weight that **halves every 24 hours** of age (7-day window). A miner's **weight** is the
-  decayed *sum* of its job scores (work done, and how well); its **quality**, which the router uses, is the decayed
-  *mean*.
-- **Remix credit.** A delivered job that remixes a project built on this subnet adds to the weight of that project's
-  original miners: together they share **25% of the job's score**, split equally. The credit decays with the job,
-  moves with its score (a late star, a quality refund) and leaves with it when the job is withdrawn or ages out. The
-  miner that built the remix keeps its full score, and nobody's quality changes, so routing does not move. A remix of a
-  remix credits only the original at the root of the chain. A project built by CADmind's own hosted designer, or
-  imported, has no miner to credit, and a remix built by the hosted designer never reaches this validator, so it pays
-  no one. A credited miner that has left is out of the vector like any other. Remixing your own work is allowed: the
-  job is still a client's, paid and judged like any other.
-
-  The platform names the original miners in the claim (`remix_credit`: each delivered round of the original and the
-  hotkey that built it), from its own record of who delivered what; neither a client nor a miner writes it. The
-  validator checks each entry against the jobs it ran, drops one it did not see delivered by that hotkey, and never
-  shows the list to the miner. The credit is computed from the job's outcome, not stored as a score of its own, so a
-  job counts once however often it is judged or the validator restarts. The report publishes the job's `credit`, and
-  `cadmind-recompute` rebuilds the vector with it.
+- A job counts for **7 days from its end** (its delivery), flat: no decay. A miner's **weight** is the sum of its job
+  points over the last 7 days; its **average** (points per job in the window) is shown on the stats pages, and
+  nothing routes by it.
+- A remix (a project started from a copy of a public project) scores its own builder like any job. The platform's
+  claim still names the original's miners (`remix_credit`); the validator checks and records it with the job, and
+  never scores it.
 - The vector is proportional to the weight over registered, admitted miners seen in the last 24 hours, **per hotkey**
-  (coldkeys play no part in this rule), and is set **every hour**. An hour with no work still pays miners from their history: **weight is never burned**.
+  (coldkeys play no part in this rule), and is set **every hour**. An hour with no work still pays miners from their
+  last 7 days: **weight is never burned**.
 - **Only admitted hotkeys are weighted**, by every rule and every fallback below: a miner whose admission was
-  dropped (its key revoked, disabled, deregistered) is out from the next vector on, whatever its decayed history
+  dropped (its key revoked, disabled, deregistered) is out from the next vector on, whatever its points
   and whatever the last vector held.
 - **Launch** (a manual switch saved in the state: `--launch-equal on|off` sets and saves it, the operator's route
   `/v1/operator/launch_equal` changes it at runtime; without the flag a restart keeps the saved value, off when
@@ -253,7 +231,7 @@ passing job:   I = 0.5 + 0.3·E + 0.2·T            immediate: passed the gate, 
   test), history and the last vector ignored; with none reachable, equal among the admitted ones (never empty).
   Off, the rules below. The report records `launch_equal` and names the rule ("launch: equal among admitted
   miners"); `cadmind-recompute` follows the record (a report without it was made with the switch off).
-- **Genesis** (no admitted miner has history in the window), `--genesis`:
+- **Genesis** (no admitted miner has points in the window), `--genesis`:
   - `delivered` (default): equal weight **per coldkey** among admitted, registered, reachable miners that have
     delivered at least one scored client job (ever), each coldkey's share split among its hotkeys. Admission is a
     cheap, unscored entry test, so it earns nothing on its own while a miner that has delivered is reachable.
@@ -269,6 +247,9 @@ passing job:   I = 0.5 + 0.3·E + 0.2·T            immediate: passed the gate, 
 - **The subnet owner's hotkey is never weighted** (weighting it would burn miner emission, and the chain scales a
   subnet's emission down for owner incentive), nor is the validator's own uid. These are dropped again at the last
   step before the chain call, whatever the scorer produced.
+- **Recompute at startup.** A stored outcome keeps its facts and signals, never its points: at every start the
+  validator scores the window's outcomes by the rule it runs, so after an upgrade no miner holds a mix of an older
+  rule's points and this one's.
 
 ### Continuing an unfinished round
 
@@ -291,9 +272,8 @@ scratch, throwing the first builder's work away; after two or four tries the job
   `tests/` from the reference (read with `list_files`/`read_file`), or clears them and builds from `brief/`. No new
   tool: any miner that can read and write files can do it.
 - **Rejections are unchanged**: two coldkeys must reject to decline a job.
-- **No farming.** Only a delivery is paid. A "not finished" round's timeout scores 0 at once, and its held gate
-  failure counts 0 whenever the round's opinions came from one owner -- always, when one miner ended it -- so ending
-  rounds unfinished lowers a miner's quality (the router's) and adds nothing to its weight. The abuse counters see
+- **No farming.** Only a delivery is paid. A "not finished" round's attempt scores 0 at once, so ending rounds
+  unfinished adds nothing to a miner's weight. The abuse counters see
   every such attempt as before: gate failures (`failed`, the per-coldkey watch), timeouts (the ledger), the miner's
   receipt (`failures`); the hourly `watch.endings_by_coldkey` adds a `not_finished` count.
 - **Copies.** A continuation's output shares most of its features with its seed and, when its builder started over,
@@ -316,12 +296,14 @@ scratch, throwing the first builder's work away; after two or four tries the job
   result is voted on with the validators' judge, and so is the delivered version under today's judge (that vote
   cached per delivered job and judge digest); a result that fails the gate is reported with the gate's reason and no
   vote. The record goes to the platform for the operator and to the miner (`GET /v1/practice`, by `setup` label).
-  It is never in the ledger, quality, weights or routing, never sent to another miner, never handed out while a
+  It is never in the ledger, points, weights or routing, never sent to another miner, never handed out while a
   client job the miner could take waits, and at most 3 a UTC day per miner.
 - **Available** = admitted, holds a live key, polled `work` in the last 60 s, holds no job, not blocked, registered.
-- **Router.** A client job goes to the job's previous miner if it is free (a later round of the same project);
-  else, 10% of the time, uniformly to a newcomer (fewer than 5 jobs) or a low scorer (quality under half the best),
-  so they can earn a score; else to an available miner drawn with weight `(quality + 0.05)²`.
+- **Router.** A client job goes to the miner its claim prefers (`prefer`: the builder of the version a later round
+  continues) if it is available; else to the available miner that has **waited longest** since its last client
+  assignment ended -- its submit, its hand-back or the job's end (its wait clock, `free_ms`; a miner that never had
+  one first; ties drawn at random). A miner that hands a job back (rejects) restarts its clock at the hand-back, so it
+  goes to the back of the line. Scores and votes play no part. Entry tests and practice jobs do not move the clock.
 - **No miner free:** nothing is claimed and jobs wait in the platform's queue, which shows the client a position
   and an ETA (from the validator's `GET /v1/capacity`). A job is never refused for lack of miners.
 - **Lease.** The validator renews a lease on every job it holds every 30 s (and soon after a miner accepts, submits
@@ -330,14 +312,14 @@ scratch, throwing the first builder's work away; after two or four tries the job
   validator claims again is worked again: a new attempt, with the earlier ones kept and the lost one uncounted.
   After a restart the validator reconciles with the platform's list of jobs it holds.
 - **Reassignment stays inside the validator.** A failed attempt keeps the claim; the held job takes the next free
-  miner before anything new is claimed. This keeps a job's attempts together (a held failure is scored only once
-  the job's outcome is known) and keeps the next miner away from the ones that already failed it.
+  miner before anything new is claimed. This keeps a job's attempts together and keeps the next miner away from the
+  ones that already failed it.
 
 ## 7. Hourly reports and the auditor
 
-Every hour the validator writes a report: the window's jobs with their facts (hotkey, size class, accepted,
-on time, gate, compute, wall time, copy, how the attempt ended) and client signals (kind, stars, trust -- never who
-the client is), every score, each miner's weight and quality, the admitted and reachable miners, the rule used
+Every hour the validator writes a report: the window's jobs with their facts (hotkey, accepted, on time, gate, wall
+time, copy, how the attempt ended) and client signals (kind, stars, quality -- never who the client is), every job's
+points and what decided them, each miner's weight and average, the admitted and reachable miners, the rule used
 (history or genesis), the constants, the validator's stake share against `kappa`, and the vector.
 
 - Reports are canonical JSON, public at `GET /v1/reports` and `GET /v1/reports/hour-N.json`.
@@ -350,18 +332,18 @@ the client is), every score, each miner's weight and quality, the admitted and r
   names the einstein version and spec version that computed it (`einstein`); a report from another version whose
   numbers differ is said to be so (`other_version`, `not_checked`), not called a mismatch.
 - Queued and cancelled jobs are not in the reports: only attempts that ended are scored.
-- **Votes** (section 13): each report's `votes` carries the mode (`counted` or `shadow`), the judge's version and
+- **Votes** (section 13; never scored): each report's `votes` carries the mode (`shadow`), the judge's version and
   digest, every vote on a window job in its public form -- the validator, the model it names, the image set's digest,
   each sample's 0-3 score, its ruling and nudge counts, the hash of the full samples and the validator's signature --
   and each job's
-  `V`, `u` and the `u` applied. The words of a vote (what the model said it saw, the client's quotes) are the
+  `V` and vote count. The words of a vote (what the model said it saw, the client's quotes) are the
   client's project: miners read them on their own jobs only (`/v1/miners/stats`). `cadmind-recompute` checks every
   vote's signature over its published hash and that its value is `V_MAP` of the lower median of its published
   scores (a pre-0.5.0 vote: rubric 3's capped mean).
 
 ## 8. Durability and capacity
 
-- All validator state (jobs, attempts, held failures, miners, admission, telemetry, outcomes and signals, the copy
+- All validator state (jobs, attempts, miners, admission, telemetry, outcomes and signals, the copy
   window, results not yet taken by the platform, keys still to revoke, the last hour closed, commitments) lives in
   one SQLite file (WAL, `synchronous=FULL`). A desk mutation and the ledger writes it causes share one transaction.
   A restart -- mid-job or mid-hour -- loses nothing: a grant cut off mid-call is re-queued, a working attempt keeps
@@ -378,14 +360,14 @@ the client is), every score, each miner's weight and quality, the admitted and r
 
 | Threat | Answer |
 |---|---|
-| A thin or broken output | It fails the gate (reassigned; 0 if another miner passes) or passes thin and the client's signal says so |
-| A miner rating its own jobs from a fake client | Miners never learn the client; the router assigns jobs; free accounts' signals weigh 0.1 |
-| Rejecting hard work | A rejection another miner overturns scores 0; rejection telemetry, per hotkey and summed per coldkey, disables repeat offenders |
+| A thin or broken output | It fails the gate (0, at once) or passes thin and the client's signal says so |
+| A miner rating its own jobs from a fake client | Miners never learn the client; the router, not the miner, assigns jobs (in turn, by wait) |
+| Rejecting hard work | A rejection scores 0 and sends its miner to the back of the line; rejection telemetry, per hotkey and summed per coldkey, disables repeat offenders |
 | Copying another miner's output | Normalised features compared by containment (below); 0 at once, reassigned |
 | Sybils | Each hotkey holds one job and is scored on its own; registration costs; genesis weight goes per coldkey to miners with a delivered job, never for admission alone |
 | Abuse of hosted compute | Per-job and per-key quotas, one run at a time, automatic disable |
 | Collusion between hotkeys | Second opinions come from another coldkey, and only two coldkeys end a job unpaid; endings, rejections, failures and admissions are published per coldkey in each report (`watch`) |
-| A device that passes Watt but does not serve its brief | The validators' vote scores it with the device judge (section 13); a quality refund counts as one star |
+| A device that passes Watt but does not serve its brief | The client's 1-2 stars or a quality refund make it 0; the validators' vote (section 13) records it for calibration |
 | Text in a project aimed at the reviewing model | Structured facts only, capped, instruction-like strings withheld, one data block the prompt names data; strict replies; quotes of the client checked verbatim (section 13) |
 | A validator voting for its own coldkey's miners | Its votes on them are dropped; others are clamped near the median, capped at a third, weighted by stake and calibrated reliability (section 13) |
 
@@ -491,9 +473,10 @@ another miner's jobs.
 
 ## 13. Quality votes
 
-Clients rarely rate, so most scores said only "passed Watt, quickly"; and a device can pass every check it wrote and still not serve its brief. A **vote** is one
-validator's model evaluation of one delivered version against its brief. It only scores the miner: delivery,
-charging, reassignment and the gate never read votes.
+A device can pass every check it wrote and still not serve its brief. A **vote** is one validator's model evaluation
+of one delivered version against its brief. It is recorded, published, shown to the miner and archived for
+calibration and the practice comparison; **it scores nobody** (owner 2026-11-06: scores, weights and routing never
+read votes), and delivery, charging, reassignment and the gate never read them either.
 
 **The review bundle.** The platform renders one bundle per delivered version, hashes it and serves the same bytes
 to every voter through a signed, expiring link: the **standard image set** (eight analytic views of the device
@@ -540,8 +523,7 @@ right than 1.2b on the ten-device set, 1.7 times the cost, about 80 s of Watt co
 
 **The value.** `v = V_MAP[lower median]`, `V_MAP = {0: 0, 1: 0.3, 2: 0.65, 3: 1.0}`: 1 ("it would not work as
 made") sits under rubric 3's 0.35 function cap, which meant the same, and 3 is the only 1.0. A vote whose scores
-spread by 2 or more is noisy (half weight among several voters; a lone voter's value is unchanged). `u` is unchanged.
-Votes count for real (`--votes counted`, the default), not shadow.
+spread by 2 or more is noisy (half weight among several voters; a lone voter's value is unchanged).
 
 **One key per version.** Each version's digest hashes the prompt file, every mode's reply schema, the version's
 switches, its own sampling and aggregation (not `--review-samples`, so a vote of any sample count names the same
@@ -571,8 +553,7 @@ coldkeys below the reliability floor are dropped; the rest are merged per coldke
 median +- 0.2 when three or more coldkeys vote, and weighted: our validator 1, a third-party coldkey
 `r * min(1, stake / S_ref)` (none over a third of the third parties' weight; a noisy vote at half weight). Today only
 our validator's votes exist, so `V` is its vote's value. `V` is
-the weighted mean; `u` is 0.4 with our vote, alone or with third parties (third parties alone reach 0.4 at three
-coldkeys), never more, so a client's stars clearly dominate (`cadmind_einstein.review.aggregate`).
+the weighted mean (`cadmind_einstein.review.aggregate`). It is published, never scored (section 5).
 
 **Calibration.** A validator's reliability `r = 1 - mean(|v - ref|)` comes from hidden calibration items: devices
 scored by hand, delivered projects shown with another job's brief (any honest evaluator scores them low), and
@@ -581,10 +562,10 @@ repeats. Our own model passes a light bar on the same set (`cadmind_einstein.cal
 swapped brief), and every bad item scores under 0.6 (on the judge's scale: at most 1); the distance from each hand
 score is reported, not judged.
 
-**Rollout.** On testnet votes are **counted** at once (`--votes counted`, the default from 0.4.3; `live` is its
-old name): our validator votes on every delivery, the votes are signed, published and shown to the miner, and enter
-the score with `u = 0.4`. `--votes shadow` keeps them out of the score (`u` applied 0); a restart with another mode
-re-applies the recorded votes under it. Third-party voting routes come after. Each validator pays for its
+**Rollout.** Our validator votes on every delivery (`--votes shadow`, the default; `counted` and `live`, older modes
+that scored the vote from 0.4.3 to 0.5.11, are names of it now): the votes are signed, published, shown to the miner
+and archived for calibration, and they never enter a score, a weight or the router (owner 2026-11-06). Third-party
+voting routes come after. Each validator pays for its
 own model calls; ours are capped per day (`--review-daily-usd`, counting OpenRouter's reported cost per request, an
 ALERT when reached; a three-sample vote costs about
 three to four times a rubric 3 vote, about $1 on an Opus-class model).

@@ -9,6 +9,37 @@ All notable changes to this project are listed here. The format follows
 
 ### Changed
 
+- **Scoring.** A client job delivered by a builder that passes the validator's Watt gate scores **0.5** while the
+  client has done nothing; **1** when the client downloaded it (in the app or by API) or rated it 3, 4 or 5 stars;
+  **0** when the client rated it 1 or 2 stars, or a refund was granted for its quality. The client's latest signal
+  decides (a download then 1 star is 0; 1 star then 5 stars is 1); free and paid count the same (`trust` is
+  ignored). Not delivered, failed the gate, timed out, handed back (rejected), a copy: **0**, at once. A miner's
+  weight is the sum of its job points over the last 7 days (a job counts for 7 days from its end, flat, no decay)
+  over the sum of all miners' (registered, admitted, seen in 24 hours). Genesis, launch, never-empty and owner rules
+  are unchanged. Reports, `/v1/scores`, `/v1/miners/receipt` and the stats publish `weight` and `average` (points per
+  job) in place of `quality`, each job's `parts` as `{signal}` or `{failed}`, and `constants` as the window and the
+  three point values.
+- **Routing.** The next client job goes to the job's `prefer` miner if it is available, else to the available
+  builder that has waited longest since its last client assignment ended (a new `free_ms` wait clock per miner,
+  persisted); a builder that hands a job back goes to the back of the line. Every availability rule is unchanged.
+- **Every failed attempt scores 0 at once.** A rejection or gate failure is no longer held until another miner
+  passes the job; job endings (declined, not finished, didn't finish, second opinions from another coldkey, the
+  attempt cap) and the overturned-rejection abuse count are unchanged. Failures an older release held on a job are
+  scored 0 when the upgraded validator loads them.
+- **Recompute at start.** Stored outcomes keep their facts and signals, never their points: every start scores the
+  7-day window by the running rule, so no miner holds a mix of old and new scores.
+- **The judge's vote scores nobody.** Votes are still made, signed, published, shown to miners, archived and compared
+  with practice runs; no score, weight or route reads them. `--votes` defaults to `shadow`; `counted` and `live` are
+  accepted as its names. A report's `votes.per_job` holds `V` and the vote count.
+
+### Removed
+
+- From scoring: efficiency `E` (compute and wall-time medians, brief size classes), on-time `T`, the immediate part
+  `I`, the baseline `B`, the vote's `V` and `u` (`review.U_MAX`), trust weights, the partial download credit, the
+  24-hour half-life decay, the 25% remix credit (the claim's `remix_credit` is still checked and recorded with the
+  job), routing by quality (the decayed mean, the 10% exploration), and `Ledger.vote`, `Ledger.quality`,
+  `Reviewer.apply`/`apply_all`. Outcomes no longer carry `size`, `compute_s`, `vote` or `credit`.
+
 - **The reference miner's prompt** says that when a device is split, every connection between sub-devices (a lead, a
   hose, a signal) is an interface in each contract and the parent wires it: an extension lead is the parent's own
   cable. A sub-device never stands in another sub-device's hardware to wire to.

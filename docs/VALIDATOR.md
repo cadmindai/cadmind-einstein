@@ -3,26 +3,43 @@
 Einstein's weights are set by one validator (the einstein validator, which routes client jobs and runs the Watt
 gate). Other validators take part by **staking** and by **voting on the quality of delivered devices**: a vote is
 your vision model's evaluation of one delivered device against its brief, by CADmind's published device judge
-(`cadmind-judge/1.3b`). Votes only score miners; Watt's checks alone decide what is delivered. This page is the
+(`cadmind-judge/1.3b`). Votes score nobody: a miner's points come from its clients alone ([Scoring and
+routing](#scoring-and-routing)), and Watt's checks alone decide what is delivered. This page is the
 public protocol: the review bundle, the judge and its prompt, the vote, how votes are averaged, what they cost and
 how a validator's reliability is measured. The code is [`cadmind_einstein/judge.py`](../cadmind_einstein/judge.py)
 (the prompt: [`judge_prompt_1.3b.md`](../cadmind_einstein/judge_prompt_1.3b.md)) and
 [`cadmind_einstein/review.py`](../cadmind_einstein/review.py); the design is
 [`../DESIGN.md`](../DESIGN.md) section 13.
 
-**Status.** The einstein validator's votes are **counted** (`--votes counted`, from einstein 0.4.3 on testnet): its
-votes are signed, published in the hourly reports, shown to the miners and enter the scores with `u = 0.4`. The
-vote is a **light judge**: a base rating, allowed to be imprecise, that scores miners when clients do not rate their
-devices (or rate them late); a client's stars clearly outweigh it. `--votes shadow` (recorded and published, never
-scored: `u = 0`) is still there. The routes for third-party validators to receive assignments and send votes come
-later; until then `cadmind-review` runs the reviewer on a bundle locally.
+**Status.** The einstein validator votes on every delivery (`--votes shadow`, the default): its votes are signed,
+published in the hourly reports, shown to the miners and archived for calibration and the practice comparison. From
+einstein 0.5.12 they never enter a score, a weight or the router (`--votes counted` and `live`, which scored them
+from 0.4.3 to 0.5.11, are accepted as names of `shadow`). The routes for third-party validators to receive
+assignments and send votes come later; until then `cadmind-review` runs the reviewer on a bundle locally.
+
+## Scoring and routing
+
+What the einstein validator runs ([`../DESIGN.md`](../DESIGN.md) sections 5 and 6, `cadmind_einstein/scoring.py`):
+
+- A client job delivered by a builder that passes the validator's Watt gate scores **0.5** while the client has
+  done nothing, **1** when the client downloaded it or rated it 3-5 stars, **0** when the client rated it 1-2 stars
+  or a refund was granted for its quality. The client's latest signal decides. Not delivered, failed the gate, timed
+  out, handed back (rejected), a copy: **0**. The platform's `trust` on a signal is ignored.
+- A miner's weight is the sum of its points over the last 7 days (flat, no decay); the vector is proportional to it
+  over the registered, admitted miners seen in 24 hours. Genesis, launch and never-empty rules are unchanged.
+- The next client job goes to the job's `prefer` miner if it is available, else to the available miner that has
+  waited longest since its last client assignment ended; a hand-back restarts that miner's clock.
+- At every start the validator scores the stored window by the rule it runs (stored outcomes keep facts and
+  signals, never points), so an upgrade never leaves a mix of old and new scores; failures an older release held
+  on a job (`pending`) are scored 0 then. `/v1/scores` and the reports publish `weight` and `average` (points per
+  job); `quality` is gone.
 
 ## Staking and consensus
 
 Under Bittensor's **Null** consensus (subtensor runtime 475 and later) exactly one validator -- the one with the
-largest stake -- sets weights; every staked validator keeps its pro-rata dividends. So your stake earns dividends,
-and your votes are how you influence einstein's weights: the einstein validator averages them with its own
-([below](#how-votes-are-averaged)). A subnet still on Yuma (testnet today) behaves the same in practice while the
+largest stake -- sets weights; every staked validator keeps its pro-rata dividends. So your stake earns dividends;
+your votes are averaged with the einstein validator's ([below](#how-votes-are-averaged)) and published, and like its
+own they do not move einstein's weights. A subnet still on Yuma (testnet today) behaves the same in practice while the
 einstein validator holds the stake that makes its row the consensus (each public report's `chain` section says so).
 
 ## The review bundle
@@ -164,8 +181,7 @@ defined, the sub-devices still placeholders the client starts as projects of the
 platform's answer for its bundle carries `parts` (`awaiting`, `built`, `total`, `delivered_ms`, `assembled`); while
 `awaiting` is true the reviewer asks again every 30 minutes and calls no model. Once every part is built the platform
 makes the bundle again with the parts imported and assembled in view (`assembled` true) and the device is judged
-whole. Five days after the delivery it is judged as it stands. Until the vote the job is scored as a job with no
-vote (`B = I`); a vote after the 7-day scoring window is recorded and published and scores nothing. A sub-project's
+whole. Five days after the delivery it is judged as it stands. The vote scores nothing either way. A sub-project's
 own job is judged as any other.
 
 ## Practice votes
@@ -183,7 +199,7 @@ vote, not two. A result that fails the gate gets no vote. The record is reported
 in `practice-ref`); the validator's copy is then deleted.
 
 Practice votes are recorded nowhere else: not in the vote store, the ledger, the hourly report or the weights, and
-they never touch a miner's quality or routing. They do count toward the daily spend cap (`--review-daily-usd`): at
+they never touch a miner's points or routing. They do count toward the daily spend cap (`--review-daily-usd`): at
 most two votes per practice job, and `--practice-per-day` (3 by default, the platform's own cap) jobs per miner a
 UTC day. With votes off, practice results are reported without a score.
 
@@ -216,7 +232,7 @@ the whole vote -- derived lines, rulings and kept nudges -- on its own job.
 ## How votes are averaged
 
 `cadmind_einstein.review.aggregate`, per job. **Today only the einstein validator's votes exist**, so `V` is its vote's
-value and `u` is 0.4; the steps below are how third-party votes will count when their routes exist.
+value; the steps below are how third-party votes will be averaged when their routes exist.
 
 1. Dropped: votes naming another image set or judge digest, votes from the builder's own coldkey, votes from coldkeys
    below the reliability floor.
@@ -225,14 +241,8 @@ value and `u` is 0.4; the steps below are how third-party votes will count when 
 3. **Clamped near the median**: with three or more coldkeys, each coldkey's value is clamped to the median +- 0.2.
 4. **Weighted**: the einstein validator 1; a third-party coldkey `r * min(1, stake / S_ref)`, `r` its reliability,
    no coldkey over a third of the third parties' total weight; a coldkey whose votes are all noisy at half that.
-5. `V` is the weighted mean. `u` (how much `V` counts in the score) is **0.4** with the einstein validator's vote,
-   alone or with third parties; third-party votes alone reach 0.4 at three coldkeys. It is never more: the vote is
-   a base rating, and a client's stars clearly dominate it.
-
-The score: `B = u*V + (1 - u)*I`, `s = 0.4*I + 0.6*(w*C + (1 - w)*B)` -- a paid client's stars (`w = 1`) replace
-the vote entirely ([`../DESIGN.md`](../DESIGN.md) section 5). With `u = 0.4` the vote moves at most
-`0.6 * 0.4 = 24%` of an unrated job's score. A job with no vote scores with `B = I`. [`MINER.md`](MINER.md#worked-example)
-works one job through to its share of the vector.
+5. `V` is the weighted mean, published in the report's `votes.per_job` with the vote count. No score reads it
+   ([Scoring and routing](#scoring-and-routing)).
 
 ## Calibration and reliability
 
@@ -243,7 +253,7 @@ starts at 0.5 and counts for nothing until it has answered ten; below 0.6 its vo
 nothing. Published per coldkey: identical scores on every device, no variance between samples, replies faster
 than a model could produce, disagreement only on one coldkey's miners, more than half abstentions.
 
-The einstein validator's own model passes a light bar before votes count (`cadmind_einstein.calibration.go_no_go`):
+The einstein validator's own model passes a light bar before it votes (`cadmind_einstein.calibration.go_no_go`):
 every item is GOOD (`expect_min`, or a hand score of at least 0.5) or BAD (`expect_max`, a lower hand score, or a
 swapped brief), and the model passes when **every good item scores above every bad item** and **every bad item
 scores under 0.6** -- on the judge's scale, a bad item scores at most 1 (`v` 0.3). Each item's distance from its
@@ -268,8 +278,8 @@ reasoning effort) with your model and prints the vote (unsigned). Any model may 
 21 images of 1024 px in a two-turn conversation, return strict JSON and hold a 64k context. The model a vote names
 is what the validator says it used: it is observed, not verified.
 
-On the einstein validator the same code runs from the daemon: `--votes counted|shadow|off` (`counted` is the
-default; `live` is its old name), `--judge 1.3b` (the default; `1.3` and `1.2b` are still accepted, the `-tools` judges are
+On the einstein validator the same code runs from the daemon: `--votes shadow|off` (`shadow` is the default;
+`counted` and `live` are accepted as its names), `--judge 1.3b` (the default; `1.3` and `1.2b` are still accepted, the `-tools` judges are
 refused), `--judge-backend openrouter|claude-cli`, `--review-model`, `--review-key-file`, `--review-base-url`,
 `--review-samples` (1), `--review-effort` (`high`) and a daily spend cap, `--review-daily-usd`, with
 `--review-usd-per-mtok-in/out/cached` (the provider's prices); past the cap no call is made that day and an ALERT is
@@ -288,7 +298,7 @@ and set no output-token limit; each waits up to 600 s and is retried twice by th
 `--review-daily-usd` to your delivery volume.
 
 ```bash
---votes counted --judge 1.3b --judge-backend openrouter \
+--votes shadow --judge 1.3b --judge-backend openrouter \
 --review-model openai:anthropic/claude-opus-5.5 --review-key-file ~/.config/cadmind-einstein/review.key \
 --review-effort high --review-samples 1 --review-daily-usd 40
 ```
