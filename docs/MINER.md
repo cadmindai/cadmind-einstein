@@ -135,10 +135,11 @@ All calls are signed POSTs to `$VALIDATOR_URL`.
 |---|---|---|
 | `/v1/jobs/work` | `{}` | `{job, workspace, brief, accepted, accept_by_ms, deadline_ms, no_questions, subprojects?}` (plus `continuation: true` and `base` for a round that continues an unfinished one, below) or `{job: null}`, plus `cancelled: <job>` when the client cancelled your last job. **Poll every few seconds.** Polling is how the validator knows you are alive: you are routed jobs only if you polled in the last 60 s. |
 | `/v1/jobs/accept` | `{job}` | Within **2 minutes** of the assignment. Your deadline then starts: 240 minutes from your accept, for every job. |
-| `/v1/jobs/submit` | `{job, workspace, digest, summary?}` | When `watt status` in the workspace says `deliverable`. `digest` is the digest it reports. The workspace is frozen (read-only to you) at once. `summary` is your words for the client: on a delivered project, what you built and what you estimated or left open; on a project that is not deliverable (out of time), what still blocks delivery. An unfinished project earns nothing, so keep building until the deadline rather than handing over early. |
+| `/v1/jobs/submit` | `{job, workspace, digest, summary?, setup?}` | When `watt status` in the workspace says `deliverable`. `digest` is the digest it reports. The workspace is frozen (read-only to you) at once. `summary` is your words for the client: on a delivered project, what you built and what you estimated or left open; on a project that is not deliverable (out of time), what still blocks delivery. An unfinished project earns nothing, so keep building until the deadline rather than handing over early. `setup` is your own short label for the setup that built it (model, prompt version); your practice results are grouped by it (see [Trying a new setup](#trying-a-new-setup)). |
 | `/v1/jobs/reject` | `{job, category, message}` | Instead of building. `category` is `not-allowed` or `not-capable`, the two classes of the scope guide (`watt_guide` with `scope`). `message` is written for the client, and may run over several lines. |
 | `/v1/miners/receipt` | `{}` | Your recent jobs with their scores, your weight and your quality, and your recent attempts that did not pass with why (`failures`). |
 | `/v1/miners/stats` | `{}` | Everything that affects your weight (see [Your stats](#your-stats)). |
+| `/v1/practice` | `{}` | A practice job, never scored (see [Trying a new setup](#trying-a-new-setup)); `GET /v1/practice`, signed with no body, shows your results. |
 
 - The job workspace is **created for you** from the client's brief (or, for a later round of a client's project,
   from the delivered project) and granted to your key. You cannot delete it, and it does not count against your
@@ -214,6 +215,22 @@ assumption you build on, why, and what it affects -- and may answer while you wo
   at that stage; it never builds a sub-device. The client starts each sub-device's job when they want; a later round
   assembles them. A workspace with `brief/contract.toml` is a sub-device: meet that contract (W0230) and publish
   `spec/contract.toml`; `brief/parent.md`, when there, is the parent's brief, for context.
+- **An assembly round keeps the parts it was given.** In a round that assembles built parts (records in
+  `spec/subprojects.toml` with a `digest`, the parts imported under `subprojects/<id>/`), every imported part stays
+  imported at its digest. Never remove a record's `digest` or `from` to make a check pass: the platform refuses
+  that delivery (`parts_dropped`, section 5). When a part truly breaks one of this project's checks with the part
+  imported, write **one change request** on that part's record and keep every other part imported:
+
+  ```toml
+  [subproject.drive_unit.change]
+  test = "tests/test_requirements.py::test_climbs_a_kerb"   # this project's failing check
+  measured = "margin 0.6 with the part imported (needs 1.2)" # your numbers with the part imported
+  proposal = "a motor of at least 0.9 N m stall torque"      # what the part should change
+  ```
+
+  The platform re-runs that check with the part imported at its digest; if it passes, the request is refused
+  (`change_unfounded`). An accepted request ends the round waiting for the client to accept a change of that part.
+  Otherwise, when the parts cannot be assembled, reject the job (`not-capable`) and say why.
 - **Find the dimensions of what the device fits.** When the maker publishes no drawing, keep looking: to-scale
   community drawings (Wikimedia Commons diagrams, for example), case and accessory makers' templates, published CAD
   measurements. Store and cite one with its stated tolerance, and design to it. If none exists, ask the client for
@@ -265,6 +282,10 @@ one coldkey count as one opinion: they cannot end a job declined between them.
   to all the hotkeys of one coldkey together. Only a delivery by a miner of another coldkey counts as overturning
   a rejection for that rule; a delivery by your own other hotkey still gives the rejection its 0.
 - Leaving the subnet mid-job scores nothing, and the job is reassigned.
+- **A delivery the platform refuses for what the build did** -- an assembly round that dropped a part it was given
+  (`parts_dropped`), or a change request whose failing check passes with the part imported (`change_unfounded`) --
+  is your attempt's failure: it scores 0 at once and counts toward the job's attempts, the job goes to another
+  miner from scratch, and your receipt's `failures` (kind `refused`) carry the platform's words.
 
 ## 6. How a passing job scores
 
@@ -611,6 +632,40 @@ print("0x" + kp.sign(CHALLENGE.encode()).hex())
 
 A hotkey belongs to one account (signing again moves it). Only a linked hotkey can be named on your account's
 agent keys.
+
+## Trying a new setup
+
+A new model, prompt or harness can cost you jobs before you know whether it is better. **Practice jobs** let you
+try it on real briefs first, with nothing at stake: a practice job never touches your score, quality, weight,
+routing or pay, and a failed one costs you nothing.
+
+    cadmind-einstein practice --wallet.name W --wallet.hotkey H \
+        --validator https://VALIDATOR --validator-hotkey 5...           # ask for one
+    cadmind-einstein practice ... --status                              # your results so far
+
+(`cadmind-einstein-miner practice` is the same command.) Or call the routes yourself: `POST /v1/practice` (signed,
+empty body) and `GET /v1/practice` (signed, no body).
+
+- **What you get.** A brief taken from a project CADmind delivered and its owner made public, exactly as its gallery
+  page shows it, that you have not practised on. It arrives on `work` like any job (`practice: true`), with the same
+  workspace tools, the same deadline and the same gate. Your running miner builds it; send your `setup` label with
+  the submit (`CADMIND_MINER_SETUP` or `--setup` on `cadmind-einstein-miner`).
+- **No client questions.** The gallery shows no client answers, so the job is `no_questions`: decide every open
+  question yourself, as on the entry test.
+- **When.** Approved key holders, before or after admission. One open at a time, 3 a UTC day. Never while you hold a
+  job or a client job you could take is waiting: client work always comes first, and practice runs on the
+  platform's spare capacity, so it may wait.
+- **The result.** The validator gates it with its own guard draw. A deliverable result is voted on with the
+  validators' judge -- the same judge, prompt, rubric and sample count as a client delivery -- and so is the version
+  that was delivered, under today's judge, so the two scores are comparable:
+
+      practice-3f2a01b4c5d6  "a wall key rack"  yours 2  delivered 2  (judge 1.3b)
+          reported  36.0 min  setup "my-setup-v2"
+      setup "my-setup-v2": 4 run(s), 3 deliverable, mean 1.67 vs delivered 2 over 3 voted
+
+  A result that does not pass the gate says why and gets no vote. Scores are the judge's 0-3.
+- **Read it with care.** The delivered version had its client's answers; your practice run has none. A good practice
+  score is not reliability: switch your client setup only after several results, and watch its first client jobs.
 
 ## Running an agent as your miner
 

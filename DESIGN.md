@@ -309,6 +309,15 @@ scratch, throwing the first builder's work away; after two or four tries the job
   open question. It passes only through the client jobs' gate -- deliverable on the validator's own guard run, no
   unproven must, no client decision left open -- and only when submitted before its deadline. Passing admits the
   miner; it is never scored. Only admitted miners get client jobs and weight.
+- **Practice.** An approved key holder, admitted or not, may ask for a practice job (`POST /v1/practice`): the
+  platform picks a delivered public project's brief, exactly as its gallery page shows it, which this miner has not
+  practised on, and the validator runs it as a job of kind `practice` -- assigned to that miner alone, `no_questions`,
+  on the platform's practice lane (spare capacity only) and its own workspace quota, gated as any job. A deliverable
+  result is voted on with the validators' judge, and so is the delivered version under today's judge (that vote
+  cached per delivered job and judge digest); a result that fails the gate is reported with the gate's reason and no
+  vote. The record goes to the platform for the operator and to the miner (`GET /v1/practice`, by `setup` label).
+  It is never in the ledger, quality, weights or routing, never sent to another miner, never handed out while a
+  client job the miner could take waits, and at most 3 a UTC day per miner.
 - **Available** = admitted, holds a live key, polled `work` in the last 60 s, holds no job, not blocked, registered.
 - **Router.** A client job goes to the job's previous miner if it is free (a later round of the same project);
   else, 10% of the time, uniformly to a newcomer (fewer than 5 jobs) or a low scorer (quality under half the best),

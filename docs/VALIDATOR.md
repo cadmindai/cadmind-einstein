@@ -168,6 +168,24 @@ whole. Five days after the delivery it is judged as it stands. Until the vote th
 vote (`B = I`); a vote after the 7-day scoring window is recorded and published and scores nothing. A sub-project's
 own job is judged as any other.
 
+## Practice votes
+
+A miner may practise on a public brief (`POST /v1/practice`, [`docs/MINER.md`](MINER.md#trying-a-new-setup)). The
+validator runs it as a job of kind `practice` and gates it as any job. A deliverable result gets one vote, made
+exactly as a delivery's (this judge, its prompt, rubric and `--review-samples`; `Reviewer.judge_bundle`), on the
+bundle the platform makes from the validator's frozen copy (`POST /api/engine/einstein/practice/<id>/bundle`), and
+the delivered version of the same brief gets one under today's judge, through the delivered job's bundle route. That
+reference vote is cached per (delivered job, judge digest), so later practice on the same brief costs one model
+vote, not two. A result that fails the gate gets no vote. The record is reported to the platform
+(`POST /api/engine/einstein/practice/<id>/result`: `hotkey`, `setup`, `deliverable`, `why`, `score`,
+`reference_score`, `judge`, `watt`, `minutes`) and kept in the store (namespace `practice`; cached reference votes
+in `practice-ref`); the validator's copy is then deleted.
+
+Practice votes are recorded nowhere else: not in the vote store, the ledger, the hourly report or the weights, and
+they never touch a miner's quality or routing. They do count toward the daily spend cap (`--review-daily-usd`): at
+most two votes per practice job, and `--practice-per-day` (3 by default, the platform's own cap) jobs per miner a
+UTC day. With votes off, practice results are reported without a score.
+
 ## The vote
 
 One to three samples (independent two-turn conversations, above) per device. The vote carries every sample (its derived

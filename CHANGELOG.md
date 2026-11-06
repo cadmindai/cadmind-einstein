@@ -5,6 +5,39 @@ All notable changes to this project are listed here. The format follows
 [Semantic Versioning](https://semver.org/). Each release's spec version (`10000*MAJOR + 100*MINOR + PATCH`) is the
 `version_key` the validator sets weights with.
 
+## [0.5.11] - 2026-11-06
+
+### Added
+
+- **Practice jobs: try a new setup with nothing at stake.** `POST /v1/practice` (signed; approved key holders,
+  admitted or not) asks the platform for a delivered public project's brief, exactly as its gallery page shows it,
+  that this miner has not practised on, and runs it as a job of kind `practice`: assigned to that miner alone,
+  `no_questions`, granted on the platform's practice lane and quota (`practice: true`), and gated as any job with
+  the validator's own guard draw. It is never in the ledger, quality, weights or routing, never sent to another
+  miner, and never handed out while the miner holds a job or a client job it could take is queued. One open at a
+  time, 3 per miner per UTC day (`--practice-per-day`, the platform's own cap mirrored).
+- **Practice votes.** A deliverable practice result is voted on exactly as a delivery is (same judge, prompt,
+  rubric and sample count), and so is the delivered version of the same brief under today's judge; that reference
+  vote is cached per (delivered job, judge digest). A result that fails the gate is reported with the gate's reason
+  and no vote. Each result is reported to the platform for the operator, kept in the store (namespace `practice`)
+  and shown to its miner on `GET /v1/practice` (signed, no body), grouped by setup.
+- **`setup` on submit.** `POST /v1/jobs/submit` takes an optional `setup`, the miner's own label for its setup
+  (80 characters). The reference miner sends `--setup` or `$CADMIND_MINER_SETUP`.
+- **`cadmind-einstein practice [--status]`** (also `cadmind-einstein-miner practice`): ask for a practice job, or
+  print the results so far. Documented in [`docs/MINER.md`](docs/MINER.md#trying-a-new-setup) "Trying a new setup".
+
+### Changed
+
+- **A delivery the platform refuses for what the build did is the builder's failure.** The platform refuses an
+  assembly round that dropped a part it was given (`409 parts_dropped`) or a change request whose failing check
+  passes with the part imported (`409 change_unfounded`). The validator no longer retries such a result: the
+  attempt fails (`refused`, scored 0 at once, counted toward the job's attempts), the job's pass is withdrawn, and
+  the job goes to another miner from scratch; past the attempt cap it ends "didn't finish". The platform's words
+  are in the miner's receipt (`failures`).
+- **The reference miner's prompt** says an assembly round keeps every imported part; a part that truly breaks one
+  of the project's checks gets one change request on its record (`[subproject.<id>.change]`: `test`, `measured`,
+  `proposal`), and otherwise the builder rejects the job and says why.
+
 ## [0.5.10] - 2026-11-06
 
 ### Changed

@@ -396,8 +396,10 @@ Every answer on these routes is signed by the validator's hotkey (`X-Einstein-Va
 | `POST /v1/miners/admission` | `{}` | the entry test (approved key holders only): a small device from a client-style brief, assigned to this miner alone, no client questions, the client jobs' gate, within its deadline (once a day) |
 | `POST /v1/jobs/work` | `{}` | `{job, workspace, brief, accepted, accept_by_ms, deadline_ms, no_questions, subprojects?}` or `{job: null}`, plus `cancelled: <job>` when the client cancelled the miner's last job; also the liveness poll |
 | `POST /v1/jobs/accept` | `{job}` | `{job, workspace, deadline_ms}`; 410 for a job its client cancelled (also `submit` and `reject`) |
-| `POST /v1/jobs/submit` | `{job, workspace, digest, summary?}` | `{job, state: "judging"}` |
+| `POST /v1/jobs/submit` | `{job, workspace, digest, summary?, setup?}` | `{job, state: "judging"}`; `setup` is the miner's own label for its setup (practice results are grouped by it) |
 | `POST /v1/jobs/reject` | `{job, category, message}` | `category`: `not-allowed` or `not-capable` |
+| `POST /v1/practice` | `{}` | a practice job on a public brief, assigned to this miner alone and never scored (approved key holders, admitted or not; 3 a UTC day, one open at a time, none while a client job the miner could take waits): `{practice, state, title}` |
+| `GET /v1/practice` | (none) | the miner's practice: its open job, its results (its score and the delivered version's, or why it was not deliverable) and their means per `setup` ([`docs/MINER.md`](docs/MINER.md#trying-a-new-setup)) |
 | `POST /v1/miners/receipt` | `{}` | the miner's recent jobs and scores, its weight and quality, and its recent attempts that did not pass with why (`failures`) |
 | `POST /v1/miners/stats` | `{}` | everything that affects the miner's weight: standing and share, counters over 24 h, 7 days and lifetime (and its coldkey's), its last 100 jobs with score parts, signals and votes with their evidence, the weight formula ([`docs/MINER.md`](docs/MINER.md#your-stats)) |
 
