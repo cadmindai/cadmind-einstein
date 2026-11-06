@@ -5,6 +5,16 @@ All notable changes to this project are listed here. The format follows
 [Semantic Versioning](https://semver.org/). Each release's spec version (`10000*MAJOR + 100*MINOR + PATCH`) is the
 `version_key` the validator sets weights with.
 
+## [0.5.13] - 2026-11-06
+
+### Fixed
+
+- **A job begun before a Watt release with the as-delivered check is gated as it was when it started.** A Watt
+  release keeps the workspaces it began, so a job assigned before the release runs its gate on the older Watt,
+  which refuses `check` with `as_delivered` by name (`` `watt check` takes project; not ['as_delivered'] ``). 0.5.12
+  read that as its own side and retried until the job's deadline. Now that answer skips the as-delivered stage for
+  that job (logged); every other stage, the guard run included, is unchanged.
+
 ## [0.5.12] - 2026-11-06
 
 ### Added

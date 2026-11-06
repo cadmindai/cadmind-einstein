@@ -142,6 +142,7 @@ class FakePlatform:
             as_delivered=src.get("as_delivered", []),
             host_refused=src.get("host_refused", ""),
             old_watt=src.get("old_watt", False),
+            pinned_old=src.get("pinned_old", False),
             hotkey="validator",
         )
 
@@ -156,6 +157,8 @@ class FakePlatform:
             # Watt's check of the tree as a delivery carries it (no .watt/, no build/)
             if w.get("old_watt"):  # a Watt that does not know the mode
                 return {"state": "done", "ok": False, "error": "unrecognized arguments"}
+            if w.get("pinned_old"):  # a workspace on a release from before the check (ADR-037 pinning)
+                return {"state": "done", "ok": False, "error": "`watt check` takes project; not ['as_delivered']"}
             if w.get("as_delivered"):
                 return {"state": "done", "ok": False, "data": {"diagnostics": w["as_delivered"]}}
             return {"state": "done", "ok": True, "data": {"diagnostics": []}}
@@ -1055,6 +1058,13 @@ class TestHostBlockAndAsDelivered(unittest.TestCase):
         self.assertGreaterEqual(a.retries, 1)  # judged again later, never against the miner
         self.assertEqual(self.desk.jobs["d2"].state, "judging")
         self.assertEqual(self.ledger.outcomes, [])
+
+    def test_a_workspace_on_a_release_from_before_the_check_is_gated_without_it(self) -> None:
+        hk, ws = self.start("d3", pinned_old=True)
+        self.desk.submit(hk, "d3", ws, "d")
+        st = wait_state(self.desk, "d3", ("done",))
+        self.assertEqual(st["result"]["label"], "delivered")  # gated as it was when it started
+        self.assertEqual(self.desk.jobs["d3"].attempts[0].retries, 0)
 
     def test_a_client_cancel_keeps_the_builders_place_in_the_line(self) -> None:
         hk, _ = self.start("c1")

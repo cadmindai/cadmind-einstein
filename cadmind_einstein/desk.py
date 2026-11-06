@@ -208,6 +208,13 @@ PENDING_MESSAGE = (
 """a hotkey whose live key was minted less than this ago gets no new one"""
 
 
+def _mode_unknown(why: str) -> bool:
+    """Whether a `watt check` answer says its Watt does not take ``as_delivered`` at all: a workspace
+    on a release from before the as-delivered check refuses the argument by name."""
+    text = " ".join(str(why).split())
+    return "`watt check` takes" in text and "as_delivered" in text and "; not [" in text
+
+
 class _GateRetryError(Exception):
     """The validator's own guard run did not end on its own (still going, an error of the bench,
     stopped by something other than its limits): our side, so the judgement is retried."""
@@ -3350,6 +3357,13 @@ class Desk:
         if run.get("state") == "done" and run.get("ok") is True:
             return None
         why = str(run.get("stopped") or run.get("error") or run.get("state") or "no answer")
+        if _mode_unknown(why):
+            # The workspace runs on a Watt release from before the check (a release keeps the
+            # workspaces it began, ADR-037): the job is gated as it would have been when it started.
+            logging.getLogger("cadmind_einstein.desk").warning(
+                "as-delivered check skipped on %s: its Watt release predates it (%s)", fork, why[:160]
+            )
+            return None
         raise _GateRetryError(f"the as-delivered check did not answer: {why[:200]}")
 
     @staticmethod
