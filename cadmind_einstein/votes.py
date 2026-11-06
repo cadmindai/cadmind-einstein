@@ -81,7 +81,7 @@ RETRY_FIRST_S = 60.0
 RETRY_MAX_S = 3600.0
 BUNDLE_WAIT_S = 24 * 3600.0
 """how long a delivery's bundle may stay unready before its review is dropped"""
-PARTS_WAIT_S = 14 * 24 * 3600.0
+PARTS_WAIT_S = 5 * 24 * 3600.0
 """how long the vote on a delivery that waits for its parts is deferred: past it, the device is
 judged as it stands"""
 PARTS_POLL_S = 1800.0

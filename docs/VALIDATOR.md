@@ -164,7 +164,7 @@ defined, the sub-devices still placeholders the client starts as projects of the
 platform's answer for its bundle carries `parts` (`awaiting`, `built`, `total`, `delivered_ms`, `assembled`); while
 `awaiting` is true the reviewer asks again every 30 minutes and calls no model. Once every part is built the platform
 makes the bundle again with the parts imported and assembled in view (`assembled` true) and the device is judged
-whole. Fourteen days after the delivery it is judged as it stands. Until the vote the job is scored as a job with no
+whole. Five days after the delivery it is judged as it stands. Until the vote the job is scored as a job with no
 vote (`B = I`); a vote after the 7-day scoring window is recorded and published and scores nothing. A sub-project's
 own job is judged as any other.
 

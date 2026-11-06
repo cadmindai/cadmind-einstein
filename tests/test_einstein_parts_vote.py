@@ -1,6 +1,6 @@
 """A delivery that waits for its parts (a main project delivered at its interface stage, its
 sub-projects still placeholders): the vote waits until every part is built and is made on the
-bundle with them in view; 14 days after the delivery it is made on the device as it stands.
+bundle with them in view; 5 days after the delivery it is made on the device as it stands.
 Meanwhile the job scores as a job with no vote, never a 0. A platform that says nothing of parts
 gets the vote at once, as before."""
 
@@ -80,9 +80,9 @@ class TestPartsShadow(_Parts):
         self.assertEqual(self.model.samples, 0, "no model call while it waits")
         self.assertEqual(self.reviewer.pass_once(), "idle", "asked again only after the poll")
         self.assertTrue(any('"vote-deferred"' in s for s in self.said))
-        # still waiting a week later: never expired, never counted as a try
+        # still waiting four days later: never expired, never counted as a try
         for _ in range(4):
-            self.clock.t += 2 * 24 * 3600
+            self.clock.t += 24 * 3600
             self.assertEqual(self.reviewer.pass_once(), "pending")
         self.assertEqual(self.reviewer.queue()[0]["tries"], 0)
         self.built()
@@ -109,7 +109,7 @@ class TestPartsShadow(_Parts):
         self.clock.t += 60
         self.assertEqual(self.reviewer.pass_once(), "voted")
 
-    def test_after_14_days_the_device_is_judged_as_it_stands(self) -> None:
+    def test_after_5_days_the_device_is_judged_as_it_stands(self) -> None:
         self.waiting()
         self.deliver()
         self.assertEqual(self.reviewer.pass_once(), "pending")
@@ -119,7 +119,7 @@ class TestPartsShadow(_Parts):
         self.assertEqual(self.reviewer.pass_once(), "voted")
         self.assertEqual(self.reviewer.votes_of("j1")[0]["parts"], "as it stands")
 
-    def test_the_14_days_run_from_the_platforms_delivery_time(self) -> None:
+    def test_the_5_days_run_from_the_platforms_delivery_time(self) -> None:
         self.waiting()
         assert self.p.parts is not None
         self.p.parts["delivered_ms"] = int((self.clock.t - PARTS_WAIT_S) * 1000) - 1

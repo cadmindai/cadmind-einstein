@@ -5,7 +5,7 @@ All notable changes to this project are listed here. The format follows
 [Semantic Versioning](https://semver.org/). Each release's spec version (`10000*MAJOR + 100*MINOR + PATCH`) is the
 `version_key` the validator sets weights with.
 
-## [0.5.10] - 2026-11-05
+## [0.5.10] - 2026-11-06
 
 ### Changed
 
@@ -13,7 +13,7 @@ All notable changes to this project are listed here. The format follows
   stage (its sub-projects' interfaces defined, each still a placeholder) is not voted on at once. The platform says so
   on the delivery's review bundle (`parts`: `awaiting`, `built`, `total`, `delivered_ms`, `assembled`); the validator
   defers the vote, asks again every 30 minutes, and votes once every part is built, on the bundle the platform makes
-  again with the parts assembled in view. Fourteen days after the delivery it votes on the device as it stands. A
+  again with the parts assembled in view. Five days after the delivery it votes on the device as it stands. A
   sub-project's own job is judged as any job. The judge, its prompt and its rubric are unchanged.
 - **Until that vote, the job scores as a job with no vote** (`B = I`): never a 0, never a missing-vote penalty. A
   vote made after the job left the 7-day scoring window is recorded, archived and published, and scores nothing.
