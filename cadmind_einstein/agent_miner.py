@@ -241,7 +241,11 @@ change request on that part's record ([subproject.<id>.change] with `test` = the
 `measured` = its numbers with the part imported, `proposal` = what the part should change), keep \
 every other part imported, and deliver (DONE); the platform re-runs that check with the part \
 imported and refuses a request it does not reproduce (change_unfounded). Otherwise, when the parts \
-cannot be assembled, REJECT not-capable and say why. A workspace with \
+cannot be assembled, REJECT not-capable and say why. When you split a device, every connection \
+between sub-devices (a lead, a hose, a signal) is an interface in each contract (a pin or port with \
+its signal and place) and this project wires them in its own src/wiring.py: an extension lead is \
+this project's own cable, in its BOM and steps; a sub-device never stands in another sub-device's \
+hardware as a world item to wire to, and every brief that says where a shared part sits says the same. A workspace with \
 brief/contract.toml is a sub-device: meet that contract (W0230) and publish spec/contract.toml; \
 brief/parent.md, when there, is the parent's brief, for context. \
 A workspace with brief/references.toml is an accessory of another device, `@<id>` in the brief: \

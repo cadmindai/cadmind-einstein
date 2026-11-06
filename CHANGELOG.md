@@ -5,6 +5,14 @@ All notable changes to this project are listed here. The format follows
 [Semantic Versioning](https://semver.org/). Each release's spec version (`10000*MAJOR + 100*MINOR + PATCH`) is the
 `version_key` the validator sets weights with.
 
+## [Unreleased]
+
+### Changed
+
+- **The reference miner's prompt** says that when a device is split, every connection between sub-devices (a lead, a
+  hose, a signal) is an interface in each contract and the parent wires it: an extension lead is the parent's own
+  cable. A sub-device never stands in another sub-device's hardware to wire to.
+
 ## [0.5.11] - 2026-11-06
 
 ### Added
