@@ -457,7 +457,8 @@ class OperatorClient:
     def review_bundle(self, job: str, audience: str = "ours") -> dict[str, Any]:
         """A delivered job's review bundle: ``{ready: true, image_set, bundle_sha256, bundle_url,
         expires_ms, public}``, or ``{ready: false, state, retry_s}`` while the platform renders it
-        (asking queues it). ``audience`` ``third_party`` is refused (403 ``not_public``) for a
+        (asking queues it). ``audience`` ``practice`` is the copy judged beside a practice run (no
+        studio render). ``third_party`` is refused (403 ``not_public``) for a
         project that is not public."""
         out = self._call(
             "POST",

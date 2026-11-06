@@ -258,7 +258,9 @@ class PracticeBook:
         cached = self.kv.get(REF_NS, key)
         if isinstance(cached, dict) and cached.get("score") is not None:
             return {**cached, "cached": True}
-        got = self.platform.review_bundle(reference_job, "ours")
+        # the "practice" copy: the reference without the pictures a practice bundle never has
+        # (its studio render, the client's photos), so both sides are judged on the same kinds of pictures
+        got = self.platform.review_bundle(reference_job, "practice")
         vote = self._vote(rv, got, {"ended_ms": self.now_ms()})
         row = {
             **vote,

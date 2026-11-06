@@ -182,7 +182,7 @@ class TestPractice(Rig):
         )
         # one vote on the practice result, one on the reference: same sample count as live votes
         self.assertEqual(self.model.samples, 2 * self.reviewer.samples)
-        self.assertEqual(self.p.asked, [(pid, "ours"), ("ref-1", "ours")])
+        self.assertEqual(self.p.asked, [(pid, "ours"), ("ref-1", "practice")])
         self.assertEqual(self.reviewer.votes_of(pid), [], "a practice vote is recorded nowhere")
         # the validator's copy is deleted once reported
         fork = self.desk.jobs[pid].attempts[-1].fork

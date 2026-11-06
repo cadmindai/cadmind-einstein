@@ -175,7 +175,8 @@ validator runs it as a job of kind `practice` and gates it as any job. A deliver
 exactly as a delivery's (this judge, its prompt, rubric and `--review-samples`; `Reviewer.judge_bundle`), on the
 bundle the platform makes from the validator's frozen copy (`POST /api/engine/einstein/practice/<id>/bundle`), and
 the delivered version of the same brief gets one under today's judge, through the delivered job's bundle route. That
-reference vote is cached per (delivered job, judge digest), so later practice on the same brief costs one model
+reference is judged on its bundle without the studio render (audience `practice`: a practice bundle has none), and its
+vote is cached per (delivered job, judge digest), so later practice on the same brief costs one model
 vote, not two. A result that fails the gate gets no vote. The record is reported to the platform
 (`POST /api/engine/einstein/practice/<id>/result`: `hotkey`, `setup`, `deliverable`, `why`, `score`,
 `reference_score`, `judge`, `watt`, `minutes`) and kept in the store (namespace `practice`; cached reference votes
