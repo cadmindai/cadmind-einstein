@@ -89,3 +89,21 @@ class TestDecideOpen(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestHostRefused(unittest.TestCase):
+    def test_a_watt_answer_the_host_refused_stops_the_build(self) -> None:
+        mcp = fake_miner.Mcp("http://x", "k")
+        refused = {
+            "state": "done",
+            "ok": False,
+            "host_refused": {"code": "host_refused", "why": "a remote run writes only build/"},
+        }
+        with (
+            mock.patch.object(mcp, "call", return_value=refused),
+            self.assertRaises(fake_miner.HostRefusedError) as got,
+        ):
+            mcp.watt("ws", "test", mutate=True)
+        self.assertEqual(str(got.exception), "a remote run writes only build/")
+        with mock.patch.object(mcp, "call", return_value={"state": "done", "ok": False}):
+            self.assertEqual(mcp.watt("ws", "test"), {"state": "done", "ok": False})

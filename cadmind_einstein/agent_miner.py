@@ -43,6 +43,12 @@ one), so the client reads the builder's own notes on a delivered project too; a 
 usage-limit notice is never sent as the builder's words. Every run's exit code and error output
 are kept in the job's log.
 
+**A host refusal.** A `watt` answer that carries ``host_refused`` means the platform refused the
+run's result for a reason of its own (never the design's). The agent is told to stop at once with a
+``HOST_REFUSED <why>`` line; the miner does not resume it (only the platform can clear it) and
+submits with ``host_refused`` (``{code, why}``). The validator reproduces it on its own guard run
+and ends the round blocked by the platform: uncounted, scored for nobody, the project kept.
+
 Every submit carries the miner's ``setup`` label (``--setup``, else ``$CADMIND_MINER_SETUP``),
 by which the validator groups practice results. ``cadmind-einstein-miner practice [--status]``
 (also ``cadmind-einstein practice``; :func:`practice_main`) asks for a practice job on a public
@@ -218,7 +224,11 @@ or a listing you fetched; never a guess -- leave it out when unknown. The client
 Never weaken a test to pass. A change round (brief/change-*.md on a delivered project) is \
 delivered only when the whole project passes `watt status`: failures it inherits are part of the \
 job, and your time is only what `time_left` says. {questions}
-A `watt` run far longer than usual: stop it with `watt_cancel` and change the design.
+A `watt` run far longer than usual: stop it with `watt_cancel` and change the design. \
+A `watt` answer with `host_refused` is the platform refusing that run's result for a reason of its \
+own, never your design: do not run it again, work around it, drop or stand in a part, or weaken a \
+test; end at once with exactly one line `HOST_REFUSED <the why it gave>` (the validator checks it \
+on its own run, and the round ends blocked by the platform, against nobody).
 
 Deliver what you can; only the client trades a need away. When part of the request cannot be \
 delivered, build everything that can be delivered without giving up a need, and make the missing \
@@ -263,7 +273,7 @@ estimated or left open. You have about {minutes} minutes, until {deadline_utc} \
 UTC. You cannot feel time pass: check it with `time_left` (never guess it). There is no \
 hand-over: an unfinished project earns nothing. When the remaining work looks too large, start \
 its most valuable piece (one control, one hold), build it, test it, then take the next. The only \
-endings are `DONE`, `REJECT`, or `time_left` under 5 minutes.
+endings are `DONE`, `REJECT`, `HOST_REFUSED`, or `time_left` under 5 minutes.
 
 Job: {job}
 Brief:
@@ -521,6 +531,10 @@ SUMMARY_CHARS = 2000
 _DONE = re.compile(r"^DONE\s+(\S+)\s*$", re.MULTILINE)
 _REJECT = re.compile(r"^REJECT (not-allowed|not-capable):[ \t]*(\S.*)?$", re.MULTILINE)
 _UNFINISHED = re.compile(r"^UNFINISHED:\s*(.+)$", re.MULTILINE)
+_HOST = re.compile(r"^HOST_REFUSED\b:?[ \t]*(.*)$", re.MULTILINE)
+"""The agent's ending when a `watt` answer carried ``host_refused`` (the platform refused the run's
+result for a reason of its own): never resumed; submitted with ``host_refused`` and the why."""
+HOST_WHY = "the platform refused a Watt run's result"
 _NO_RESPONSE = "No response requested."
 """What Claude Code's CLI answers when a resumed session does not call the model at all (2026-10-21:
 a job lost 157 minutes after a run that ended with no output)."""
@@ -553,8 +567,17 @@ def session_for(a: argparse.Namespace) -> ClaudeSession | None:
 
 
 def ended(text: str) -> bool:
-    """Whether the agent's output ends the job itself: a ``DONE`` or ``REJECT`` line."""
-    return bool(_DONE.search(text) or _REJECT.search(text))
+    """Whether the agent's output ends the job itself: a ``DONE``, ``REJECT`` or ``HOST_REFUSED``
+    line. A host refusal is never resumed: only the platform can clear it."""
+    return bool(_DONE.search(text) or _REJECT.search(text) or _HOST.search(text))
+
+
+def host_refused(text: str) -> str:
+    """The why of the agent's ``HOST_REFUSED`` line ('' when it wrote none)."""
+    got = _HOST.search(text)
+    if not got:
+        return ""
+    return " ".join(got.group(1).split())[:500] or HOST_WHY
 
 
 def dead(text: str) -> str:
@@ -675,7 +698,9 @@ def outcome(job: str, ws: str, text: str, *, setup: str = "") -> tuple[str, dict
     the client: an ``UNFINISHED:`` line when the agent wrote one anyway, else its final text
     without the ``DONE`` line (whitespace collapsed, the last :data:`SUMMARY_CHARS` characters):
     on a delivered project too, the builder's notes (what it estimated, what is open) reach the
-    client. A usage-limit notice (:data:`LIMIT`) is never sent as the builder's words."""
+    client. A usage-limit notice (:data:`LIMIT`) is never sent as the builder's words. A
+    ``HOST_REFUSED`` line adds ``host_refused`` (``{code, why}``) to the submit: the validator's own
+    run reproduces it and ends the round blocked by the platform, against nobody."""
     rej, fin = _REJECT.search(text), _DONE.search(text)
     if rej and not job.startswith("admission-"):
         message = " ".join(text[rej.start(2) if rej.group(2) else rej.end() :].split())
@@ -684,8 +709,11 @@ def outcome(job: str, ws: str, text: str, *, setup: str = "") -> tuple[str, dict
     body: dict[str, Any] = {"job": job, "workspace": ws, "digest": digest}
     if setup:
         body["setup"] = setup
+    host = host_refused(text)
+    if host:
+        body["host_refused"] = {"code": "host_refused", "why": host}
     left = _UNFINISHED.search(text)
-    said = " ".join((left.group(1) if left else _DONE.sub("", text)).split())
+    said = " ".join((left.group(1) if left else _HOST.sub("", _DONE.sub("", text))).split())
     if said and not LIMIT.search(said):
         body["summary"] = said[:SUMMARY_CHARS] if left else said[-SUMMARY_CHARS:]
     return "submit", body
@@ -821,6 +849,7 @@ def start_self_review(
         review_off
         or ("" if deadline_ms else "the job has no deadline")
         or ("" if kind == "submit" and body.get("digest") else "the builder did not deliver")
+        or ("the platform refused a run's result" if body.get("host_refused") else "")
     )
     if why:
         log(f"{job}: self-review: skipped: {why}")
@@ -1337,6 +1366,11 @@ def main(argv: list[str] | None = None) -> int:
             code, out = send(call, "/v1/jobs/reject", body, log=log)
             log(f"rejected {job}: {code} {out}")
         else:
+            if body.get("host_refused"):
+                log(
+                    f"{job}: the platform refused a Watt run's result "
+                    f"({body['host_refused']['why'][:200]}): reported, not resumed"
+                )
             code, out = send(call, "/v1/jobs/submit", body, log=log)
             log(f"submitted {job} digest={body['digest'][:16] or '(none)'}: {code} {out}")
         if rnd is not None and rnd.final_pending:

@@ -26,6 +26,7 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
+from .desk import host_refusal
 from .sealing import new_keypair, open_sealed
 
 
@@ -169,11 +170,21 @@ class Mcp:
         return out
 
     def watt(self, ws: str, command: str, **args: Any) -> Any:
-        """A run's full JSON (`detail`: the MCP tools answer an agent short text by default)."""
+        """A run's full JSON (`detail`: the MCP tools answer an agent short text by default). A run
+        whose result the platform refused for a reason of its own (``host_refused``) raises
+        :class:`HostRefusedError`: the miner stops and reports it."""
         out = self.call("watt", workspace=ws, command=command, wait_s=100, detail=True, **args)
         while out.get("state") == "running":
             out = self.call("watt_wait", run=out["run"], wait_s=100, detail=True)
+        why = host_refusal(out)
+        if why:
+            raise HostRefusedError(why)
         return out
+
+
+class HostRefusedError(Exception):
+    """A `watt` answer carried ``host_refused``: not the design's failure, only the platform can
+    clear it; the miner submits with ``host_refused`` and the why."""
 
 
 def answers(mcp: Mcp, ws: str, after: int, log: Any) -> int:
@@ -295,18 +306,15 @@ def main(argv: list[str] | None = None) -> int:
             continue
         signed(kp, a.validator, "/v1/jobs/accept", {"job": job}, a.validator_hotkey)
         log(f"accepted {job} in {ws}")
-        digest = (
-            ""
-            if a.fail and not job.startswith("admission-")
-            else build(mcp, ws, a.project, log, no_questions=work.get("no_questions") is True)
-        )
-        code, out = signed(
-            kp,
-            a.validator,
-            "/v1/jobs/submit",
-            {"job": job, "workspace": ws, "digest": digest},
-            a.validator_hotkey,
-        )
+        body: dict[str, Any] = {"job": job, "workspace": ws, "digest": ""}
+        try:
+            if not (a.fail and not job.startswith("admission-")):
+                nq = work.get("no_questions") is True
+                body["digest"] = build(mcp, ws, a.project, log, no_questions=nq)
+        except HostRefusedError as e:
+            log(f"{job}: the platform refused a run's result ({str(e)[:120]}): reported")
+            body["host_refused"] = {"code": "host_refused", "why": str(e)}
+        code, out = signed(kp, a.validator, "/v1/jobs/submit", body, a.validator_hotkey)
         log(f"submitted {job}: {code} {out}")
         done += 1
         idle_until = time.monotonic() + a.idle_s

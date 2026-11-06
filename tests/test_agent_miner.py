@@ -259,7 +259,9 @@ class TestNoHandOver(unittest.TestCase):
             said,
         )
         self.assertIn(
-            "The only endings are `DONE`, `REJECT`, or `time_left` under 5 minutes.", said
+            "The only endings are `DONE`, `REJECT`, `HOST_REFUSED`, or `time_left` under 5 "
+            "minutes.",
+            said,
         )
         msg = " ".join(RESUME.format(minutes=42).split())
         self.assertEqual(
@@ -426,6 +428,40 @@ class TestNoHandOver(unittest.TestCase):
         got, runs, logs = self.run_build([("stopped", False)], left_s=9 * 60)
         self.assertEqual(len(runs), 1)
         self.assertEqual(logs, [])
+
+    def test_a_host_refusal_is_never_resumed_and_is_reported(self) -> None:
+        """An assembly round (2026-11-06): every guard run's result was refused by the host; the
+        builder said so, was resumed three times (38 minutes) on a block only the platform could
+        clear, then wrote DONE on an undeliverable digest."""
+        text = (
+            "Every guard run ends with its result refused by the platform.\n"
+            "HOST_REFUSED subprojects/x/.watt/source-text/41d2.json: a remote run writes only "
+            "build/ and .watt/\n"
+        )
+        got, runs, _ = self.run_build([(text, False)], left_s=90 * 60)
+        self.assertEqual(len(runs), 1)  # 90 minutes left: not resumed
+        self.assertFalse(got.resumed)
+        kind, body = outcome("job-1", "ws-1", got.text)
+        self.assertEqual(kind, "submit")
+        self.assertEqual(body["digest"], "")
+        self.assertEqual(
+            body["host_refused"],
+            {
+                "code": "host_refused",
+                "why": "subprojects/x/.watt/source-text/41d2.json: a remote run writes only "
+                "build/ and .watt/",
+            },
+        )
+        self.assertEqual(
+            body["summary"], "Every guard run ends with its result refused by the platform."
+        )
+        bare = outcome("j", "w", "HOST_REFUSED\n")[1]["host_refused"]
+        self.assertEqual(bare["why"], agent_miner.HOST_WHY)
+        self.assertNotIn("host_refused", outcome("j", "w", "work\nDONE d1")[1])
+        # the rule is in the prompt
+        said = " ".join(PROMPT.split())
+        self.assertIn("A `watt` answer with `host_refused` is the platform refusing", said)
+        self.assertIn("`HOST_REFUSED <the why it gave>`", said)
 
     def test_no_resume_after_a_timeout_or_a_cancelled_job(self) -> None:
         got, runs, _ = self.run_build([("partial", True)], left_s=30 * 60)
