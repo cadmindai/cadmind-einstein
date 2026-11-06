@@ -7,7 +7,38 @@ All notable changes to this project are listed here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- **The gate checks the tree as delivered.** After the miner's `watt status` says deliverable and before its own
+  guard run, the validator runs `watt check --as-delivered` on its fork (the agent API's `check` with
+  `{"as_delivered": true}`): Watt's check of the tree a delivery carries, without `.watt/` and `build/`. A design
+  that passes only with its local records (a removed role recorded only in `.watt/trace.jsonl`, which an importing
+  project never sees) fails the gate at stage `as-delivered`, its codes in the miner's `failures`. A run that answers
+  neither a pass nor errors is the validator's side and is retried. Needs a Watt that knows the mode: deploy it
+  first.
+- **Blocked by the platform.** A run of the gate whose answer carries `host_refused` (`{code: "host_refused",
+  why}`: the platform refused the run's result for a reason of its own, not the design's) ends the round
+  **blocked by the platform**: the result `{label: "host_blocked", kind: "host_blocked", charge: false, why,
+  host_refused, workspace, digest, hotkey, attempts, summary?}` goes to the platform with the project (the fork)
+  kept, an `ALERT` is logged, and the attempt is uncounted (no 0 in the ledger, not toward the attempt cap, not a gate
+  failure or "not finished" against the miner, its wait clock put back where its submit found it). An entry test so
+  blocked may be asked for again at once; a practice job ends without a result.
+- **A miner reports a host refusal.** `POST /v1/jobs/submit` takes `host_refused` (`{code, why}` or the why). The
+  validator reproduces it with its own guard run on the fork even though the miner's record is not deliverable: refused
+  too, the round is blocked by the platform; not refused, the round is judged on that run (delivered when it passes,
+  else as the record stands, the claim counting for nothing).
+- **Reference miner: a host refusal is never resumed.** The prompt tells the agent that a `watt` answer with
+  `host_refused` is the platform's, never the design's: no retry, no work-around, no dropped part, and it ends with
+  `HOST_REFUSED <why>`. The miner then does not resume it (it used to, three times), skips the self-review and submits
+  with `host_refused`. The scripted fake miner stops and reports the same way.
+
 ### Changed
+
+- **A client's cancel keeps the builder's place in the line.** A cancel, and a job the platform takes back when the
+  validator's lease lapses, free the miner with its wait clock untouched; only its own submit, hand-back or timeout
+  moves it.
+- **A "not finished" round names its kept project for every gate failure**, the as-delivered check's included, so the
+  platform can read the change requests an assembly round wrote on a part that blocked it.
 
 - **Scoring.** A client job delivered by a builder that passes the validator's Watt gate scores **0.5** while the
   client has done nothing; **1** when the client downloaded it (in the app or by API) or rated it 3, 4 or 5 stars;

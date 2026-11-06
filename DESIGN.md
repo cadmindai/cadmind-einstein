@@ -138,6 +138,19 @@ validator: freeze on submit, fork, read Watt's verdict (the gate), copy check, s
   `style`), the differences named in the miner's receipt. A client decision the contract settles stays open through
   the round (deciding it would change the contract), so the no-questions check exempts the baseline's
   `settled_decisions`, or, when the baseline does not name them, the client decisions open in the version reshaped.
+- **The gate checks the tree as delivered.** After the miner's `watt status` says deliverable and before its own
+  guard run, the validator runs `watt check --as-delivered` on its fork (agent API: `check` with `{"as_delivered":
+  true}`): Watt's check of the tree a delivery carries, without `.watt/` and `build/`, which is what a project that
+  imports it builds. Error diagnostics fail the gate at stage `as-delivered` (`cause: {stage, codes}`); a run that
+  says neither pass nor errors is the validator's side, retried.
+- **A host block is nobody's failure.** Any run answer of the gate carrying `host_refused` (`{code: "host_refused",
+  why}`: the platform refused the run's result for a reason of its own) ends the round **blocked by the platform**:
+  the result is `{label: "host_blocked", kind: "host_blocked", charge: false, why, host_refused: {code, why},
+  workspace (the kept fork), digest, hotkey, attempts, summary?}`, an ALERT is logged, and the attempt is uncounted (no
+  ledger entry, not toward the cap, not a gate failure or "not finished", the miner's wait clock put back where its
+  submit found it). A miner may report one with its submit (`host_refused`); its record is then not deliverable (a
+  refused guard records nothing), so the validator runs its own guard run anyway to reproduce it: refused, the round is
+  blocked; not refused, the round is judged on that run (delivered when it passes, else as the record stands).
 - **An attempt the miner worked that does not pass** -- a gate failure, or late and failing -- **ends the round
   "not finished"** (section "Continuing an unfinished round"): its project is kept, not charged, and the client may
   pay for a round that continues it.
@@ -150,6 +163,7 @@ validator: freeze on submit, fork, read Watt's verdict (the gate), copy check, s
   |---|---|---|---|
   | an attempt passes the gate | **delivered** | yes, once | the passing miner scores (section 5); every earlier attempt scored 0 as it ended |
   | a worked attempt does not pass (gate failure, or late and failing) | **not finished**: its project kept, the builder's summary for the client | no | that attempt scores 0 |
+  | a Watt run of the gate answered `host_refused` (the platform refused its result, not the design) | **blocked by the platform** (`host_blocked`): its project kept, the platform told and alerting its operator | no | nobody (the attempt is uncounted) |
   | a later round passes at the digest of the version it started from, and the client only answered questions, each by picking an offered option | **no change**: its project, the answers recorded, handed back | no | that attempt scores nothing |
   | two rejections, from two coldkeys | **declined**: the client reads both messages; the brief is flagged for review | no | each rejection scored 0 |
   | four attempts without either of the above (timeouts before accepting, copies) | **didn't finish** | no | each attempt scored 0 |
@@ -258,10 +272,12 @@ scratch, throwing the first builder's work away; after two or four tries the job
 
 - **The round ends after one worked attempt that does not deliver** (a gate failure, or late and failing). Its
   project -- the validator's fork of the frozen workspace, kept as a delivery's is, the platform's keep and retention
-  -- is named in the result: `{label: "not finished", charge: false, workspace, digest, stage, error, summary,
-  summary_by, hotkey, attempts, messages, why}`. `summary` is the builder's own words (`submit`'s `summary`,
+  -- is named in the result: `{label: "not finished", charge: false, workspace, digest, stage, error, cause?,
+  summary, summary_by, hotkey, attempts, messages, why}`. `summary` is the builder's own words (`submit`'s `summary`,
   `summary_by: "builder"`) or, when it gave none, a sentence from the gate's stage and error (`"gate"`). Nothing is
-  charged.
+  charged. Every gate failure of a worked attempt names its kept `workspace`, the as-delivered check's too: the
+  platform reads its `watt status` for the change requests an assembly round wrote on a part that blocked it, as it
+  does for a delivery, so the client can act on them although the round did not deliver.
 - **The client chooses.** It may pay for a round that continues it, at a normal round's price; which miner gets that
   round is the router's choice, as for any job. Its claim carries `seed` (the unfinished project) and `continuation:
   {base}` -- the operator's workspace of the project's last delivered version, or `""` when there is none.
@@ -301,9 +317,9 @@ scratch, throwing the first builder's work away; after two or four tries the job
 - **Available** = admitted, holds a live key, polled `work` in the last 60 s, holds no job, not blocked, registered.
 - **Router.** A client job goes to the miner its claim prefers (`prefer`: the builder of the version a later round
   continues) if it is available; else to the available miner that has **waited longest** since its last client
-  assignment ended -- its submit, its hand-back or the job's end (its wait clock, `free_ms`; a miner that never had
+  assignment ended -- its submit, its hand-back or its timeout (its wait clock, `free_ms`; a miner that never had
   one first; ties drawn at random). A miner that hands a job back (rejects) restarts its clock at the hand-back, so it
-  goes to the back of the line. Scores and votes play no part. Entry tests and practice jobs do not move the clock.
+  goes to the back of the line. A client's cancel, a lapsed lease and a host block leave the clock as it was. Scores and votes play no part. Entry tests and practice jobs do not move the clock.
 - **No miner free:** nothing is claimed and jobs wait in the platform's queue, which shows the client a position
   and an ETA (from the validator's `GET /v1/capacity`). A job is never refused for lack of miners.
 - **Lease.** The validator renews a lease on every job it holds every 30 s (and soon after a miner accepts, submits

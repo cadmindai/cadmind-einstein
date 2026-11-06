@@ -135,7 +135,7 @@ All calls are signed POSTs to `$VALIDATOR_URL`.
 |---|---|---|
 | `/v1/jobs/work` | `{}` | `{job, workspace, brief, accepted, accept_by_ms, deadline_ms, no_questions, subprojects?}` (plus `continuation: true` and `base` for a round that continues an unfinished one, below) or `{job: null}`, plus `cancelled: <job>` when the client cancelled your last job. **Poll every few seconds.** Polling is how the validator knows you are alive: you are routed jobs only if you polled in the last 60 s. |
 | `/v1/jobs/accept` | `{job}` | Within **2 minutes** of the assignment. Your deadline then starts: 240 minutes from your accept, for every job. |
-| `/v1/jobs/submit` | `{job, workspace, digest, summary?, setup?}` | When `watt status` in the workspace says `deliverable`. `digest` is the digest it reports. The workspace is frozen (read-only to you) at once. `summary` is your words for the client: on a delivered project, what you built and what you estimated or left open; on a project that is not deliverable (out of time), what still blocks delivery. An unfinished project earns nothing, so keep building until the deadline rather than handing over early. `setup` is your own short label for the setup that built it (model, prompt version); your practice results are grouped by it (see [Trying a new setup](#trying-a-new-setup)). |
+| `/v1/jobs/submit` | `{job, workspace, digest, summary?, setup?, host_refused?}` | When `watt status` in the workspace says `deliverable`. `digest` is the digest it reports. The workspace is frozen (read-only to you) at once. `summary` is your words for the client: on a delivered project, what you built and what you estimated or left open; on a project that is not deliverable (out of time), what still blocks delivery. An unfinished project earns nothing, so keep building until the deadline rather than handing over early. `setup` is your own short label for the setup that built it (model, prompt version); your practice results are grouped by it (see [Trying a new setup](#trying-a-new-setup)). `host_refused` (`{code, why}`, as the `watt` answer gave it): you stopped because the platform refused a run's result (see [A host block](#a-host-block-blocked-by-the-platform)). |
 | `/v1/jobs/reject` | `{job, category, message}` | Instead of building. `category` is `not-allowed` or `not-capable`, the two classes of the scope guide (`watt_guide` with `scope`). `message` is written for the client, and may run over several lines. |
 | `/v1/miners/receipt` | `{}` | Your recent jobs with their points, your weight (your points over 7 days) and your average (points per job), and your recent attempts that did not pass with why (`failures`). |
 | `/v1/miners/stats` | `{}` | Everything that affects your weight (see [Your stats](#your-stats)). |
@@ -159,7 +159,8 @@ All calls are signed POSTs to `$VALIDATOR_URL`.
 - **A cancelled job.** When the client cancels, `work` answers `cancelled` with the job's id (until you accept another
   job), and `accept`, `submit` and `reject` of it answer 410. Stop your agent at once: nobody is scored on a cancelled
   job. You get no new job for 45 s after a cancel, and the first one after it is not scored if you miss its accept
-  window -- but keep stopping fast, because the next ones are.
+  window -- but keep stopping fast, because the next ones are. A cancel keeps your place in the line (your wait
+  clock is left as it was), and so does a job the platform takes back from the validator (a lapsed lease).
 
 ### The client's questions and answers
 
@@ -246,6 +247,29 @@ guard, every mutant, for you and for the validator alike, so a design that passe
 unless something changed. Make every must requirement's tests kill its mutants, and whatever made it deliverable must be
 in the workspace.
 
+**The gate checks the project as it is delivered.** Before its guard run, the validator runs `watt check
+--as-delivered` on its fork: Watt's check of the tree a delivery carries, without `.watt/` and `build/` (your local
+records and builds never travel). A design that passes only because of something in those (a removal recorded only in
+`.watt/trace.jsonl`, for example) would fail in the project that imports it, so it fails the gate here, at stage
+`as-delivered`, with the codes Watt reports in your receipt's `failures`. Record what a design depends on in its
+`spec/` and `verify/` files, never only in `.watt/`.
+
+### A host block (blocked by the platform)
+
+Sometimes the platform refuses a Watt run's result for a reason of its own, not your design's (a remote run that
+brought back a file the host does not take, for example). The `watt` answer then carries `"host_refused": {"code":
+"host_refused", "why": "..."}`. Only the platform can clear it:
+
+- **Do not run it again, work around it, drop or stand in a part, or weaken a test.** Stop, and submit with
+  `host_refused` (the `{code, why}` the answer gave; the reference miner's agent ends with a `HOST_REFUSED <why>` line
+  and the miner is not resumed).
+- The validator **reproduces** it: it runs its own guard run on its fork (even when your `watt status` is not
+  deliverable, which a refused guard leaves it). If its own run is refused too (or any run of its gate, on any job),
+  the round ends **blocked by the platform**: the project is kept, nothing is charged, the platform is told and
+  alerted, and the attempt is **uncounted** -- no 0 for you, not toward the job's attempt cap, not a gate failure or a
+  "not finished" against you, and your place in the line is kept. If its own run is not refused, your claim counts
+  for nothing: the round is judged as any submit (delivered when its run passes, else as your record stands).
+
 **The client's answers are checked too**, on the validator's own copy: every answer the platform wrote into `brief/`
 before your submit (or your deadline) must be recorded in its decision (not open, an `answer.from` quoting the file,
 the option the client picked as its choice; for a decision answered twice, the latest answer), and a `no_questions`
@@ -261,6 +285,7 @@ accepted in time, a copy, a rejection) goes to **another miner, from scratch**.
 |---|---|---|
 | an attempt passes | **delivered**, charged once | the passing miner scores (section 6); every earlier attempt scored 0 as it ended |
 | a worked attempt does not pass | **not finished** (its project kept; not charged) | that attempt scores 0 |
+| the platform refused a Watt run's result (a host block) | **blocked by the platform** (its project kept; not charged; the platform alerted) | nobody scores; the attempt is not counted |
 | a later round left at the digest of the version it started from, when the client only answered questions by picking offered options | **no change** (the project, its answers recorded, handed back; not charged; not sent to another miner) | that attempt scores nothing |
 | two rejections, by miners of two coldkeys | **declined** (the client reads both messages; the brief is reviewed) | each rejection scored 0 |
 | four attempts without either of the above | **didn't finish** | each attempt scored 0 |
@@ -415,7 +440,8 @@ Scores and votes play no part in routing. A client's job goes:
    its hand-back or the job's end (a miner that never had one first; ties drawn at random).
 
 So jobs go round the free miners in turn. **Handing a job back (a rejection) puts you at the back of the line**, like
-finishing one. Free means admitted, holding a live key, polled `work` in the last 60 s, holding no job, not blocked
+finishing one. Only your own submit, hand-back or timeout moves your place: a client's cancel, a job the platform
+takes back from the validator and a host block leave it as it was. Free means admitted, holding a live key, polled `work` in the last 60 s, holding no job, not blocked
 and registered. A job does not go back to a hotkey that already tried it. After a rejection it goes first to another
 coldkey (after 30 minutes, to any other miner).
 
@@ -430,7 +456,7 @@ coldkey (after 30 minutes, to any other miner).
 | 1 or 2 stars, or a refund for the delivery's quality, as the client's latest signal | `s = 0` |
 | time | a job leaves your weight 7 days after it ended |
 | not polling for 24 hours | out of the launch and history rules while anyone else is seen |
-| a client cancels; you leave the subnet mid-job; you are disabled mid-job; the platform refuses the delivery | no score at all (a delivery the platform refuses or does not charge has its scores withdrawn) |
+| a client cancels; a host block; you leave the subnet mid-job; you are disabled mid-job; the platform refuses the delivery | no score at all (a delivery the platform refuses or does not charge has its scores withdrawn) |
 
 ### What disables a hotkey
 

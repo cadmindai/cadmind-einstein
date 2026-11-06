@@ -28,7 +28,16 @@ What the einstein validator runs ([`../DESIGN.md`](../DESIGN.md) sections 5 and 
 - A miner's weight is the sum of its points over the last 7 days (flat, no decay); the vector is proportional to it
   over the registered, admitted miners seen in 24 hours. Genesis, launch and never-empty rules are unchanged.
 - The next client job goes to the job's `prefer` miner if it is available, else to the available miner that has
-  waited longest since its last client assignment ended; a hand-back restarts that miner's clock.
+  waited longest since its last client assignment ended; a hand-back restarts that miner's clock. A client's
+  cancel, a lapsed lease and a host block leave it as it was.
+- **The gate checks the tree as delivered**: after the miner's `watt status` says deliverable, the validator runs
+  `watt check --as-delivered` on its fork (no `.watt/`, no `build/`) before its guard run; errors fail the gate at
+  stage `as-delivered`. It needs a Watt that knows the mode: against an older one every judgement is retried on the
+  validator's side and ends "didn't finish" (nobody scored), so deploy Watt first.
+- **Blocked by the platform.** A gate run whose answer carries `host_refused` (the platform refused the run's result,
+  not the design) ends the round `host_blocked`: project kept, uncharged, the platform told, an `ALERT: job ...
+  blocked by the platform` line in the validator's log, and nobody scored (the attempt is not counted). A miner's own
+  report of one (`submit`'s `host_refused`) is reproduced by the validator's guard run before it counts.
 - At every start the validator scores the stored window by the rule it runs (stored outcomes keep facts and
   signals, never points), so an upgrade never leaves a mix of old and new scores; failures an older release held
   on a job (`pending`) are scored 0 then. `/v1/scores` and the reports publish `weight` and `average` (points per
