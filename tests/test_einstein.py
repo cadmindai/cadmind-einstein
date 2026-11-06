@@ -21,7 +21,7 @@ from typing import Any
 import bittensor.http_auth as btauth
 from bittensor.sp_core import Keypair
 
-from cadmind_einstein.desk import GATE_RUN_S, Desk, DeskError, _survivors
+from cadmind_einstein.desk import GATE_RUN_S, UNCOUNTED, Desk, DeskError, _survivors
 from cadmind_einstein.platform import PlatformError
 from cadmind_einstein.scoring import (
     HOUR_MS,
@@ -34,7 +34,7 @@ from cadmind_einstein.scoring import (
     vector,
 )
 from cadmind_einstein.sealing import new_keypair, open_sealed, seal
-from cadmind_einstein.service import serve
+from cadmind_einstein.service import _host_refused_of, serve
 
 VALIDATOR = Keypair.create_from_uri("//Validator")
 A, B, C, D = (
@@ -139,6 +139,9 @@ class FakePlatform:
             report_fails=src.get("report_fails", False),
             stage=src.get("stage", "check"),
             diagnostics=src.get("diagnostics", []),
+            as_delivered=src.get("as_delivered", []),
+            host_refused=src.get("host_refused", ""),
+            old_watt=src.get("old_watt", False),
             hotkey="validator",
         )
 
@@ -149,6 +152,22 @@ class FakePlatform:
         w = self.ws[ws]
         self.runs.append((ws, command))
         digest = str(abs(hash(json.dumps(w["files"], sort_keys=True))))
+        if command == "check" and (args or {}).get("as_delivered"):
+            # Watt's check of the tree as a delivery carries it (no .watt/, no build/)
+            if w.get("old_watt"):  # a Watt that does not know the mode
+                return {"state": "done", "ok": False, "error": "unrecognized arguments"}
+            if w.get("as_delivered"):
+                return {"state": "done", "ok": False, "data": {"diagnostics": w["as_delivered"]}}
+            return {"state": "done", "ok": True, "data": {"diagnostics": []}}
+        if command in ("test", "report") and (args or {}).get("mutate") and w.get("host_refused"):
+            # the platform refused the remote run's result for a reason of its own
+            why = w["host_refused"]
+            return {
+                "state": "done",
+                "ok": False,
+                "error": "result refused",
+                "host_refused": {"code": "host_refused", "why": why},
+            }
         if command in ("test", "report") and (args or {}).get("mutate"):
             if w.get("weak"):
                 guard = {
@@ -829,7 +848,7 @@ class TestGateDraw(unittest.TestCase):
         # held, then counted (0) at the ending: one owner's opinion only
         self.assertEqual([o.s for o in self.ledger.outcomes], [0.0])
         self.assertEqual(
-            self.gate_runs(ws), ["status", "report"]
+            self.gate_runs(ws), ["status", "check", "report"]
         )  # the miner's own record said yes
         self.assertTrue(self.p.ws[ws]["deliverable"])  # ... and the miner's workspace still does
 
@@ -850,7 +869,7 @@ class TestGateDraw(unittest.TestCase):
         hk, ws = self.submit("r2", weak=False)
         st = wait_state(self.desk, "r2", ("done",))
         self.assertEqual((st["result"]["label"], st["result"]["hotkey"]), ("delivered", hk))
-        self.assertEqual(self.gate_runs(ws), ["status", "report", "status"])
+        self.assertEqual(self.gate_runs(ws), ["status", "check", "report", "status"])
         fork = self.desk.jobs["r2"].attempts[0].fork
         self.assertEqual(st["result"]["workspace"], fork)
         self.assertEqual(self.p.ws[fork]["draw"], "sha256:validator")  # the record is ours
@@ -924,6 +943,146 @@ class TestGateDraw(unittest.TestCase):
         self.assertEqual(a.kind, "gate")
         self.assertIn("did not finish within the validator's budget", a.outcome)
         self.assertNotIn(a.fork, self.p.deleted)  # its fork is the project kept
+
+
+class TestHostBlockAndAsDelivered(unittest.TestCase):
+    """A host refusal ends the round blocked by the platform, against nobody; the gate checks the
+    tree as a delivery carries it; a client's cancel keeps the builder's place in the line."""
+
+    setUp = TestDesk.setUp
+    tearDown = TestDesk.tearDown
+    tick = TestDesk.tick
+    enqueue = TestDesk.enqueue
+    poll = TestDesk.poll
+    assigned = TestDesk.assigned
+
+    def start(self, job: str, *, deliverable: bool = True, **ws: Any) -> tuple[str, str]:
+        self.poll(A, B, C)
+        self.enqueue({"job": job, "brief": "A wall hook."})
+        hk, w = self.assigned()
+        self.desk.accept(hk, job)
+        self.p.work(w["workspace"], GOOD, deliverable=deliverable)
+        self.p.ws[w["workspace"]].update(ws)  # the fork copies it
+        return hk, w["workspace"]
+
+    def test_a_host_refusal_on_the_validators_run_blocks_the_round_against_nobody(self) -> None:
+        hk, ws = self.start("h1", host_refused="a remote run writes only build/ and .watt/")
+        before = self.desk.miners[hk].free_ms
+        self.desk.submit(hk, "h1", ws, "d")
+        self.assertNotEqual(self.desk.miners[hk].free_ms, before)  # the submit moved it ...
+        st = wait_state(self.desk, "h1", ("done",))
+        self.tick()
+        res = self.p.completed["h1"]
+        self.assertEqual((res["label"], res["kind"]), ("host_blocked", "host_blocked"))
+        self.assertIs(res["charge"], False)
+        self.assertEqual(res["host_refused"]["code"], "host_refused")
+        self.assertIn("remote run writes only", res["why"])
+        a = self.desk.jobs["h1"].attempts[0]
+        self.assertEqual(a.kind, "host_blocked")
+        self.assertEqual(res["workspace"], a.fork)  # the project kept for the client
+        self.assertIn(a.fork, self.p.ws)
+        self.assertNotIn(a.fork, self.p.deleted)
+        self.assertEqual(self.ledger.outcomes, [])  # no 0 for anyone
+        self.assertEqual(self.desk.failed.get(hk, 0), 0)
+        self.assertEqual(self.desk.not_finished.get(hk, 0), 0)
+        self.assertEqual(self.desk.miners[hk].free_ms, before)  # ... and the block put it back
+        self.assertEqual(st["state"], "done")
+
+    def test_a_miner_reported_host_refusal_is_reproduced_by_the_validators_own_run(self) -> None:
+        # the miner's record has no guard (every guard run of its was refused): not deliverable
+        hk, ws = self.start("h2", deliverable=False, stage="test", host_refused="refused")
+        self.desk.submit(hk, "h2", ws, "", host_refused="result refused by the host")
+        wait_state(self.desk, "h2", ("done",))
+        self.assertEqual(self.desk.jobs["h2"].result["label"], "host_blocked")
+        self.assertEqual(self.ledger.outcomes, [])
+        runs = [c for w, c in self.p.runs if w != ws]
+        self.assertEqual(runs, ["status", "report"])  # the validator's own guard run, refused
+
+    def test_a_reported_host_refusal_the_validator_does_not_meet_counts_for_nothing(self) -> None:
+        hk, ws = self.start("h3", deliverable=False, stage="test", weak=True)
+        self.desk.submit(hk, "h3", ws, "", host_refused="result refused by the host")
+        wait_state(self.desk, "h3", ("done",))
+        job = self.desk.jobs["h3"]
+        self.assertEqual(job.result["label"], "not finished")  # the record's own verdict
+        self.assertIn("did not recur", job.attempts[0].outcome)
+        self.assertEqual(job.attempts[0].kind, "gate")
+        self.assertEqual([o.s for o in self.ledger.outcomes], [0.0])
+
+    def test_a_reported_host_refusal_whose_validator_run_passes_is_delivered(self) -> None:
+        hk, ws = self.start("h4", deliverable=False, stage="test")
+        self.desk.submit(hk, "h4", ws, "", host_refused="result refused by the host")
+        st = wait_state(self.desk, "h4", ("done",))
+        self.assertEqual(st["result"]["label"], "delivered")  # the host was fixed meanwhile
+        runs = [c for w, c in self.p.runs if w != ws]
+        self.assertEqual(runs, ["status", "report", "status", "check"])
+
+    def test_a_blocked_round_takes_no_place_in_the_attempt_cap(self) -> None:
+        hk, ws = self.start("h5", host_refused="refused")
+        self.desk.submit(hk, "h5", ws, "d")
+        wait_state(self.desk, "h5", ("done",))
+        job = self.desk.jobs["h5"]
+        self.assertEqual(len(job.attempts), 1)
+        self.assertIn("host_blocked", UNCOUNTED)
+
+    def test_the_gate_checks_the_tree_as_delivered(self) -> None:
+        found = "decision fused affects 'bay.pinch', which does not exist"
+        errors = [{"severity": "error", "code": "W0204", "found": found}]
+        hk, ws = self.start("d1", as_delivered=errors)
+        self.desk.submit(hk, "d1", ws, "d")
+        st = wait_state(self.desk, "d1", ("done",))
+        self.assertEqual(st["result"]["label"], "not finished")
+        res = self.desk.jobs["d1"].result
+        self.assertEqual(res["stage"], "as-delivered")
+        self.assertIn("W0204", res["error"])
+        self.assertIn("bay.pinch", res["error"])
+        self.assertEqual(res["cause"], {"stage": "as-delivered", "codes": ["W0204"]})
+        runs = [c for w, c in self.p.runs if w != ws]
+        self.assertEqual(runs, ["status", "check"])  # before the guard: no guard run spent
+        a = self.desk.jobs["d1"].attempts[0]
+        self.assertEqual(a.kind, "gate")
+        # the kept project is named, so the platform can read its change requests
+        self.assertEqual(res["workspace"], a.fork)
+        self.assertNotIn(a.fork, self.p.deleted)
+
+    def test_an_as_delivered_check_that_does_not_answer_is_our_side(self) -> None:
+        hk, ws = self.start("d2", old_watt=True)
+        self.desk.submit(hk, "d2", ws, "d")
+        for _ in range(100):
+            if self.desk.jobs["d2"].attempts[0].retries:
+                break
+            time.sleep(0.02)
+        a = self.desk.jobs["d2"].attempts[0]
+        self.assertGreaterEqual(a.retries, 1)  # judged again later, never against the miner
+        self.assertEqual(self.desk.jobs["d2"].state, "judging")
+        self.assertEqual(self.ledger.outcomes, [])
+
+    def test_a_client_cancel_keeps_the_builders_place_in_the_line(self) -> None:
+        hk, _ = self.start("c1")
+        before = self.desk.miners[hk].free_ms
+        self.clock.t += 600
+        self.desk.cancel("c1")
+        self.assertEqual(self.desk.miners[hk].free_ms, before)
+        self.assertEqual(self.desk.miners[hk].job, "")
+
+    def test_a_lapsed_lease_keeps_the_builders_place_in_the_line(self) -> None:
+        hk, _ = self.start("c2")
+        before = self.desk.miners[hk].free_ms
+        self.clock.t += 600
+        self.desk.cancel("c2", lost=True)
+        self.assertEqual(self.desk.miners[hk].free_ms, before)
+
+    def test_a_submits_host_refused_is_read_in_either_form(self) -> None:
+        self.assertEqual(_host_refused_of({"code": "host_refused", "why": " a  b "}), "a b")
+        self.assertEqual(_host_refused_of("why"), "why")
+        self.assertEqual(_host_refused_of(True), "the platform refused the run's result")
+        for nothing in (None, {}, "", 3, False):
+            self.assertEqual(_host_refused_of(nothing), "")
+
+    def test_the_builders_own_hand_back_still_moves_it(self) -> None:
+        hk, _ = self.start("c3")
+        self.clock.t += 600
+        self.desk.reject(hk, "c3", "not-capable", "too big for one round")
+        self.assertEqual(self.desk.miners[hk].free_ms, self.desk.now_ms())
 
 
 class TestSurvivorsWords(unittest.TestCase):

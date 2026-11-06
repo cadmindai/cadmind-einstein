@@ -11,8 +11,10 @@ the metagraph):
   the validator knows the miner is alive), and ``cancelled``: the id of its last job when the
   client cancelled it (stop working on it; said until the miner accepts another job);
 - ``POST /v1/jobs/accept {job}``, ``POST /v1/jobs/submit {job, workspace, digest, summary?,
-  setup?}``
-  (410 for a job its client cancelled; ``summary``: the builder's words on what blocks delivery);
+  setup?, host_refused?}``
+  (410 for a job its client cancelled; ``summary``: the builder's words on what blocks delivery;
+  ``host_refused`` (``{code, why}`` or its why): the builder stopped because the platform refused
+  its Watt runs' results, which the validator's own guard run then reproduces);
 - ``POST /v1/miners/admission`` -- its entry test, a job assigned to it alone;
 - ``POST /v1/practice`` -- a practice job on a public brief (never scored; :mod:`.practice`), and
   ``GET /v1/practice`` (signed, no body) -- its practice results, grouped by the ``setup`` label
@@ -124,6 +126,18 @@ _BUSY = (
     + b"Retry-After: 5\r\nConnection: close\r\n\r\n"
     + _BUSY_BODY
 )
+
+
+def _host_refused_of(value: Any) -> str:
+    """A submit's ``host_refused``: ``{code, why}`` (a Watt run answer's) or its why; ''
+    when absent."""
+    if isinstance(value, dict):
+        value = value.get("why") or ("the platform refused the run's result" if value else "")
+    elif value is True:
+        value = "the platform refused the run's result"
+    elif not isinstance(value, str):
+        value = ""
+    return " ".join(value.split())[:500]
 
 
 def response_payload(
@@ -650,6 +664,7 @@ def serve(
                                 str(body.get("digest") or ""),
                                 str(body.get("summary") or ""),
                                 str(body.get("setup") or ""),
+                                _host_refused_of(body.get("host_refused")),
                             ),
                         )
                     elif self.path == "/v1/jobs/reject":

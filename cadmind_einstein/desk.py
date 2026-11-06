@@ -116,14 +116,20 @@ SUBSTANTIVE = ("reject", "gate")
 NO_CHANGE = "no change"
 """how a round ends, and the kind of its one attempt, when the client's answers leave the design as
 it was: the project at the seed's digest is handed back, uncharged, and nobody is scored"""
-UNCOUNTED = ("dereg", "disabled", "revoked", "stale", "ours", "lost", NO_CHANGE)
+HOST_BLOCKED = "host_blocked"
+"""how a round ends, the kind of its attempt and of its result, when the platform (the host, not
+the design) refused a Watt run's result (Watt's ``host_refused``): the round ends "blocked by the
+platform", its project kept, uncharged, uncounted, and nobody is scored
+(:meth:`Desk._host_blocked`)"""
+UNCOUNTED = ("dereg", "disabled", "revoked", "stale", "ours", "lost", NO_CHANGE, HOST_BLOCKED)
 """attempt kinds that do not count toward a job's attempt cap and score nobody: the miner left the
 subnet, was disabled for abuse, or had its key revoked by the operator while it held the job
 (``dereg``, ``disabled``, ``revoked``); the first
 assignment after a cancel was not accepted in time because the miner was still stopping the
 cancelled job (``stale``); the validator could not judge it, on its own side (``ours``); the
 platform took the job back when the validator's lease lapsed (``lost``: its miner may take it
-again when it is claimed again); the client's answers changed nothing (``NO_CHANGE``)"""
+again when it is claimed again); the client's answers changed nothing (``NO_CHANGE``); the platform
+refused a Watt run's result for a reason of its own (``HOST_BLOCKED``)"""
 REFUSED_DELIVERY = ("delivery_not_of_job", "delivery_digest_mismatch")
 """the platform's refusals of a delivered result whose provenance it cannot accept (the workspace
 does not descend from the job's own grant, or is not at the digest the validator gated): a
@@ -207,6 +213,28 @@ class _GateRetryError(Exception):
     stopped by something other than its limits): our side, so the judgement is retried."""
 
 
+class _HostBlockedError(Exception):
+    """A Watt run of the gate answered ``host_refused``: the platform refused the run's result for a
+    reason that is the host's, not the design's. Never the miner's failure: the round ends blocked
+    by the platform (:meth:`Desk._host_blocked`)."""
+
+
+def host_refusal(run: Any) -> str:
+    """Why a Watt run answer says the host refused its result ('' when it does not): the answer's
+    ``host_refused`` (``{"code": "host_refused", "why": ...}``), or the same in its ``data``."""
+    if not isinstance(run, Mapping):
+        return ""
+    data = run.get("data")
+    for src in (run, data if isinstance(data, Mapping) else {}):
+        said = src.get("host_refused")
+        if isinstance(said, Mapping):
+            why = " ".join(str(said.get("why") or "").split())[:500]
+            return why or "the platform refused the run's result"
+        if said is True:
+            return "the platform refused the run's result"
+    return ""
+
+
 class _GateTimeoutError(Exception):
     """The validator's own guard run hit its budget (stopped by the validator) or Watt's wall-clock
     limit: counted on the attempt; judged again, or failed at ``GATE_TIMEOUTS``."""
@@ -273,6 +301,17 @@ def _not_deliverable(run: Mapping[str, Any], status: Mapping[str, Any]) -> dict[
         found = " ".join(str(errors[0].get("found") or "").split())
         words += f" ({found[:200]})" if found else ""
     return {"error": words, "cause": {"stage": stage, "codes": codes[:8]}}
+
+
+def _not_reproduced(unproven: Mapping[str, Any]) -> dict[str, Any]:
+    """The verdict of a record that was not deliverable when the miner reported a host refusal the
+    validator's own run did not meet: the record's own verdict, saying so."""
+    said = str(unproven.get("error") or "the design is not deliverable")
+    return {
+        **unproven,
+        "error": said + "; the platform refusal the builder reported did not recur on the "
+        "validator's own guard run",
+    }
 
 
 def _status_of(run: Mapping[str, Any]) -> dict[str, Any]:
@@ -408,6 +447,14 @@ class Attempt:
     setup: str = ""
     """the miner's own label for the setup it built this attempt with (its model, its prompt),
     given with its submit (optional): what its practice results are grouped by"""
+    host_refused: str = ""
+    """the miner's report, with its submit, that the platform refused its Watt runs' results (the
+    run answers' ``host_refused`` why): the validator's own guard run reproduces it, or the claim
+    counts for nothing (:meth:`Desk._gate`)"""
+    clock_before_ms: int = 0
+    clock_set_ms: int = 0
+    """the miner's wait clock before and after its submit moved it: a round blocked by the platform
+    puts it back (:meth:`Desk._host_blocked`)"""
 
 
 @dataclass
@@ -1539,10 +1586,14 @@ class Desk:
         digest: str,
         summary: str = "",
         setup: str = "",
+        host_refused: str = "",
     ) -> dict[str, Any]:
         """The hand-over. ``summary``, optional: the builder's own words on what blocks delivery
         (shown to the client when the round ends not finished). ``setup``, optional: the miner's
-        own label for the setup it built with (its practice results are grouped by it)."""
+        own label for the setup it built with (its practice results are grouped by it).
+        ``host_refused``, optional: the builder stopped because the platform refused its Watt runs'
+        results (the why a run answer's ``host_refused`` gave); the validator's own guard run on
+        its fork reproduces it, and only then is the round blocked by the platform."""
         from .practice import clean_setup  # noqa: PLC0415
 
         with self._mut():
@@ -1561,10 +1612,14 @@ class Desk:
             a.submitted_ms, a.digest = self.now_ms(), str(digest or "")[:100]
             a.summary = " ".join(str(summary or "").split())[:SUMMARY_MAX]
             a.setup = clean_setup(setup)
+            a.host_refused = " ".join(str(host_refused or "").split())[:500]
             job.state = "judging"
             # the miner's part is over: it is free for another job while the validator judges this
             # one (``max_inflight`` still counts the judgement)
+            m = self.miners[hotkey]
+            a.clock_before_ms = m.free_ms
             self._release(hotkey, job_id)
+            a.clock_set_ms = m.free_ms
             self._leased_ms = 0
             self._event(
                 "submitted",
@@ -1573,6 +1628,7 @@ class Desk:
                 digest=a.digest,
                 on_time=a.submitted_ms <= a.deadline_ms,
                 summary_chars=len(a.summary),
+                host_refused=bool(a.host_refused) or None,
             )
         self._start_judge(job, a)
         return {"job": job_id, "state": "judging"}
@@ -2103,7 +2159,8 @@ class Desk:
         and its miner freed; nobody is scored on it. The miner is told on its next ``work``
         (``cancelled``), gets no new job for ``cancel_cooloff_s`` (time to stop its agent), and its
         first assignment after this one is not scored if it is not accepted in time. A job being
-        judged has the validator's guard run stopped and its fork deleted.
+        judged has the validator's guard run stopped and its fork deleted. The miner's wait clock is
+        left as it was (only its own submit, hand-back or timeout moves it).
 
         ``lost``: the platform no longer holds the job for this validator (its lease lapsed, and the
         platform queued the job again). The copy here stops the same way, but its open attempt is
@@ -2131,7 +2188,8 @@ class Desk:
                     # still working on it (a submitted attempt freed its miner, which may hold
                     # another job by now): told, and cooled off
                     m.cancelled_job, m.cancelled_ms, m.after_cancel = job_id, self.now_ms(), True
-                self._release(a.hotkey, job_id)
+                # not the builder's doing: its place in the router's line is kept
+                self._release(a.hotkey, job_id, clock=False)
                 if judging:
                     self._drop_gate(job.job, a)
             self._event(
@@ -2884,15 +2942,17 @@ class Desk:
         self._outbox.append(job.job)
         self._event("ended", job.job, label=label, hotkey=a.hotkey, attempts=len(job.attempts))
 
-    def _release(self, hotkey: str, job_id: str) -> None:
+    def _release(self, hotkey: str, job_id: str, *, clock: bool = True) -> None:
         """Free ``hotkey`` of ``job_id`` -- only of that job: a miner freed at its submit may hold
         another job by the time this one ends. A client job's end restarts the miner's wait clock
-        (``free_ms``): it goes to the back of the router's line, a hand-back (reject) included."""
+        (``free_ms``): it goes to the back of the router's line, a hand-back (reject) included.
+        ``clock`` False: an end that is not the builder's doing (a client's cancel, a lapsed lease,
+        a round blocked by the platform) frees it with its place in the line kept."""
         m = self.miners.get(hotkey)
         if m is not None and m.job == job_id:
             m.job = ""
             job = self.jobs.get(job_id)
-            if job is not None and job.kind == "client":
+            if clock and job is not None and job.kind == "client":
                 m.free_ms = self.now_ms()
 
     def _event(self, event: str, job: str, **fields: Any) -> None:
@@ -2994,6 +3054,66 @@ class Desk:
             f"validator's side ({why[:200]}): not charged, nobody scored"
         )
 
+    def _host_blocked(self, job: Job, a: Attempt, fork: str, why: str) -> None:
+        """A Watt run of the gate answered ``host_refused``: the platform (the host) refused a run's
+        result for a reason of its own, not the design's. The round ends **blocked by the
+        platform**: its project (the validator's fork) is kept and named, nothing is charged, the
+        platform is told (result ``host_blocked`` with the why), and an ALERT is logged. The
+        attempt is UNCOUNTED (:data:`UNCOUNTED`): no 0 in the ledger, not toward the job's attempt
+        cap, not "not finished" nor a gate failure against the miner, and the miner's wait clock
+        is put back where its submit found it. An entry test so blocked may be asked for again at
+        once; a practice job ends without a result."""
+        why = " ".join(str(why or "").split())[:500] or "the platform refused a run's result"
+        with self._mut():
+            if job.state != "judging" or not job.attempts or job.attempts[-1] is not a:
+                self._drop_gate(job.job, a)
+                return  # cancelled (or lost) while it was judged
+            a.outcome, a.kind = f"blocked by the platform: {why}", HOST_BLOCKED
+            self._event(
+                "host-blocked",
+                job.job,
+                hotkey=a.hotkey,
+                why=why[:200],
+                reported=bool(a.host_refused) or None,
+            )
+            m = self.miners.get(a.hotkey)
+            if m is not None and m.job == job.job:  # judged at its deadline: still held
+                self._release(a.hotkey, job.job, clock=False)
+            elif m is not None and a.clock_set_ms and m.free_ms == a.clock_set_ms:
+                m.free_ms = a.clock_before_ms  # its submit moved it, nothing since
+            if job.kind == "practice":
+                self._end_practice(job, a, deliverable=False, why=a.outcome)
+                return
+            if job.kind == "admission":
+                self._drop_gate(job.job, a)
+                if m is not None:
+                    m.admission_ms = 0  # not the miner's failure: it may ask again at once
+                job.state = "done"
+                job.result = {"label": "not admitted", "charge": False, "why": a.outcome}
+                return
+            self._drop_gate(job.job, a, keep_fork=True)
+            job.state = "done"
+            job.result = {
+                "label": HOST_BLOCKED,
+                "kind": HOST_BLOCKED,
+                "charge": False,
+                "review": False,
+                "why": why,
+                "host_refused": {"code": "host_refused", "why": why},
+                "hotkey": a.hotkey,
+                "workspace": fork,
+                "digest": a.gate_digest or a.digest,
+                "attempts": len(job.attempts),
+            }
+            if a.summary:
+                job.result["summary"], job.result["summary_by"] = a.summary, "builder"
+            self._outbox.append(job.job)
+            self._event("ended", job.job, label=HOST_BLOCKED, hotkey=a.hotkey)
+        self.log(
+            f"ALERT: job {job.job} blocked by the platform: a Watt run's result was refused by the "
+            f"host ({why[:200]}); the round ends uncharged, its project kept, nobody scored"
+        )
+
     @staticmethod
     def _ours(e: PlatformError) -> bool:
         """Whether a platform failure while judging is the validator's side (its credential, its
@@ -3007,7 +3127,12 @@ class Desk:
         """The Watt gate on the validator's fork of a frozen workspace.
 
         1. ``watt status``: the miner's own record must say deliverable (its checks clean, a guard
-           recorded for this digest); otherwise the attempt fails here, at no further cost.
+           recorded for this digest); otherwise the attempt fails here, at no further cost --
+           unless the miner reported that the platform refused its runs' results (its submit's
+           ``host_refused``): then the validator's own run (step 3) reproduces the refusal, or
+           delivers, or the record's verdict stands. Then ``watt check --as-delivered`` (Watt's
+           check of the tree as a delivery carries it, without ``.watt/`` and ``build/``): a design
+           that passes only with its local records fails here (:meth:`_as_delivered`).
         2. ``watt report --mutate`` on the fork, the validator's own run (the guard, and the
            delivery's files made from the design it guards, in one run) (the operator's lane: the
            bench seeds its draw with a key the miners' lane never sees, so the mutants it builds
@@ -3031,12 +3156,22 @@ class Desk:
         another: the fork cannot even be read while that run holds it, and a second run repeats
         minutes of guard work. A run the platform no longer knows (404) is started again.
 
+        Any run answer that carries ``host_refused`` (the platform refused the run's result for
+        a reason of its own) raises :class:`_HostBlockedError`: the round ends blocked by the
+        platform (:meth:`_host_blocked`), never against the miner.
+
         Raises :class:`_GateRetryError` (and lets :class:`PlatformError` through) on our side.
         """
         jid = job.job if job is not None else ""
         resume = a.gate_run if a is not None else ""
+        claim = a.host_refused if a is not None else ""
+        unproven: dict[str, Any] = {}
+        """a miner's record that is not deliverable, gated only to reproduce the host refusal the
+        miner reported: the verdict, unless the validator's own run delivers or is refused too"""
+        checked = False
         if resume and a is not None and a.gate_digest:
-            # the miner's record said deliverable when this run was started, at this digest
+            # the miner's record said deliverable (or the miner reported a host refusal) when this
+            # run was started, at this digest
             digest = a.gate_digest
             verdict: dict[str, Any] = {
                 "deliverable": False,
@@ -3045,6 +3180,9 @@ class Desk:
             }
         else:
             asked = self.platform.run(fork, "status", {})
+            refused = host_refusal(asked)
+            if refused:
+                raise _HostBlockedError(refused)
             before = _status_of(asked)
             digest = str(before.get("digest") or "")
             verdict = {
@@ -3053,7 +3191,16 @@ class Desk:
                 "digest": digest,
             }
             if not before.get("deliverable"):
-                return {**verdict, **_not_deliverable(asked, before)}
+                if not claim:
+                    return {**verdict, **_not_deliverable(asked, before)}
+                # the miner says the platform refused its runs' results: the validator's own guard
+                # run reproduces that, or the record's verdict stands
+                unproven = {**verdict, **_not_deliverable(asked, before)}
+            else:
+                failed = self._as_delivered(fork, verdict)
+                if failed is not None:
+                    return failed
+                checked = True
         # the guard and the delivery's files in ONE run (`watt report --mutate`): one machine start,
         # and the files are made from the very design this run guards (2026-10-16)
         stop = threading.Event()
@@ -3124,6 +3271,9 @@ class Desk:
         )
         if stopped == "wall":
             raise _GateTimeoutError("the validator's guard run hit Watt's wall-clock limit")
+        refused = host_refusal(run)
+        if refused:
+            raise _HostBlockedError(refused)
         if state != "done" or stopped in ("cancelled", "frozen"):
             why = stopped or str(run.get("error") or state)
             raise _GateRetryError(f"the validator's guard run did not end on its own: {why[:200]}")
@@ -3139,6 +3289,8 @@ class Desk:
                 + _survivors(guard)
             )
             verdict["cause"] = {"stage": "test", "limit": limit}
+            if unproven:
+                return _not_reproduced(unproven)
             return verdict
         after = self._status(fork)
         draw = after.get("guard_draw") or {}
@@ -3153,12 +3305,52 @@ class Desk:
                 "the guard record is not the validator's own run "
                 f"(digest {after.get('digest')}, draw {recorded}, the validator's {drawn})"
             )
+            if unproven:
+                return _not_reproduced(unproven)
             return verdict
+        if not checked:
+            failed = self._as_delivered(fork, verdict)
+            if failed is not None:
+                return failed
         return {
             "deliverable": True,
             "stage": str(after.get("stage") or "deliverable"),
             "digest": digest,
         }
+
+    def _as_delivered(self, fork: str, verdict: dict[str, Any]) -> dict[str, Any] | None:
+        """Watt's check of the tree as a delivery carries it (``watt check --as-delivered``: no
+        ``.watt/``, no ``build/``), on the validator's fork: what a project importing this one, or
+        the client's own copy, will build. None when it passes; the failing verdict (stage
+        ``as-delivered``) when it reports errors. A run that ends without saying either (an error of
+        the bench, a Watt that does not know the mode) is our side: :class:`_GateRetryError`."""
+        run = self.platform.run(fork, "check", {"as_delivered": True})
+        refused = host_refusal(run)
+        if refused:
+            raise _HostBlockedError(refused)
+        data = run.get("data") if isinstance(run.get("data"), Mapping) else {}
+        errors = [
+            d
+            for d in (data or {}).get("diagnostics") or []
+            if isinstance(d, Mapping) and d.get("severity") == "error" and d.get("code")
+        ]
+        if errors:
+            codes = sorted({str(d["code"]) for d in errors})
+            found = " ".join(str(errors[0].get("found") or "").split())
+            where = str(errors[0].get("file") or errors[0].get("path") or "")
+            return {
+                **verdict,
+                "deliverable": False,
+                "stage": "as-delivered",
+                "error": "the design does not build as it is delivered (without its local records, "
+                f".watt/ and build/): {', '.join(codes[:8])}"
+                + (f" ({where + ': ' if where else ''}{found[:200]})" if found else ""),
+                "cause": {"stage": "as-delivered", "codes": codes[:8]},
+            }
+        if run.get("state") == "done" and run.get("ok") is True:
+            return None
+        why = str(run.get("stopped") or run.get("error") or run.get("state") or "no answer")
+        raise _GateRetryError(f"the as-delivered check did not answer: {why[:200]}")
 
     @staticmethod
     def _answers_gate(
@@ -3251,6 +3443,9 @@ class Desk:
             )
         except _GateRetryError as e:
             self._retry(job, a, str(e), RETRY_FIRST_S)
+            return
+        except _HostBlockedError as e:
+            self._host_blocked(job, a, fork, str(e))
             return
         except PlatformError as e:
             if self._ours(e):
