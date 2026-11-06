@@ -32,7 +32,7 @@ from collections import defaultdict
 from collections.abc import Callable, Iterable, Mapping
 from typing import Any
 
-from .scoring import HALF_LIFE_H, HOUR_MS, TRUST, W_CLIENT, W_IMMEDIATE, WINDOW_H, JobOutcome
+from .scoring import CONSTANTS, HOUR_MS, WINDOW_H, JobOutcome
 
 DAY_MS = 24 * HOUR_MS
 JOBS_SHOWN = 100
@@ -77,22 +77,21 @@ ROLLED = (
 """what a day's rollup row counts, from the ledger's outcomes"""
 
 FORMULA = {
-    "text": "s = 0.4*I + 0.6*(w*C + (1-w)*B);  B = u*V + (1-u)*I;  I = 0.5 + 0.3*E + 0.2*T",
-    "weight": (
-        "weight = sum over your jobs in the last 7 days of 0.5^(age_h/24) * s, plus your share of"
-        " 25% of s on each remix of your work delivered in that time"
+    "text": (
+        "a delivered job that passed the validator's Watt gate: 0.5 while the client has done"
+        " nothing; 1 when the client downloaded it or rated it 3-5 stars; 0 when the client rated"
+        " it 1-2 stars or a refund was granted for its quality. The client's latest signal"
+        " decides. Not delivered, failed the gate, timed out, handed back, a copy: 0"
     ),
-    "share": "share = your part of the current vector; proportional to weight only under the history rule",
+    "weight": "weight = the sum of your job points over the last 7 days (flat, no decay)",
+    "share": (
+        "share = your part of the current vector; proportional to weight under the history rule"
+    ),
     "parts": {
-        "I": "immediate: passed the Watt gate (0.5), efficiency E (0.3), on time T (0.2)",
-        "E": "efficiency against the bucket's medians (1 when the bucket has fewer than 5 jobs)",
-        "C": "the client's signal: stars (s-1)/4; a download 0.75; each change or re-run -0.25;"
-        " a quality refund counts as one star; a C of 0.75 or more counts as max(C, B)",
-        "w": "how much C counts: the client's trust (paid 1, free 0.1), half for a download, change or re-run",
-        "V": "the validators' quality vote: the judge's median score 0-3 as 0, 0.3, 0.65 or 1",
-        "u": "how much V counts (0.4 when votes are counted, 0 in shadow)",
-        "B": "the baseline the client's signal moves from",
+        "signal": "what decided a delivered job's points: none, download, stars or refund",
+        "failed": "why an attempt scored 0: reject, gate, timeout, copy or refused",
     },
+    "votes": "the validators' votes are shown and published; they never score",
 }
 
 
@@ -123,8 +122,9 @@ def _signals(o: JobOutcome) -> dict[str, Any]:
     }
 
 
-def outcome_row(o: JobOutcome) -> dict[str, float]:
-    """One scored outcome's contribution to a day's rollup."""
+def outcome_row(o: JobOutcome, vote: float | None = None) -> dict[str, float]:
+    """One scored outcome's contribution to a day's rollup (``vote``: its ``V``, shown, never
+    scored)."""
     r = _empty()
     if o.kind == "timeout":
         r["timeouts"] = 1
@@ -138,8 +138,8 @@ def outcome_row(o: JobOutcome) -> dict[str, float]:
     r["downloaded"] = 1 if sig["downloaded"] else 0
     for k in ("changes", "reruns", "refunds", "refunds_quality"):
         r[k] = sig[k]
-    if o.vote and o.vote.get("V") is not None:
-        r["voted"], r["vote_sum"] = 1, float(o.vote["V"])
+    if vote is not None:
+        r["voted"], r["vote_sum"] = 1, float(vote)
     return r
 
 
@@ -157,15 +157,21 @@ def _finish(c: dict[str, float]) -> dict[str, Any]:
     return {k: out[k] for k in COUNTERS}
 
 
-def rollup(outcomes: Iterable[JobOutcome], now_ms: int) -> dict[str, dict[str, float]]:
-    """``{"<day>/<hotkey>": row}`` for every day still wholly inside the window."""
+def rollup(
+    outcomes: Iterable[JobOutcome],
+    now_ms: int,
+    vote_of: Callable[[str], float | None] | None = None,
+) -> dict[str, dict[str, float]]:
+    """``{"<day>/<hotkey>": row}`` for every day still wholly inside the window (``vote_of``: a
+    job's vote, for the vote counters)."""
     cutoff = now_ms - WINDOW_H * HOUR_MS
     rows: dict[str, dict[str, float]] = {}
     for o in outcomes:
         day = day_of(o.ended_ms)
         if day_start(day) < cutoff:
             continue
-        _add(rows.setdefault(f"{day}/{o.hotkey}", _empty()), outcome_row(o))
+        vote = vote_of(o.job) if vote_of is not None and o.passed else None
+        _add(rows.setdefault(f"{day}/{o.hotkey}", _empty()), outcome_row(o, vote))
     return rows
 
 
@@ -180,7 +186,7 @@ class MinerStats:
         uids: Callable[[], Mapping[str, int]] = dict,
         coldkeys: Callable[[], Mapping[str, str]] = dict,
         current: Callable[[], Mapping[str, Any]] | None = None,
-        votes_mode: str = "counted",
+        votes_mode: str = "shadow",
     ) -> None:
         self.desk, self.reviewer = desk, reviewer
         self.uids, self.coldkeys = uids, coldkeys
@@ -189,6 +195,13 @@ class MinerStats:
         self._frozen: dict[str, dict[str, float]] = {}
 
     # -- the rollup ----------------------------------------------------------------------------
+
+    def _vote_of(self, job: str) -> float | None:
+        """A delivered job's vote ``V`` (shown, never scored); None without a reviewer or a vote."""
+        if self.reviewer is None:
+            return None
+        v = self.reviewer.standing_of(job).get("V")
+        return None if v is None else float(v)
 
     def _store(self) -> Any:
         return getattr(self.desk, "store", None)
@@ -203,7 +216,7 @@ class MinerStats:
         """At the hour's close: rewrite the rows of the days still wholly in the window (frozen
         after). Answers how many rows were written."""
         now = self.desk.now_ms() if now_ms is None else now_ms
-        fresh = rollup(self.desk.ledger.outcomes, now)
+        fresh = rollup(self.desk.ledger.outcomes, now, self._vote_of)
         cutoff = now - WINDOW_H * HOUR_MS
         store = self._store()
         old = store.items("miner_day") if store is not None else dict(self._frozen)
@@ -224,7 +237,7 @@ class MinerStats:
         stored = store.items("miner_day") if store is not None else dict(self._frozen)
         cutoff = now_ms - WINDOW_H * HOUR_MS
         rows = {k: v for k, v in stored.items() if day_start(k.split("/", 1)[0]) < cutoff}
-        rows.update(rollup(self.desk.ledger.outcomes, now_ms))
+        rows.update(rollup(self.desk.ledger.outcomes, now_ms, self._vote_of))
         return rows
 
     # -- counters -------------------------------------------------------------------------------
@@ -256,7 +269,7 @@ class MinerStats:
         for o in outcomes:
             if o.hotkey != hotkey or o.ended_ms < since_ms:
                 continue
-            _add(c, outcome_row(o))
+            _add(c, outcome_row(o, self._vote_of(o.job) if o.passed else None))
             if o.kind == "reject" and o.job in passed_by_other:
                 c["overturned"] += 1
         return _finish(c)
@@ -286,20 +299,14 @@ class MinerStats:
         return {
             **FORMULA,
             "votes_mode": self.votes_mode,
-            "constants": {
-                "half_life_h": HALF_LIFE_H,
-                "window_h": WINDOW_H,
-                "immediate": W_IMMEDIATE,
-                "client": W_CLIENT,
-                "trust": TRUST,
-            },
+            "constants": CONSTANTS,
         }
 
     def docs(self, hotkeys: Iterable[str]) -> dict[str, Any]:
         """``{at_ms, formula, miners: {hotkey: doc}}`` for up to :data:`MAX_HOTKEYS` hotkeys."""
         wanted = [h for h in dict.fromkeys(hotkeys) if h][:MAX_HOTKEYS]
         now = self.desk.now_ms()
-        window, weight, quality = self.desk.ledger.snapshot(now)
+        window, weight, average = self.desk.ledger.snapshot(now)
         days = self._days(now)
         uids, cold = dict(self.uids() or {}), dict(self.coldkeys() or {})
         cur = dict(self.current() or {})
@@ -311,7 +318,7 @@ class MinerStats:
             "formula": self.formula(),
             "miners": {
                 hk: self._doc(
-                    hk, now, window, weight, quality, days, uids, cold, vec, total, ranked
+                    hk, now, window, weight, average, days, uids, cold, vec, total, ranked
                 )
                 for hk in wanted
             },
@@ -323,7 +330,7 @@ class MinerStats:
         now: int,
         window: list[JobOutcome],
         weight: Mapping[str, float],
-        quality: Mapping[str, float],
+        average: Mapping[str, float],
         days: Mapping[str, Mapping[str, float]],
         uids: Mapping[str, int],
         cold: Mapping[str, str],
@@ -352,22 +359,11 @@ class MinerStats:
             "blocked_until_ms": int(m.blocked_until_ms) if m else 0,
             "standing": {
                 "weight": round(float(weight.get(hk, 0.0)), 6),
-                "quality": round(float(quality.get(hk, 0.0)), 6),
+                "average": round(float(average.get(hk, 0.0)), 6),
                 "rank": ranked.index(hk) + 1 if hk in ranked else None,
                 "miners": len(ranked),
                 "share": round(vec.get(hk, 0.0) / total, 6) if total else 0.0,
                 "rule": str(self.current().get("rule") or ""),
-                # the remixes of your work delivered in the window: each adds your share of 25% of s
-                "remix_credits": [
-                    {
-                        "job": o.job,
-                        "ended_ms": o.ended_ms,
-                        "s": o.s,
-                        "miners": len(set(o.credit)),
-                    }
-                    for o in window
-                    if hk in o.credit and o.passed
-                ],
             },
             "abuse": {
                 "copies": {
@@ -416,18 +412,7 @@ class MinerStats:
         return out
 
     def _job(self, o: JobOutcome) -> dict[str, Any]:
-        parts = {
-            k: o.parts.get(k, -1.0 if k in ("C", "V") else 0.0)
-            for k in ("I", "E", "C", "w", "V", "u", "B")
-        }
-        votes: dict[str, Any] = {
-            "V": None,
-            "u": 0.0,
-            "u_applied": 0.0,
-            "shadow": True,
-            "count": 0,
-            "items": [],
-        }
+        votes: dict[str, Any] = {"V": None, "count": 0, "items": []}
         if self.reviewer is not None and o.passed:
             from .votes import full_votes  # noqa: PLC0415
 
@@ -441,16 +426,17 @@ class MinerStats:
             "kind": o.kind,
             "on_time": o.on_time,
             "s": o.s,
-            "parts": parts,
+            "parts": dict(o.parts),
             "signals": _signals(o),
             "votes": votes,
         }
 
     def network(self) -> dict[str, Any]:
         """The public leaderboard: every weighted or admitted miner by hotkey -- its share of the
-        current vector, weight, quality, 7-day deliveries, mean stars and mean vote."""
+        current vector, weight (7-day points), average points per job, 7-day deliveries, mean stars
+        and mean vote (shown, never scored)."""
         now = self.desk.now_ms()
-        window, weight, quality = self.desk.ledger.snapshot(now)
+        window, weight, average = self.desk.ledger.snapshot(now)
         cur = dict(self.current() or {})
         vec = {str(k): float(v) for k, v in (cur.get("by_hotkey") or {}).items()}
         total = sum(vec.values())
@@ -460,14 +446,14 @@ class MinerStats:
         for hk in hks:
             mine = [o for o in window if o.hotkey == hk and o.passed]
             stars = [_signals(o)["stars"][-1] for o in mine if _signals(o)["stars"]]
-            votes = [float(o.vote["V"]) for o in mine if o.vote and o.vote.get("V") is not None]
+            votes = [v for v in (self._vote_of(o.job) for o in mine) if v is not None]
             rows.append(
                 {
                     "hotkey": hk,
                     "uid": uids.get(hk),
                     "share": round(vec.get(hk, 0.0) / total, 6) if total else 0.0,
                     "weight": round(float(weight.get(hk, 0.0)), 6),
-                    "quality": round(float(quality.get(hk, 0.0)), 6),
+                    "average": round(float(average.get(hk, 0.0)), 6),
                     "delivered_7d": len(mine),
                     "stars_mean": round(statistics.fmean(stars), 3) if stars else None,
                     "vote_mean": round(statistics.fmean(votes), 4) if votes else None,
@@ -526,7 +512,7 @@ def main(argv: list[str] | None = None) -> int:
     s, w = out["standing"], out["windows"]
     print(  # noqa: T201
         f"{out['hotkey']}  rank {s['rank']} of {s['miners']}  share {100 * s['share']:.2f}%  "
-        f"weight {s['weight']:.4f}  quality {s['quality']:.3f}\n"
+        f"weight {s['weight']:.4f}  average {s['average']:.3f}\n"
         + "\n".join(
             f"{name:>8}: delivered {c['delivered']}, assigned {c['assigned']}, not finished "
             f"{c['not_finished']}, gate failed {c['gate_failed']}, rejected {c['rejected']}, "

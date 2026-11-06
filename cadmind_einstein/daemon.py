@@ -338,10 +338,9 @@ def parser() -> argparse.ArgumentParser:
     ap.add_argument(
         "--votes",
         choices=("off", "shadow", "counted", "live"),
-        default="counted",
-        help="our validator's quality votes (DESIGN.md section 13): counted scores them (u 0.4,"
-        " the default; 'live' is its old name); shadow records and publishes them without"
-        " scoring them",
+        default="shadow",
+        help="our validator's quality votes (DESIGN.md section 13): shadow (the default) records"
+        " and publishes them; they never score (counted and live are old names of shadow)",
     )
     ap.add_argument(
         "--judge",
@@ -601,7 +600,6 @@ def main(argv: list[str] | None = None) -> int:
             alert=_log,
         )
         reviewer = Reviewer(
-            ledger,
             platform,
             model,
             me=me,
@@ -617,7 +615,6 @@ def main(argv: list[str] | None = None) -> int:
         desk.on_delivered = reviewer.enqueue
         desk.judge = reviewer.judge
         desk.practice_book.reviewer = reviewer  # practice results are voted as deliveries are
-        reviewer.apply_all()  # the recorded votes, under this mode (a switch counts at once)
         _log(
             f"votes {a.votes}: "
             + (

@@ -17,18 +17,19 @@ the metagraph):
 - ``POST /v1/practice`` -- a practice job on a public brief (never scored; :mod:`.practice`), and
   ``GET /v1/practice`` (signed, no body) -- its practice results, grouped by the ``setup`` label
   its submits carried (``submit``'s optional ``setup``);
-- ``POST /v1/miners/receipt`` -- its jobs, their scores, its weight and quality, and its recent
-  attempts that did not pass with why (``failures``: a gate failure says what the gate found);
+- ``POST /v1/miners/receipt`` -- its jobs, their points, its weight (the sum of its points over 7
+  days) and average (points per job over 7 days), and its recent attempts that did not pass with
+  why (``failures``: a gate failure says what the gate found);
 - ``POST /v1/miners/stats`` -- everything that affects its weight (:mod:`.stats`): standing and
   share, counters over 24 hours, 7 days and its lifetime (and its coldkey's), its last 100 jobs
-  with their score parts, the client's signals and the validators' votes with their evidence, and
-  the weight formula.
+  with what decided their points, the client's signals and the validators' votes with their
+  evidence, and the weight rule.
 
 The platform and the operator (Bearer): ``GET /v1/capacity`` (active and free admitted miners, the
 median job time: the platform's single queue computes positions and ETAs), ``POST /v1/cancel {job}``
-(a claimed job: not charged), ``POST /v1/signals {job, kind, stars?, trust}`` (the client's
-download, stars or change request; ``kind: forget`` when the client deleted the job: its
-calibration archive goes), ``GET /v1/jobs/{job}``, ``GET /v1/scores``,
+(a claimed job: not charged), ``POST /v1/signals {job, kind, stars?, quality?}`` (the client's
+download, stars, change request or refund; a ``trust`` is ignored; ``kind: forget`` when the
+client deleted the job: its calibration archive goes), ``GET /v1/jobs/{job}``, ``GET /v1/scores``,
 ``POST /v1/weights/close`` (the hour's report now: dry runs), ``GET /v1/chain`` (our stake
 share, kappa, the weights path), ``GET /v1/stats/miners?hotkeys=a,b`` (the stats of up to 20
 hotkeys: the platform's miner dashboard). Onboarding (the operator; ``cadmind-einstein-operator``):
@@ -538,12 +539,12 @@ def serve(
                     else:
                         self._send(200, stats.docs(hotkeys))
                 elif self.path == "/v1/scores":
-                    jobs, weight, quality = desk.ledger.snapshot(desk.now_ms())
+                    jobs, weight, average = desk.ledger.snapshot(desk.now_ms())
                     self._send(
                         200,
                         {
                             "weight": weight,
-                            "quality": quality,
+                            "average": average,
                             "jobs": [asdict(o) for o in jobs[-200:]],
                             "miners": [asdict(m) for m in desk.miners.values()],
                             "rejections": desk.telemetry(),
@@ -671,14 +672,14 @@ def serve(
                         else:
                             self._send(200, {**stats.docs([hk])["miners"][hk], "formula": stats.formula()})
                     elif self.path == "/v1/miners/receipt":
-                        jobs, weight, quality = desk.ledger.snapshot(desk.now_ms())
+                        jobs, weight, average = desk.ledger.snapshot(desk.now_ms())
                         mine = [asdict(o) for o in jobs if o.hotkey == hk][-100:]
                         self._send(
                             200,
                             {
                                 "hotkey": hk,
                                 "weight": weight.get(hk, 0.0),
-                                "quality": quality.get(hk, 0.0),
+                                "average": average.get(hk, 0.0),
                                 "jobs": mine,
                                 # its recent attempts that did not pass, and why
                                 "failures": desk.failures(hk),

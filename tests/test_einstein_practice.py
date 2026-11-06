@@ -1,6 +1,6 @@
 """Practice jobs: a miner practises on a public brief, gated as any job, voted beside the delivered
 version (whose vote is cached per judge), reported to the platform -- and never in the ledger,
-quality, weights or routing, never handed to another miner, never handed out while a client job
+points, weights or routing, never handed to another miner, never handed out while a client job
 the miner could take waits. And the platform's refusals of a result for what the builder did
 (``parts_dropped``, ``change_unfounded``): the attempt fails, counted, and the job goes to another
 miner with the platform's words in the builder's failures."""
@@ -100,7 +100,6 @@ class Rig(unittest.TestCase):
         )
         self.model = FakeModel()
         self.reviewer = Reviewer(
-            self.ledger,
             self.p,
             self.model,
             me=VALIDATOR.ss58_address,

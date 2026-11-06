@@ -3,11 +3,12 @@
 Miners run their own agents and build client devices through the hosted CADmind Watt tools (MCP or
 REST). The validator gives each client job to one miner (:mod:`.desk`); its output passes the
 hosted Watt gate, or the round ends "not finished" with its project kept for a round that continues
-it. A job is scored by the gate, efficiency, timeliness, the client's own reaction and the
-validators' quality vote (a light base rating, counted with ``u = 0.4``) -- no model decides
-delivery; model votes only score miners (:mod:`.scoring`, :mod:`.review`, :mod:`.votes`) -- into
-hourly weights that are never burned and never empty. Miners read what affects their weight in
-:mod:`.stats`. Agent keys are bound to hotkeys and sealed to the miner (:mod:`.sealing`); job
+it. A delivered job scores by its client's latest reaction (0.5 untouched; 1 downloaded or rated
+3-5 stars; 0 rated 1-2 stars or refunded for its quality); anything not delivered scores 0
+(:mod:`.scoring`). A miner's weight is the sum of its points over 7 days, set hourly, never burned
+and never empty. The validators' model votes (:mod:`.review`, :mod:`.votes`) are recorded and
+published for calibration; no model decides a delivery, a score, a weight or a route. Miners read
+what affects their weight in :mod:`.stats`. Agent keys are bound to hotkeys and sealed to the miner (:mod:`.sealing`); job
 workspaces are granted, frozen and forked on the platform (:mod:`.platform`); copies are caught
 (:mod:`.similarity`); state is durable (:mod:`.store`); the chain side is :mod:`.chain`, the HTTP
 face :mod:`.service`, the process :mod:`.daemon`; the command-line conventions shared by the

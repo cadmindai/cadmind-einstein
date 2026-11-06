@@ -499,9 +499,13 @@ class TestSecondOpinions(unittest.TestCase):
         desk.reject(C, "j1", "not-capable", "too hard for me too")
         self.assertTrue(desk.wait_idle())
         self.assertEqual(desk.status("j1")["result"]["label"], "declined")  # two owners
-        self.assertEqual(desk.ledger.outcomes, [])  # an independent "nobody could": no 0s
+        # every hand-back scores 0 at once (owner 2026-11-06: no second-opinion exception)
+        self.assertEqual(
+            sorted((o.hotkey, o.s) for o in desk.ledger.outcomes),
+            sorted([(A, 0.0), (B, 0.0), (C, 0.0)]),
+        )
 
-    def test_held_failures_count_when_one_owner_ran_the_job_out(self) -> None:
+    def test_failures_count_when_one_owner_ran_the_job_out(self) -> None:
         desk = self.make(second_opinion=SecondOpinion(wait_s=0.0), max_attempts=2)
         self.p.queue.append({"job": "j1", "brief": "A hard device."})
         self.only(desk, A)
@@ -529,7 +533,7 @@ class TestSecondOpinions(unittest.TestCase):
         desk.reject(B, "j1", "not-capable", "too hard")
         self.assertTrue(desk.wait_idle())
         self.assertEqual(desk.status("j1")["result"]["label"], "declined")
-        self.assertEqual(desk.ledger.outcomes, [])
+        self.assertEqual(sorted(o.s for o in desk.ledger.outcomes), [0.0, 0.0])
 
     def test_rejections_are_summed_per_coldkey(self) -> None:
         desk = self.make()

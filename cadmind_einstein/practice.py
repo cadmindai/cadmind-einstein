@@ -7,7 +7,7 @@ gallery project's brief, exactly as its gallery page shows it, which the miner h
 on -- and runs it as a job of kind ``practice``: assigned to that miner alone, ``no_questions``
 (the gallery shows no client answers, so the builder decides every open question), granted on the
 platform's practice lane and quota, gated as any job (the validator's own guard draw). It is
-**never** in the ledger, the miner's quality, the weights or the routing, and never handed out
+**never** in the ledger, the miner's points, the weights or the routing, and never handed out
 while a client job the miner could take waits.
 
 When a practice job ends, the desk hands its record here (:meth:`PracticeBook.ended`, store
@@ -139,7 +139,7 @@ class PracticeBook:
             "open": list(open_jobs or []),
             "results": results,
             "by_setup": by_setup,
-            "note": "practice is never scored: it changes no weight, quality, routing or pay. The "
+            "note": "practice is never scored: it changes no points, weight, routing or pay. The "
             "delivered version had its client's answers; a practice run has none. Switch a client "
             "setup only after several results, and watch its first client jobs.",
         }

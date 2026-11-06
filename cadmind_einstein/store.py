@@ -1,8 +1,8 @@
 """The validator's durable state (DESIGN.md): one SQLite file in WAL mode, written atomically.
 
-Everything a restart must not lose lives here -- the jobs with their attempts and held failures, the
-miners (key, admission, blocks, last poll), the scored outcomes with their client signals (the
-decayed history is recomputed from them), the copy check's recent outputs, the rejection
+Everything a restart must not lose lives here -- the jobs with their attempts, the miners (key,
+admission, blocks, last poll, wait clock), the outcomes with their client signals (their points are
+recomputed from them at every start), the copy check's recent outputs, the rejection
 telemetry, the results not yet taken by the platform, the keys still to revoke, the last hour
 closed and the commitments still to send.
 

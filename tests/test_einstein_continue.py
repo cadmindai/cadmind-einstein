@@ -188,7 +188,7 @@ class TestTheRoundEnds(_Desk):
         self.assertEqual(self.p.grants[-1]["seed"], "")
         self.assertEqual(len(self.p.grants), 2)
 
-    def test_a_rejection_then_a_worked_failure_ends_not_finished_nobody_penalised(self) -> None:
+    def test_a_rejection_then_a_worked_failure_ends_not_finished_each_scoring_zero(self) -> None:
         self.enqueue({"job": "n5", "brief": "A shelf bracket."})
         rejecter, _ = self.holder()
         self.desk.reject(rejecter, "n5", "not-capable", "beyond what can be checked")
@@ -198,8 +198,11 @@ class TestTheRoundEnds(_Desk):
         res = self.desk.status("n5")["result"]
         self.assertEqual(res["label"], "not finished")
         self.assertEqual(len(res["messages"]), 1)
-        # two owners' opinions: the held rejection and failure are dropped, as for today's ending
-        self.assertEqual(self.ledger.outcomes, [])
+        # every failed attempt is 0, at once (no second-opinion exception)
+        self.assertEqual(
+            sorted((o.hotkey, o.kind, o.s) for o in self.ledger.outcomes),
+            sorted([(rejecter, "reject", 0.0), (builder, "gate", 0.0)]),
+        )
 
 
 class TestRejectionsUnchanged(_Desk):
@@ -217,7 +220,9 @@ class TestRejectionsUnchanged(_Desk):
         self.tick()
         res = self.desk.status("r1")["result"]
         self.assertEqual((res["label"], res["charge"]), ("declined", False))
-        self.assertEqual(self.ledger.outcomes, [])
+        self.assertEqual(
+            sorted((o.hotkey, o.s) for o in self.ledger.outcomes), sorted([(A, 0.0), (second, 0.0)])
+        )
 
 
 class TestContinuation(_Desk):

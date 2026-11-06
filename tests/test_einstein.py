@@ -1,5 +1,5 @@
-"""Einstein (one miner per job): the sealed agent key, the per-job score and its
-gate, the hourly EMA with no owner weight, the recompute auditor, and the desk -- routing,
+"""Einstein (one miner per job): the sealed agent key, the per-job points (the owner's rule), the
+7-day weights with no owner weight, the recompute auditor, and the desk -- routing by wait,
 acceptance, the Watt gate, reassignment from scratch up to the cap, "didn't finish" not charged,
 copies -- against an in-memory platform."""
 
@@ -27,6 +27,7 @@ from cadmind_einstein.scoring import (
     HOUR_MS,
     JobOutcome,
     Ledger,
+    outcome_of,
     recompute,
     score_all,
     standing,
@@ -249,126 +250,174 @@ class TestSealing(unittest.TestCase):
 
 
 def passing(job: str, hk: str, *, ended_ms: int = 0, **kw: Any) -> JobOutcome:
-    facts: dict[str, Any] = {"compute_s": 600, "wall_s": 1800, **kw}
+    facts: dict[str, Any] = {"wall_s": 1800, **kw}
     return JobOutcome(job=job, hotkey=hk, ended_ms=ended_ms, deliverable=True, kind="pass", **facts)
 
 
-class TestPositiveSignals(unittest.TestCase):
-    def s(self, *signals: dict, vote: float = 0.3) -> float:
-        job = JobOutcome(
-            job="a", hotkey="h", ended_ms=0, deliverable=True, on_time=True, signals=list(signals),
-            vote={"V": vote, "u": 0.4},
+def points(*signals: dict[str, Any]) -> float:
+    """A delivered job's points after the client's ``signals``, in order."""
+    return score_all([passing("a", A, signals=list(signals))])[0].s
+
+
+DOWNLOAD = {"kind": "download"}
+
+
+def stars(n: int) -> dict[str, Any]:
+    return {"kind": "stars", "stars": n}
+
+
+QUALITY_REFUND = {"kind": "refund", "quality": True}
+
+
+class TestTheRule(unittest.TestCase):
+    """The owner's rule (2026-11-06), replayed one line at a time."""
+
+    def test_an_unrated_delivery_is_half_a_point(self) -> None:
+        self.assertEqual(points(), 0.5)
+
+    def test_a_download_is_one(self) -> None:
+        self.assertEqual(points(DOWNLOAD), 1.0)
+
+    def test_three_four_or_five_stars_are_one(self) -> None:
+        for n in (3, 4, 5):
+            self.assertEqual(points(stars(n)), 1.0, n)
+
+    def test_one_or_two_stars_are_zero(self) -> None:
+        for n in (1, 2):
+            self.assertEqual(points(stars(n)), 0.0, n)
+
+    def test_a_quality_refund_is_zero_and_another_refund_is_not_scored(self) -> None:
+        self.assertEqual(points(QUALITY_REFUND), 0.0)
+        self.assertEqual(points(DOWNLOAD, QUALITY_REFUND), 0.0)
+        self.assertEqual(points({"kind": "refund", "quality": False}), 0.5)
+        self.assertEqual(points(DOWNLOAD, {"kind": "refund", "quality": False}), 1.0)
+
+    def test_the_latest_signal_decides(self) -> None:
+        self.assertEqual(points(DOWNLOAD, stars(1)), 0.0)  # a download, then 1 star
+        self.assertEqual(points(stars(1), stars(5)), 1.0)  # 1 star, then 5
+        self.assertEqual(points(stars(2), DOWNLOAD), 1.0)
+        self.assertEqual(points(QUALITY_REFUND, stars(4)), 1.0)
+
+    def test_changes_reruns_and_trust_change_nothing(self) -> None:
+        self.assertEqual(points({"kind": "change"}), 0.5)
+        self.assertEqual(points({"kind": "rerun"}), 0.5)
+        self.assertEqual(points(DOWNLOAD, {"kind": "change"}, {"kind": "rerun"}), 1.0)
+        for trust in ("free", "paid"):
+            self.assertEqual(points({**stars(2), "trust": trust}), 0.0)
+            self.assertEqual(points({**DOWNLOAD, "trust": trust}), 1.0)
+
+    def test_every_attempt_that_does_not_deliver_is_zero(self) -> None:
+        for kind in ("gate", "timeout", "reject", "refused"):
+            o = JobOutcome(job="f", hotkey=A, ended_ms=0, deliverable=False, kind=kind)
+            self.assertEqual(score_all([o])[0].s, 0.0, kind)
+            self.assertEqual(o.parts, {"failed": kind})
+        copy = passing("c", A, copy_of="other", signals=[DOWNLOAD])
+        self.assertEqual(score_all([copy])[0].s, 0.0)  # a copy, even downloaded
+        failed = JobOutcome(job="g", hotkey=A, ended_ms=0, deliverable=False, signals=[DOWNLOAD])
+        self.assertEqual(score_all([failed])[0].s, 0.0)
+
+    def test_a_job_older_than_seven_days_drops_out(self) -> None:
+        now = 30 * 24 * HOUR_MS
+        jobs = score_all(
+            [
+                passing("in", A, ended_ms=now - 7 * 24 * HOUR_MS, signals=[DOWNLOAD]),  # the edge
+                passing("out", A, ended_ms=now - 7 * 24 * HOUR_MS - 1, signals=[DOWNLOAD]),
+                passing("new", A, ended_ms=now),
+            ]
         )
-        return score_all([job])[0].s
+        weight, average = standing(jobs, now)
+        self.assertEqual(weight[A], 1.5)  # flat: no decay inside the window
+        self.assertEqual(average[A], 0.75)
+        ledger = Ledger()
+        for o in jobs:
+            ledger.add(o)
+        window, weight, _ = ledger.snapshot(now)
+        self.assertEqual(({o.job for o in window}, weight[A]), ({"in", "new"}, 1.5))
+        self.assertEqual({o.job for o in ledger.outcomes}, {"in", "new"})  # forgotten
 
-    def test_a_download_or_four_stars_never_lower_a_score(self) -> None:
-        for vote in (0.0, 0.3, 0.65, 1.0):
-            none = self.s(vote=vote)
-            for signal in ({"kind": "download", "trust": "paid"}, {"kind": "stars", "stars": 4, "trust": "paid"}):
-                self.assertGreaterEqual(self.s(signal, vote=vote), none, (vote, signal))
-
-    def test_low_stars_and_changes_still_lower_it(self) -> None:
-        none = self.s(vote=1.0)
-        self.assertLess(self.s({"kind": "stars", "stars": 3, "trust": "paid"}, vote=1.0), none)
-        self.assertLess(self.s({"kind": "change", "trust": "paid"}, vote=1.0), none)
-        self.assertLess(
-            self.s({"kind": "download", "trust": "paid"}, {"kind": "change", "trust": "paid"}, vote=1.0), none
-        )
-
-
-class TestScoring(unittest.TestCase):
-    def test_an_unrated_job_counts_on_its_immediate_part_and_signals_move_it(self) -> None:
-        plain = score_all([passing("a", A)])[0]
-        self.assertAlmostEqual(
-            plain.s, 1.0
-        )  # gate passed, efficient (no history), on time; no signal
-        late = score_all([passing("b", A, on_time=False)])[0]
-        self.assertAlmostEqual(late.s, 0.8)
-        failed = score_all([JobOutcome(job="c", hotkey=A, ended_ms=0, deliverable=False)])[0]
-        self.assertEqual(failed.s, 0.0)
-
-        def with_signals(*sig: dict[str, Any]) -> float:
-            return score_all([passing("d", A, signals=list(sig))])[0].s
-
-        self.assertAlmostEqual(with_signals({"kind": "stars", "stars": 1, "trust": "paid"}), 0.4)
-        self.assertAlmostEqual(with_signals({"kind": "stars", "stars": 5, "trust": "paid"}), 1.0)
-        free_one_star = with_signals({"kind": "stars", "stars": 1, "trust": "free"})
-        self.assertGreater(free_one_star, 0.9)  # a free account barely moves it
-        self.assertAlmostEqual(
-            with_signals({"kind": "download", "trust": "paid"}),
-            1.0,  # a positive signal never lowers a score: here C counts as max(0.75, B = 1)
-        )
-        rerun = with_signals(
-            {"kind": "download", "trust": "paid"}, {"kind": "rerun", "trust": "paid"}
-        )
-        self.assertLess(rerun, with_signals({"kind": "download", "trust": "paid"}))
-
-    def test_efficiency_is_against_similar_jobs(self) -> None:
-        jobs = [passing(f"m{i}", B) for i in range(6)]
-        slow = passing("slow", A, compute_s=1200, wall_s=3600)
-        score_all([*jobs, slow])
-        self.assertAlmostEqual(
-            slow.parts["E"], 0.5 * (600 / 1200) + 0.5 * (1800 / 3600) + 0.0, places=3
-        )
-        self.assertLess(slow.s, jobs[0].s)
-
-    def test_weights_from_history_genesis_and_never_the_owner(self) -> None:
+    def test_weights_are_proportional_to_points(self) -> None:
         uids = {OWNER: 0, A: 1, B: 2, C: 3}
         now = 10 * HOUR_MS
         jobs = score_all(
             [
-                passing("1", A, ended_ms=now - HOUR_MS),
-                JobOutcome(job="2", hotkey=B, ended_ms=now, deliverable=False),
+                passing("a1", A, ended_ms=now, signals=[DOWNLOAD]),
+                passing("a2", A, ended_ms=now, signals=[stars(5)]),
+                passing("a3", A, ended_ms=now - 6 * 24 * HOUR_MS, signals=[stars(4)]),
+                passing("a4", A, ended_ms=now),  # 0.5
+                passing("b1", B, ended_ms=now, signals=[DOWNLOAD]),
+                passing("b2", B, ended_ms=now),  # 0.5
+                passing("c1", C, ended_ms=now, signals=[stars(1)]),
+                JobOutcome(job="c2", hotkey=C, ended_ms=now, deliverable=False, kind="gate"),
             ]
         )
-        weight, _quality = standing(jobs, now)
-        self.assertGreater(weight[A], 0)
-        self.assertEqual(weight[B], 0.0)
+        weight, _ = standing(jobs, now)
+        self.assertEqual(weight, {A: 3.5, B: 1.5, C: 0.0})
         vec, rule = vector(
             weight, uids, owner_hotkey=OWNER, admitted=[A, B, C, OWNER], reachable=[A, B, C]
         )
-        self.assertEqual((vec, rule), ([(1, 65_535)], "history"))
-        # an hour later, no new work: still emitted from history
-        weight2, _ = standing(jobs, now + 5 * HOUR_MS)
-        self.assertEqual(
-            vector(weight2, uids, owner_hotkey=OWNER, admitted=[A, B], reachable=[A, B])[0],
-            [(1, 65_535)],
-        )
-        # genesis by hotkey: no history at all -- equal among admitted, reachable miners; never
-        # the owner
+        self.assertEqual(rule, "history")
+        got = dict(vec)
+        self.assertEqual(got[1], 65_535)
+        self.assertEqual(got[2], round(65_535 * 1.5 / 3.5))
+        self.assertNotIn(3, got)  # no points, no weight
+        self.assertNotIn(0, got)  # never the owner
+
+    def test_genesis_when_nobody_has_points(self) -> None:
+        uids = {OWNER: 0, A: 1, B: 2, C: 3}
         vec, rule = vector(
-            {},
-            uids,
-            owner_hotkey=OWNER,
-            admitted=[A, B, OWNER],
-            reachable=[A, B, OWNER],
+            {}, uids, owner_hotkey=OWNER, admitted=[A, B, OWNER], reachable=[A, B, OWNER],
             genesis="hotkey",
         )
         self.assertEqual(vec, [(1, 65_535), (2, 65_535)])
         self.assertTrue(rule.startswith("genesis"))
+        # delivered: only miners with a delivered client job, even when it earned 0 points
+        vec, rule = vector(
+            {A: 0.0}, uids, owner_hotkey=OWNER, admitted=[A, B], reachable=[A, B], proven=[A]
+        )
+        self.assertEqual(vec, [(1, 65_535)])
+        self.assertEqual(rule, "genesis: equal per coldkey among delivered miners")
         self.assertEqual(vector({}, uids, owner_hotkey=OWNER, admitted=[], reachable=[A])[0], [])
 
     def test_reports_recompute_and_restart(self) -> None:
         with tempfile.TemporaryDirectory() as d:
             ledger = Ledger(report_dir=Path(d))
             ledger.add(passing("1", A, ended_ms=1000))
-            ledger.add(JobOutcome(job="2", hotkey=B, ended_ms=2000, deliverable=False))
-            self.assertIsNotNone(
-                ledger.signal("1", {"kind": "stars", "stars": 4, "trust": "paid", "at_ms": 3000})
-            )
-            self.assertIsNone(
-                ledger.signal("2", {"kind": "stars", "stars": 5, "trust": "paid"})
-            )  # not delivered
+            ledger.add(passing("3", B, ended_ms=1000))
+            ledger.add(JobOutcome(job="2", hotkey=B, ended_ms=2000, deliverable=False, kind="gate"))
+            self.assertEqual(ledger.signal("1", {**stars(4), "trust": "paid", "at_ms": 3000}), 1.0)
+            self.assertIsNone(ledger.signal("2", stars(5)))  # not delivered
             rep = ledger.report(
                 4000, {OWNER: 0, A: 1, B: 2}, owner_hotkey=OWNER, admitted=[A, B], reachable=[A, B]
             )
+            self.assertEqual(rep["weight"], {A: 1.0, B: 0.5})
+            self.assertEqual(rep["average"], {A: 1.0, B: 0.25})
+            self.assertNotIn("quality", rep)
+            self.assertEqual(rep["vector"], [[1, 65_535], [2, round(65_535 / 2)]])
             audit = recompute(json.loads(next(Path(d).glob("hour-*.json")).read_text()))
             self.assertTrue(audit["matches_published"])
             self.assertEqual(audit["mismatches"], [])
-            self.assertEqual(rep["vector"], [[1, 65_535]])
             again = Ledger(report_dir=Path(d))
-            self.assertEqual(len(again.outcomes), 2)
-            self.assertEqual(again.outcomes[0].signals[0]["stars"], 4)
+            self.assertEqual(len(again.outcomes), 3)
+            self.assertNotIn("trust", again.outcomes[0].signals[0])  # never kept
+            self.assertEqual(again.snapshot(4000)[1], {A: 1.0, B: 0.5})
+
+    def test_a_restart_rescores_older_rows_by_this_rule(self) -> None:
+        """Rows an older release stored (its efficiency facts, trust, vote, remix credit) load and
+        score by this rule alone: no miner keeps a mix of old and new points."""
+        old = {
+            "job": "j", "hotkey": A, "ended_ms": 1000, "deliverable": True, "kind": "pass",
+            "size": "short", "compute_s": 9.0, "effort": "max", "credit": [B],
+            "vote": {"V": 0.0, "u": 0.4}, "s": 0.123, "parts": {"I": 0.9},
+            "signals": [{"kind": "download", "trust": "free", "at_ms": 2000}],
+        }
+        with tempfile.TemporaryDirectory() as d:
+            report = {"jobs": [old], "vector_by_hotkey": {}}
+            (Path(d) / "hour-1.json").write_text(json.dumps(report))
+            ledger = Ledger(report_dir=Path(d))
+            [o] = ledger.outcomes
+            self.assertEqual((o.s, o.parts), (1.0, {"signal": "download"}))
+            self.assertEqual(ledger.snapshot(3000)[1], {A: 1.0})  # B gets no remix credit
+        self.assertEqual(outcome_of(old).signals, [{"kind": "download", "at_ms": 2000}])
 
 
 class TestDesk(unittest.TestCase):
@@ -423,7 +472,7 @@ class TestDesk(unittest.TestCase):
         st = wait_state(self.desk, "j1", ("done",))
         self.assertEqual((st["result"]["label"], st["result"]["charge"]), ("delivered", True))
         self.assertTrue(self.p.ws[w["workspace"]]["frozen"])
-        self.assertAlmostEqual(self.ledger.outcomes[-1].s, 1.0)  # unrated: its immediate part
+        self.assertEqual(self.ledger.outcomes[-1].s, 0.5)  # delivered, the client silent so far
         self.tick()
         self.assertEqual(self.p.completed["j1"]["label"], "delivered")  # back to the platform
 
@@ -472,7 +521,7 @@ class TestDesk(unittest.TestCase):
         self.assertEqual(self.scored()[first], [0.0])
         self.assertEqual(self.p.completed["j2"]["label"], "not finished")
 
-    def test_two_rejections_decline_the_job_with_the_messages_and_penalise_nobody(self) -> None:
+    def test_two_rejections_decline_the_job_with_the_messages_and_each_scores_zero(self) -> None:
         self.poll(A, B, C)
         self.enqueue({"job": "j7", "brief": "A suppressor for my rifle."})
         r1 = self.reject("j7")
@@ -483,7 +532,7 @@ class TestDesk(unittest.TestCase):
         self.assertEqual((res["label"], res["charge"], res["review"]), ("declined", False, True))
         self.assertEqual(len(res["messages"]), 2)
         self.assertEqual(res["messages"][0]["category"], "not-allowed")
-        self.assertEqual(self.ledger.outcomes, [])
+        self.assertEqual(self.scored(), {r1: [0.0], r2: [0.0]})  # a hand-back is 0, at once
         self.assertEqual(self.desk.telemetry()[r1]["rejected"], 1)
 
     def test_needs_client_is_no_rejection(self) -> None:
@@ -566,24 +615,61 @@ class TestDesk(unittest.TestCase):
         )
         self.assertTrue(all(w["job"] is None for w in self.poll(A, B, C).values()))
 
-    def test_the_router_prefers_the_better_miner_and_still_explores(self) -> None:
-        for hk, good in ((A, True), (B, False), (C, False)):
-            for i in range(6):
-                self.ledger.add(
-                    JobOutcome(
-                        job=f"{hk}{i}", hotkey=hk, ended_ms=self.desk.now_ms(), deliverable=good
-                    )
-                )
-        picks = {A: 0, B: 0, C: 0}
+    def free_at(self, **clocks: int) -> None:
+        for hk, ms in clocks.items():
+            self.desk.miners[{"A": A, "B": B, "C": C}[hk]].free_ms = ms
+
+    def test_the_router_gives_the_job_to_the_longest_waiting_miner(self) -> None:
         from cadmind_einstein.desk import Job
 
-        for _ in range(400):
-            self.poll(A, B, C)
-            m = self.desk.route(Job(job="x", brief="b"))
-            assert m is not None
-            picks[m.hotkey] += 1
-        self.assertGreater(picks[A], picks[B] + picks[C])
-        self.assertGreater(picks[B] + picks[C], 20)
+        self.poll(A, B, C)
+        self.free_at(A=3000, B=1000, C=2000)
+        self.assertEqual(self.desk.route(Job(job="x", brief="b")).hotkey, B)  # type: ignore[union-attr]
+        # scores play no part: C with every point still waits its turn behind B
+        for i in range(6):
+            now = self.desk.now_ms()
+            self.ledger.add(passing(f"c{i}", C, ended_ms=now, signals=[{"kind": "download"}]))
+        self.assertEqual(self.desk.route(Job(job="y", brief="b")).hotkey, B)  # type: ignore[union-attr]
+        # a miner with no assignment yet has waited longest of all
+        self.free_at(B=5000)
+        self.desk.miners[A].free_ms = 0
+        self.assertEqual(self.desk.route(Job(job="z", brief="b")).hotkey, A)  # type: ignore[union-attr]
+
+    def test_jobs_go_round_the_line_and_a_hand_back_goes_to_the_back(self) -> None:
+        self.poll(A, B, C)
+        self.free_at(A=1, B=2, C=3)
+        self.enqueue({"job": "w1", "brief": "A wall hook."})
+        hk, _ = self.assigned()
+        self.assertEqual(hk, A)
+        self.clock.t += 10
+        self.desk.reject(A, "w1", "not-capable", "not for me")  # A hands it back: back of the line
+        self.assertEqual(self.desk.miners[A].free_ms, self.desk.now_ms())
+        self.poll(A, B, C)
+        self.tick()
+        self.assertEqual(self.assigned()[0], B)  # w1 goes on to B (A tried it)
+        self.enqueue({"job": "w2", "brief": "A shelf."})
+        self.assertEqual(self.desk.jobs["w2"].attempts[-1].hotkey, C)  # C waited longer than A
+        self.desk.reject(C, "w2", "not-capable", "no")
+        self.poll(A, B, C)
+        self.tick()
+        self.assertEqual(self.desk.jobs["w2"].attempts[-1].hotkey, A)  # A is next: B is busy
+
+    def test_a_revision_prefers_its_builder_over_the_line(self) -> None:
+        from cadmind_einstein.desk import Job
+
+        self.poll(A, B, C)
+        self.free_at(A=1, B=2, C=3)
+        self.assertEqual(self.desk.route(Job(job="x", brief="b", prefer=C)).hotkey, C)  # type: ignore[union-attr]
+        self.assertEqual(self.desk.route(Job(job="x", brief="b")).hotkey, A)  # type: ignore[union-attr]
+
+    def test_the_judges_vote_changes_nothing(self) -> None:
+        """Votes are recorded elsewhere (:mod:`.votes`): the ledger has no way to take one, and a
+        vote stored on an older row is dropped."""
+        self.assertFalse(hasattr(self.ledger, "vote"))
+        o = outcome_of({"job": "v", "hotkey": A, "ended_ms": 0, "deliverable": True, "kind": "pass",
+                        "vote": {"V": 0.0, "u": 0.4}})
+        self.assertEqual(score_all([o])[0].s, 0.5)
+        self.assertFalse(hasattr(o, "vote"))
 
     def test_only_admitted_miners_get_client_jobs_and_the_entry_test_admits(self) -> None:
         for hk in (A, B, C):
@@ -677,9 +763,11 @@ class TestDesk(unittest.TestCase):
         self.desk.submit(hk, "s1", w["workspace"], "d")
         wait_state(self.desk, "s1", ("done",))
         out = self.desk.signal("s1", {"kind": "stars", "stars": 2, "trust": "paid"})
-        self.assertAlmostEqual(out["score"], 0.4 + 0.6 * 0.25)
+        self.assertEqual(out["score"], 0.0)
+        self.assertEqual(self.desk.signal("s1", {"kind": "download"})["score"], 1.0)  # the latest
         self.enqueue({"job": "s2", "brief": "A wall hook.", "rerun_of": "s1", "trust": "paid"})
-        self.assertLess(self.ledger.outcomes[0].s, out["score"])  # a re-run is a mild negative
+        self.assertEqual(self.ledger.outcomes[0].s, 1.0)  # a re-run is recorded, not scored
+        self.assertEqual(self.ledger.outcomes[0].signals[-1]["kind"], "rerun")
         self.poll(A, B, C)
         self.tick()
         nxt = [h for h, x in self.poll(A, B, C).items() if x["job"] == "s2"]
@@ -936,11 +1024,11 @@ def test_every_job_has_one_120_minute_deadline() -> None:
 
 
 def test_an_older_record_with_an_effort_still_loads() -> None:
-    """Jobs and outcomes saved before effort levels were removed carry ``effort``; it is dropped."""
+    """Jobs and outcomes saved by older releases carry ``effort`` (and jobs held failures,
+    outcomes an efficiency bucket); they are dropped."""
     from cadmind_einstein.desk import _job_from
-    from cadmind_einstein.scoring import _job
 
     o = {"job": "j", "hotkey": "h", "ended_ms": 1, "effort": "max", "size": "small"}
     job = _job_from({"job": "j", "brief": "b", "effort": "low", "pending": [o]})
-    assert job.pending[0].bucket == "small"
-    assert _job(o).bucket == "small"
+    assert not hasattr(job, "pending")
+    assert outcome_of(o).hotkey == "h"

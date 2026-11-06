@@ -1,9 +1,9 @@
 """Quality votes (DESIGN.md section 13) and miner stats (section 12): the device judge in the vote
 (cadmind-judge/1.2b, rate mode; the judge itself is tests/test_einstein_judge.py),
 prompt-injection measures, the bundle's digests, the vote's signature and its public form (vote/2
-and the v1 votes still in the window), the average across validators, our reviewer in shadow and
-counted, the spend cap, refunds as signals, the never-empty vector, the stats routes and the
-lifetime rollup. No model is ever called: the model is a fake."""
+and the v1 votes still in the window), the average across validators, our reviewer (its votes
+recorded and published, never scored), the spend cap, refunds as signals, the never-empty vector,
+the stats routes and the lifetime rollup. No model is ever called: the model is a fake."""
 
 from __future__ import annotations
 
@@ -31,7 +31,6 @@ from cadmind_einstein.models import Conversation, Prices, Reply, Spend
 from cadmind_einstein.platform import PlatformError
 from cadmind_einstein.review import (
     BUNDLE_FORMAT,
-    U_MAX,
     VOTE_PROTOCOL,
     WITHHELD,
     BundleError,
@@ -229,47 +228,32 @@ def passing(job: str, hk: str, *, ended_ms: int = 0, **kw: Any) -> JobOutcome:
 
 
 class TestScoreWithVotesAndRefunds(unittest.TestCase):
-    def test_a_shadow_vote_changes_no_score_and_a_live_one_moves_the_baseline(self) -> None:
-        ledger = Ledger()
-        ledger.add(passing("j", A, ended_ms=1000))
-        self.assertAlmostEqual(ledger.outcomes[0].s, 1.0)
-        ledger.vote("j", 0.2, 0.0)  # shadow
-        o = ledger.outcomes[0]
-        self.assertAlmostEqual(o.s, 1.0)
-        self.assertEqual((o.parts["V"], o.parts["u"], o.parts["B"]), (0.2, 0.0, 1.0))
-        ledger.vote("j", 0.2, 0.6)  # live, our vote alone
-        self.assertAlmostEqual(ledger.outcomes[0].s, 0.4 + 0.6 * (0.6 * 0.2 + 0.4 * 1.0))
-        # a paid client's stars still replace it
-        ledger.signal("j", {"kind": "stars", "stars": 5, "trust": "paid", "at_ms": 2000})
-        self.assertAlmostEqual(ledger.outcomes[0].s, 1.0)
-
-    def test_a_quality_refund_is_one_star_and_another_refund_is_not_scored(self) -> None:
+    def test_a_quality_refund_is_zero_and_another_refund_is_not_scored(self) -> None:
         def s(*sig: dict[str, Any]) -> float:
             return score_all([passing("d", A, signals=list(sig))])[0].s
 
-        q = {"kind": "refund", "quality": True, "trust": "paid"}
-        other = {"kind": "refund", "quality": False, "trust": "paid"}
-        five = {"kind": "stars", "stars": 5, "trust": "paid"}
-        self.assertAlmostEqual(s(q), 0.4)
-        self.assertAlmostEqual(s(other), 1.0)
-        self.assertAlmostEqual(s(five, q), 0.4)  # the last rating wins
-        self.assertAlmostEqual(s(q, five), 1.0)
+        q = {"kind": "refund", "quality": True}
+        other = {"kind": "refund", "quality": False}
+        five = {"kind": "stars", "stars": 5}
+        self.assertEqual(s(q), 0.0)
+        self.assertEqual(s(other), 0.5)
+        self.assertEqual(s(five, q), 0.0)  # the latest signal decides
+        self.assertEqual(s(q, five), 1.0)
 
     def test_the_desk_takes_a_refund_and_refuses_one_without_quality(self) -> None:
         p, ledger = FakePlatform(), Ledger()
         desk = Desk(p, ledger, registered=lambda: [A])
         ledger.add(passing("j", A, ended_ms=desk.now_ms()))
         out = desk.signal("j", {"kind": "refund", "trust": "paid", "quality": True})
-        self.assertAlmostEqual(out["score"], 0.4)
+        self.assertEqual(out["score"], 0.0)
         with self.assertRaises(DeskError):
             desk.signal("j", {"kind": "refund", "trust": "paid"})
         desk.stop()
 
-    def test_recompute_reproduces_votes_and_the_kept_vector(self) -> None:
+    def test_recompute_reproduces_the_points_and_the_kept_vector(self) -> None:
         with tempfile.TemporaryDirectory() as d:
             ledger = Ledger(report_dir=Path(d))
             ledger.add(passing("1", A, ended_ms=1000))
-            ledger.vote("1", 0.3, 0.6)
             uids = {OWNER: 0, A: 1, B: 2}
             first = ledger.report(2000, uids, owner_hotkey=OWNER, admitted=[A, B], reachable=[A, B])
             self.assertEqual(first["vector"], [[1, 65_535]])
@@ -462,18 +446,13 @@ class TestVoteAndAverage(unittest.TestCase):
         self.assertTrue(verify_vote(vote_from({**old.as_json()})))
 
     def test_the_average_merges_coldkeys_clamps_and_caps(self) -> None:
-        self.assertEqual(aggregate([]), (None, 0.0))
-        v, u = aggregate([Voter("ours", "o", 0.4, ours=True)])
-        self.assertEqual((v, u), (0.4, U_MAX))
-        self.assertEqual(U_MAX, 0.4)  # a client's stars clearly dominate the vote
+        self.assertIsNone(aggregate([]))
+        self.assertEqual(aggregate([Voter("ours", "o", 0.4, ours=True)]), 0.4)
         third = [Voter(f"ck{i}", f"h{i}", 0.5, stake=10, reliability=1.0) for i in range(3)]
-        v, u = aggregate([Voter("ours", "o", 0.5, ours=True), *third], s_ref=10)
-        self.assertEqual((v, u), (0.5, U_MAX))  # third parties never raise u past 0.4
-        self.assertEqual(aggregate(third[:1], s_ref=10)[1], round(U_MAX / 3, 6))
-        self.assertEqual(aggregate(third, s_ref=10)[1], U_MAX)
+        self.assertEqual(aggregate([Voter("ours", "o", 0.5, ours=True), *third], s_ref=10), 0.5)
         # one extreme coldkey moves the result by at most the clamp times its share
         liar = Voter("liar", "x", 1.0, stake=10)
-        v, _ = aggregate([Voter("ours", "o", 0.5, ours=True), *third, liar], s_ref=10)
+        v = aggregate([Voter("ours", "o", 0.5, ours=True), *third, liar], s_ref=10)
         self.assertAlmostEqual(v or 0.0, (0.5 * 4 + 0.7) / 5)  # 1.0 clamped to median + 0.2
         # splitting stake over hotkeys of one coldkey gains nothing
         split = [Voter("ck", f"s{i}", 1.0, stake=1) for i in range(10)]
@@ -516,7 +495,6 @@ class ReviewRig(unittest.TestCase):
         self.model = FakeModel()
         self.said: list[str] = []
         self.reviewer = Reviewer(
-            self.ledger,
             self.p,
             self.model,
             me=VALIDATOR.ss58_address,
@@ -571,13 +549,10 @@ class TestReviewerShadow(ReviewRig):
         self.assertEqual([n["raised_by"] for n in row["nudges"]], [[1, 2, 3]])
         self.assertTrue(verify_vote(row | {"sig": row["sig"]}))
         o = self.ledger.outcomes[-1]
-        self.assertAlmostEqual(o.parts["V"], 0.65)
-        self.assertEqual(o.parts["u"], 0.0)
-        self.assertAlmostEqual(o.s, 1.0)  # shadow: the score is what it was
+        self.assertEqual((o.s, o.parts), (0.5, {"signal": "none"}))  # the vote scores nothing
         rep = self.reviewer.report(["j1"])
         self.assertEqual(rep["mode"], "shadow")
-        self.assertEqual(rep["per_job"]["j1"]["u"], U_MAX)
-        self.assertEqual(rep["per_job"]["j1"]["u_applied"], 0.0)
+        self.assertEqual(rep["per_job"]["j1"], {"V": 0.65, "count": 1})
         self.assertNotIn("screw holes", json.dumps(rep))
         self.assertEqual(check_votes(rep), [])
         forged = dict(rep, items=[dict(rep["items"][0], value=0.1)])
@@ -595,7 +570,7 @@ class TestReviewerShadow(ReviewRig):
         self.deliver()
         self.assertEqual(self.reviewer.pass_once(), "pending")
         self.assertEqual(self.reviewer.votes_of("j1"), [])
-        self.assertEqual(self.ledger.outcomes[-1].parts["V"], -1.0)
+        self.assertEqual(self.ledger.outcomes[-1].s, 0.5)
         self.assertIn("valid sample", self.reviewer.queue()[0]["why"])
 
     def test_the_spend_cap_stops_reviews_for_the_day(self) -> None:
@@ -609,33 +584,21 @@ class TestReviewerShadow(ReviewRig):
 
 
 class TestReviewerCounted(ReviewRig):
+    """``counted`` and ``live`` (older modes that scored the vote) are names of ``shadow`` now."""
+
     mode = "counted"
 
-    def test_a_counted_vote_moves_the_score(self) -> None:
+    def test_the_judges_vote_changes_no_points_whatever_the_mode(self) -> None:
+        self.assertEqual(self.reviewer.mode, "shadow")
+        self.assertEqual(Reviewer(self.p, None, me="v", mode="live").mode, "shadow")
         self.deliver()
         self.assertEqual(self.reviewer.pass_once(), "voted")
-        o = self.ledger.outcomes[-1]
-        self.assertEqual(o.parts["u"], 0.4)
-        self.assertAlmostEqual(o.s, 0.4 + 0.6 * (0.4 * 0.65 + 0.6 * 1.0))
-        self.assertFalse(self.reviewer.standing_of("j1")["shadow"])
-        # a paid client's stars replace it
-        self.ledger.signal("j1", {"kind": "stars", "stars": 5, "trust": "paid", "at_ms": 1})
-        self.assertAlmostEqual(self.ledger.outcomes[-1].s, 1.0)
-
-    def test_live_is_counted_and_a_mode_switch_reapplies_the_recorded_votes(self) -> None:
-        self.assertEqual(Reviewer(self.ledger, self.p, None, me="v", mode="live").mode, "counted")
-        self.deliver()
-        self.assertEqual(self.reviewer.pass_once(), "voted")
-        counted = self.ledger.outcomes[-1].s
-        self.assertLess(counted, 1.0)
-        # restarted in shadow: the same recorded vote stops counting
-        shadow = Reviewer(self.ledger, self.p, None, me=self.reviewer.me, mode="shadow")
-        shadow.kv = self.reviewer.kv
-        self.assertEqual(shadow.apply_all(), 1)
-        self.assertAlmostEqual(self.ledger.outcomes[-1].s, 1.0)
-        # and back to counted
-        self.assertEqual(self.reviewer.apply_all(), 1)
-        self.assertAlmostEqual(self.ledger.outcomes[-1].s, counted)
+        self.assertEqual(self.reviewer.standing_of("j1")["V"], 0.65)
+        self.assertEqual(self.ledger.outcomes[-1].s, 0.5)
+        self.ledger.signal("j1", {"kind": "stars", "stars": 1, "at_ms": 1})
+        self.assertEqual(self.ledger.outcomes[-1].s, 0.0)  # the client alone decides
+        self.ledger.signal("j1", {"kind": "stars", "stars": 5, "at_ms": 2})
+        self.assertEqual(self.ledger.outcomes[-1].s, 1.0)
 
 
 class TestStats(ReviewRig):
@@ -656,19 +619,21 @@ class TestStats(ReviewRig):
         )
         out = stats.docs([hk, "unknown-hotkey"])
         doc = out["miners"][hk]
-        self.assertIn("s = 0.4*I", out["formula"]["text"])
+        self.assertIn("0.5 while the client has done nothing", out["formula"]["text"])
         self.assertEqual(out["formula"]["votes_mode"], "shadow")
         for window in ("24h", "7d", "lifetime"):
             c = doc["windows"][window]
             self.assertEqual((c["assigned"], c["delivered"]), (1, 1), window)
             self.assertEqual((c["downloaded"], c["refunds"], c["refunds_quality"]), (1, 1, 0))
             self.assertEqual(c["voted"], 1)
+        self.assertEqual((doc["standing"]["weight"], doc["standing"]["average"]), (1.0, 1.0))
+        self.assertNotIn("quality", doc["standing"])
         self.assertEqual(doc["standing"]["rank"], 1)
         self.assertEqual(doc["standing"]["share"], 1.0)
         (job,) = doc["jobs"]
         self.assertEqual(job["signals"]["downloaded"], True)
         self.assertEqual(job["votes"]["count"], 1)
-        self.assertTrue(job["votes"]["shadow"])
+        self.assertEqual((job["s"], job["parts"]), (1.0, {"signal": "download"}))
         item = job["votes"]["items"][0]
         sample = item["samples"][0]
         self.assertIn("screw holes", sample["lines"][0]["seen"])  # the miner reads the evidence
@@ -680,6 +645,8 @@ class TestStats(ReviewRig):
         self.assertFalse(out["miners"]["unknown-hotkey"]["registered"])
         net = stats.network()
         self.assertEqual(net["miners"][0]["hotkey"], hk)
+        self.assertEqual(net["miners"][0]["average"], 1.0)
+        self.assertEqual(net["miners"][0]["vote_mean"], 0.65)  # shown, never scored
         self.assertNotIn("jobs", net["miners"][0])
 
     def test_lifetime_outlives_the_window(self) -> None:
@@ -732,7 +699,7 @@ class TestStatsRoutes(ReviewRig):
             code, out = signed(miner, base, "/v1/miners/stats", {}, VALIDATOR.ss58_address)
             self.assertEqual(code, 200)  # and signed: `signed` checked our signature
             self.assertEqual(out["hotkey"], hk)
-            self.assertIn("s = 0.4*I", out["formula"]["text"])  # the formula, as documented
+            self.assertIn("0.5 while the client", out["formula"]["text"])  # the rule, as documented
             self.assertEqual(out["windows"]["lifetime"]["delivered"], 1)
 
             def get(path: str, auth: bool = True) -> tuple[int, Any]:

@@ -471,7 +471,7 @@ class TestRevoke(_Case):
 
 def _passing(job: str, hk: str, ended_ms: int) -> JobOutcome:
     return JobOutcome(
-        job=job, hotkey=hk, ended_ms=ended_ms, deliverable=True, kind="pass", compute_s=1, wall_s=1
+        job=job, hotkey=hk, ended_ms=ended_ms, deliverable=True, kind="pass", wall_s=1
     )
 
 
@@ -479,7 +479,7 @@ UIDS: dict[str, int] = {OWNER: 0, A: 1, B: 2, C: 3}
 
 
 def _weight(*hks: str) -> dict[str, float]:
-    """The decayed weight of one passing job each, an hour old at hour 10."""
+    """The weight of one passing job each (0.5, unrated), an hour old at hour 10."""
     now = 10 * HOUR_MS
     jobs = score_all([_passing(f"j{h}", h, now - HOUR_MS) for h in hks])
     return standing(jobs, now)[0]

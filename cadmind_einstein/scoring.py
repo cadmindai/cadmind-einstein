@@ -1,55 +1,32 @@
-"""The per-job score and the weights (DESIGN.md section 5). **Clients are the graders**: there is no
-LLM grader.
+"""The per-job score and the weights (DESIGN.md section 5). **Clients are the graders**: no model
+decides a score, a weight or a route.
 
-A failed attempt scores 0 (timeouts and copies at once; rejections and gate failures only when
-another miner passes the same job -- the desk decides that). A **passing** job scores::
+**A job's points.** A client job delivered by a builder that passes the validator's Watt gate
+scores:
 
-    I = 0.5 + 0.3·E + 0.2·T                     immediate: passed the Watt gate, efficiency, on time
-    B = u·V + (1 - u)·I                         the baseline: the validators' vote, anchored on I
-    s = 0.4·I + 0.6·(w·C + (1 - w)·B)
+- **0.5** while the client has done nothing;
+- **1** when the client downloaded it (in the app or by API) or rated it 3, 4 or 5 stars;
+- **0** when the client rated it 1 or 2 stars, or a refund was granted for its quality.
 
-- ``E``, efficiency: half ``min(1, median compute / own)`` and half ``min(1, median wall time /
-  own)``, the medians over the passing jobs of the same bucket (the brief size class) in the
-  scoring window; 1 when the bucket has fewer than 5. ``T`` is 1 on time, 0 late.
-- ``C``, the client's signal, in [0, 1], and ``w``, how much it counts, in [0, 1]:
-  - stars (1-5) weigh most: ``C = (stars - 1)/4``, ``w = trust``;
-  - a download, without stars: ``C = 0.75``, ``w = 0.5·trust``;
-  - a re-run or a change request for the same problem: ``C`` lowered by 0.25 (each), and ``w`` at
-    least ``0.5·trust``;
-  - a refund the platform granted because of the delivery's quality counts as one star (``C = 0``,
-    ``w = trust``), in its place among the ratings (the last rating wins); any other refund is
-    recorded, not scored;
-  - no signal: ``w = 0``, so ``s = 0.4·I + 0.6·B``. A client signal moves 60% of the score from that
-    baseline toward the client's opinion;
-  - a positive signal only ever raises a score: ``C`` of :data:`POSITIVE_C` or more (four stars, or a
-    download with no change or re-run) counts as ``max(C, B)``.
-- ``V``, the validators' quality vote on the delivered device (:mod:`.review`, DESIGN.md section
-  13), in [0, 1], and ``u``, how much it counts: 0.4 when votes are counted (a client's stars
-  clearly dominate it); 0 in shadow (recorded and published, never scored), so ``B = I`` and an
-  unrated job counts on its immediate part alone.
-- ``trust``: 1 for a paid account (a card on file), 0.1 for a free one (the platform says which; a
-  separate anti-abuse system guards free accounts). Miners never learn which client a job came from,
-  and the router -- not the miner -- picks who gets a job, so a miner cannot steer its own fake
-  client's job to itself.
-- Signals arrive late and change the job's score when they do; the next hourly vector reads the
-  current scores.
+The client's **latest** signal decides: a download then a 1-star rating is 0; a 1-star rating then
+a later 5-star one is 1. Any other signal (a change request, a refund not for quality) is recorded,
+not scored. Free and paid clients count the same (a ``trust`` the platform may still send is
+ignored).
 
-**Weights, every hour, never burned.** Each job counts with a weight halving every 24 hours of age
-(a 7-day window). A miner's **weight** is the decayed SUM of its job scores (work done and how
-good); its **quality**, for the router, is the decayed MEAN.
+An attempt that does not deliver -- failed the gate, timed out, handed back (rejected), a copy, a
+delivery the platform refused for what the builder did -- scores **0**, at once.
 
-**Remix credit.** A delivered job that remixes a project built on this subnet names that project's
-original miners (``credit``, from the platform's claim, :meth:`.desk.Desk.create`). They share
-:data:`REMIX_CREDIT` of the job's score, split equally, in their weight only: it decays with the
-job, moves with its score and leaves with it. The miner that built the remix keeps its full score,
-and nobody's quality changes. It is computed from the outcome, never stored as a score of its own, so a
-job counts once however often it is judged or the validator restarts, and :func:`recompute` rebuilds
-it from the report. A credited miner that has left is out of the vector like any other.
+**Weights, every hour, never burned.** A job counts for 7 days from its end (its delivery), flat:
+no decay. A miner's **weight** is the sum of its job points over the last 7 days; the vector is
+proportional to it over registered, admitted miners seen in the last 24 hours. Its **average**
+(points / jobs in the window) is shown on the stats pages; nothing routes by it. Signals arrive late
+and change the job's points when they do; the next hourly vector reads the current points.
 
-The vector is proportional to the
-weight over registered, admitted miners seen in the last 24 hours. An hour with no work or no
-success still emits, from that history. **Genesis** -- no admitted miner has any history in the
-window -- follows ``genesis``:
+The validators' votes on deliveries (:mod:`.votes`) are recorded and published for calibration and
+practice comparisons; they never reach a score, a weight or the router.
+
+An hour with no work or no success still emits, from that history. **Genesis** -- no admitted
+miner has any points in the window -- follows ``genesis``:
 
 - ``delivered`` (the default): equal per COLDKEY among admitted, registered, reachable miners that
   have delivered at least one scored client job (ever), each coldkey's share split among its
@@ -83,32 +60,21 @@ from __future__ import annotations
 import hashlib
 import json
 import os
-import statistics
 import sys
 import threading
 from collections import defaultdict
 from collections.abc import Iterable, Mapping
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, fields
 from pathlib import Path
 from typing import Any
 
 from . import __spec_version__, __version__
 
-HALF_LIFE_H = 24.0
 WINDOW_H = 7 * 24
 HOUR_MS = 3_600_000
-MIN_BUCKET = 5
-TRUST = {"paid": 1.0, "free": 0.1}
-W_IMMEDIATE, W_CLIENT = 0.4, 0.6
-REMIX_CREDIT = 0.25
-"""The part of a delivered remix's score its original miners share, beside the remix miner's own."""
-POSITIVE_C = 0.75
-"""A client's ``C`` at or over this is positive: it never pulls a job's score below its baseline."""
-
-
-def size_class(brief: str) -> str:
-    n = len(brief or "")
-    return "short" if n < 600 else ("medium" if n < 2000 else "long")
+UNRATED, APPROVED, DISAPPROVED = 0.5, 1.0, 0.0
+"""a delivered job's points: no client signal yet; a download or 3-5 stars; 1-2 stars or a refund
+granted for its quality"""
 
 
 @dataclass
@@ -116,142 +82,85 @@ class JobOutcome:
     job: str
     hotkey: str
     ended_ms: int
-    size: str = "medium"
     accepted: bool = True
     on_time: bool = True
     deliverable: bool = False
     stage: str = "none"
-    compute_s: float = 0.0
     wall_s: float = 0.0
+    """the attempt's wall time (the queue's ETA reads it; never scored)"""
     copy_of: str = ""
     kind: str = ""
-    """pass | reject | gate | timeout | copy"""
+    """pass | reject | gate | timeout | copy | refused"""
     signals: list[dict[str, Any]] = field(default_factory=list)
-    """the client's: {"kind": download | stars | rerun | change | refund, "stars": 1-5, "quality":
-    a refund for the delivery's quality, "trust": paid | free, "at_ms"}"""
-    vote: dict[str, float] = field(default_factory=dict)
-    """the validators' vote on a passing job, as scored: {"V": value in [0, 1], "u": the weight it
-    is applied with (0.4 counted, 0 in shadow)}; empty when there is none"""
-    credit: list[str] = field(default_factory=list)
-    """the original miners this job's delivery credits (a remix: :data:`REMIX_CREDIT`), hotkeys"""
+    """the client's, in the order they came: {"kind": download | stars | change | refund,
+    "stars": 1-5, "quality": a refund for the delivery's quality, "at_ms"}"""
     s: float = 0.0
-    parts: dict[str, float] = field(default_factory=dict)
-
-    @property
-    def bucket(self) -> str:
-        """the jobs it is compared with: the same brief size class (every job has one deadline)"""
-        return self.size
+    parts: dict[str, Any] = field(default_factory=dict)
+    """what decided ``s``: ``{"signal": none | download | stars | refund}`` on a delivered job,
+    ``{"failed": kind}`` on any other"""
 
     @property
     def passed(self) -> bool:
         return self.accepted and self.deliverable and not self.copy_of
 
 
-def client_signal(signals: Iterable[Mapping[str, Any]]) -> tuple[float | None, float]:
-    """(C, w): the client's verdict and how much it counts. (None, 0) when there is none."""
-    c: float | None = None
-    w = 0.0
-    sig = list(signals)
-    # A refund granted for the delivery's quality is a rating of one star, in its place in order.
-    stars = [
-        {**x, "stars": 1} if x.get("kind") == "refund" else x
-        for x in sig
-        if (x.get("kind") == "stars" and 1 <= int(x.get("stars") or 0) <= 5)
-        or (x.get("kind") == "refund" and x.get("quality") is True)
-    ]
-    if stars:
-        last = stars[-1]
-        c, w = (int(last["stars"]) - 1) / 4, TRUST.get(str(last.get("trust")), 0.0)
+def client_points(signals: Iterable[Mapping[str, Any]]) -> tuple[float, str]:
+    """A delivered job's points and the signal that decided them: the client's LATEST download,
+    star rating or quality refund; :data:`UNRATED` when there is none."""
+    points, by = UNRATED, "none"
+    for x in signals:
+        kind = x.get("kind")
+        if kind == "download":
+            points, by = APPROVED, "download"
+        elif kind == "stars" and 1 <= int(x.get("stars") or 0) <= 5:
+            points, by = (APPROVED if int(x["stars"]) >= 3 else DISAPPROVED), "stars"
+        elif kind == "refund" and x.get("quality") is True:
+            points, by = DISAPPROVED, "refund"
+    return points, by
+
+
+def score(o: JobOutcome) -> float:
+    """Fill ``o.s`` and ``o.parts`` from its facts and its client's signals."""
+    if o.passed:
+        o.s, by = client_points(o.signals)
+        o.parts = {"signal": by}
     else:
-        dl = [TRUST.get(str(x.get("trust")), 0.0) for x in sig if x.get("kind") == "download"]
-        if dl:
-            c, w = 0.75, 0.5 * max(dl)
-    redo = [
-        TRUST.get(str(x.get("trust")), 0.0) for x in sig if x.get("kind") in ("rerun", "change")
-    ]
-    if redo:
-        c = max(0.0, (0.75 if c is None else c) - 0.25 * len(redo))
-        w = max(w, 0.5 * max(redo))
-    return c, w
-
-
-def vote_of(vote: Mapping[str, Any] | None) -> tuple[float | None, float]:
-    """(V, u) of a job's recorded vote: (None, 0) without one; both clamped to [0, 1]."""
-    if not vote or vote.get("V") is None:
-        return None, 0.0
-    v = min(1.0, max(0.0, float(vote["V"])))
-    u = min(1.0, max(0.0, float(vote.get("u") or 0.0)))
-    return v, u
+        o.s, o.parts = 0.0, {"failed": o.kind or "failed"}
+    return o.s
 
 
 def score_all(jobs: Iterable[JobOutcome]) -> list[JobOutcome]:
-    """Fill every job's ``s`` and ``parts`` from its facts, its signals, and the window's
-    medians."""
+    """Score every job (each on its own facts and signals: no job's points depend on another's)."""
     jobs = list(jobs)
-    comp: dict[str, list[float]] = defaultdict(list)
-    wall: dict[str, list[float]] = defaultdict(list)
     for o in jobs:
-        if o.passed:
-            comp[o.bucket].append(o.compute_s)
-            wall[o.bucket].append(o.wall_s)
-    for o in jobs:
-        if not o.passed:
-            o.s, o.parts = 0.0, {"I": 0.0, "C": -1.0, "w": 0.0}
-            continue
-        e = 1.0
-        if len(comp[o.bucket]) >= MIN_BUCKET:
-            mc, mw = statistics.median(comp[o.bucket]), statistics.median(wall[o.bucket])
-            ec = min(1.0, mc / o.compute_s) if o.compute_s > 0 else 1.0
-            ew = min(1.0, mw / o.wall_s) if o.wall_s > 0 else 1.0
-            e = 0.5 * ec + 0.5 * ew
-        t = 1.0 if o.on_time else 0.0
-        i = 0.5 + 0.3 * e + 0.2 * t
-        v, u = vote_of(o.vote)
-        b = u * v + (1 - u) * i if v is not None else i
-        c, w = client_signal(o.signals)
-        if c is not None and c >= POSITIVE_C:
-            c = max(c, b)
-        client = w * c + (1 - w) * b if c is not None else b
-        o.s = round(W_IMMEDIATE * i + W_CLIENT * client, 6)
-        o.parts = {
-            "I": round(i, 4),
-            "E": round(e, 4),
-            "T": t,
-            "C": round(c, 4) if c is not None else -1.0,
-            "w": round(w, 4),
-            "V": round(v, 4) if v is not None else -1.0,
-            "u": round(u, 4) if v is not None else 0.0,
-            "B": round(b, 4),
-        }
+        score(o)
     return jobs
 
 
-def decay(age_ms: int) -> float:
-    return float(0.5 ** (max(0, age_ms) / (HALF_LIFE_H * HOUR_MS)))
+def in_window(o: JobOutcome, now_ms: int) -> bool:
+    """A job counts for :data:`WINDOW_H` from its end, flat."""
+    return now_ms - o.ended_ms <= WINDOW_H * HOUR_MS
 
 
 def standing(jobs: Iterable[JobOutcome], now_ms: int) -> tuple[dict[str, float], dict[str, float]]:
-    """(weight, quality) per miner: the decayed sum and the decayed mean of its job scores. A
-    delivered remix's credit adds to its original miners' weight, once per job (the first passing
-    outcome of it), and to nobody's quality."""
+    """(weight, average) per miner over the window's jobs: the SUM of its job points, and that sum
+    over its number of jobs (what the stats pages show; nothing routes by it)."""
     total: dict[str, float] = defaultdict(float)
-    norm: dict[str, float] = defaultdict(float)
-    shares: dict[str, float] = defaultdict(float)
-    credited: set[str] = set()
+    count: dict[str, int] = defaultdict(int)
     for o in jobs:
-        k = decay(now_ms - o.ended_ms)
-        total[o.hotkey] += k * o.s
-        norm[o.hotkey] += k
-        if o.credit and o.passed and o.job not in credited:
-            credited.add(o.job)
-            miners = sorted(set(o.credit))
-            for h in miners:
-                shares[h] += REMIX_CREDIT * k * o.s / len(miners)
-    quality = {h: total[h] / norm[h] for h in norm if norm[h] > 0}
-    for h, v in shares.items():
-        total[h] += v
-    return dict(total), quality
+        if not in_window(o, now_ms):
+            continue
+        total[o.hotkey] += o.s
+        count[o.hotkey] += 1
+    average = {h: round(total[h] / n, 6) for h, n in count.items() if n}
+    return {h: round(v, 6) for h, v in total.items()}, average
 
+
+CONSTANTS = {
+    "window_h": WINDOW_H,
+    "points": {"unrated": UNRATED, "approved": APPROVED, "disapproved": DISAPPROVED},
+}
+"""the rule's numbers, published in every report"""
 
 GENESIS = ("delivered", "coldkey", "hotkey")
 LAUNCH_RULE = "launch: equal among admitted miners"
@@ -362,11 +271,8 @@ def _key(o: JobOutcome) -> str:
 
 
 def _public(o: JobOutcome) -> dict[str, Any]:
-    """An outcome as a report publishes it: ``credit`` only on a job that has one."""
-    row = asdict(o)
-    if not row["credit"]:
-        del row["credit"]
-    return row
+    """An outcome as a report publishes it."""
+    return asdict(o)
 
 
 def _row(o: JobOutcome) -> dict[str, Any]:
@@ -379,7 +285,9 @@ class Ledger:
 
     With a :class:`~.store.Store` every outcome and signal is written as it lands (inside the
     desk's transaction when there is one), and a restart reloads them all -- mid-hour too. Without
-    one (tests, recompute) a restart falls back to the newest report's window.
+    one (tests, recompute) a restart falls back to the newest report's window. Either way the
+    loaded jobs are scored again by THIS rule (a stored outcome keeps its facts and signals, never
+    its points), so no miner holds a mix of an older rule's points and this one's.
     """
 
     report_dir: Path | None = None
@@ -395,9 +303,10 @@ class Ledger:
         if self.store is not None:
             self._lock = self.store.lock
             for row in self.store.items("outcome").values():
-                o = _job(row)
+                o = outcome_of(row)
                 self.jobs[_key(o)] = o
             if self.jobs:
+                score_all(self.jobs.values())
                 return
         if self.report_dir is None or not self.report_dir.is_dir():
             return
@@ -405,10 +314,11 @@ class Ledger:
         if reports:
             newest = json.loads(reports[-1].read_text(encoding="utf-8"))
             for row in newest["jobs"]:
-                o = _job(row)
+                o = outcome_of(row)
                 self.jobs[_key(o)] = o
                 self._save(o)
             self._last_vector = dict(newest.get("vector_by_hotkey") or {})
+            score_all(self.jobs.values())
 
     def _save(self, o: JobOutcome) -> None:
         if self.store is not None:
@@ -423,8 +333,7 @@ class Ledger:
         with self._lock:
             self.jobs[_key(o)] = o
             self._save(o)
-            score_all(self._window(o.ended_ms))
-            return o.s
+            return score(o)
 
     def signal(self, job: str, sig: Mapping[str, Any]) -> float | None:
         """A client's late signal on a delivered job (its passing attempt). None when the job is
@@ -432,22 +341,9 @@ class Ledger:
         with self._lock:
             for o in self.jobs.values():
                 if o.job == job and o.passed:
-                    o.signals.append(dict(sig))
+                    o.signals.append({k: v for k, v in sig.items() if k != "trust"})
                     self._save(o)
-                    score_all(self._window(sig.get("at_ms") or o.ended_ms))
-                    return o.s
-        return None
-
-    def vote(self, job: str, value: float | None, u: float) -> float | None:
-        """The validators' vote on a delivered job's passing attempt, as it is scored (``u`` is 0
-        in shadow); ``value`` None removes it. None when the job is unknown."""
-        with self._lock:
-            for o in self.jobs.values():
-                if o.job == job and o.passed:
-                    o.vote = {} if value is None else {"V": float(value), "u": float(u)}
-                    self._save(o)
-                    score_all(self._window(o.ended_ms))
-                    return o.s
+                    return score(o)
         return None
 
     def withdraw(self, job: str) -> list[JobOutcome]:
@@ -459,26 +355,21 @@ class Ledger:
             for k in keys:
                 if self.store is not None:
                     self.store.delete("outcome", k)
-            if gone:
-                score_all(self._window(max(o.ended_ms for o in gone)))
             return gone
 
     def _window(self, now_ms: int) -> list[JobOutcome]:
-        return [o for o in self.jobs.values() if now_ms - o.ended_ms <= WINDOW_H * HOUR_MS]
+        return [o for o in self.jobs.values() if in_window(o, now_ms)]
 
     def snapshot(self, now_ms: int) -> tuple[list[JobOutcome], dict[str, float], dict[str, float]]:
         with self._lock:
             window = score_all(self._window(now_ms))
-            old = [k for k, o in self.jobs.items() if now_ms - o.ended_ms > WINDOW_H * HOUR_MS]
+            old = [k for k, o in self.jobs.items() if not in_window(o, now_ms)]
             for key in old:
                 del self.jobs[key]
                 if self.store is not None:
                     self.store.delete("outcome", key)
-            weight, quality = standing(window, now_ms)
-            return window, weight, quality
-
-    def quality(self, now_ms: int) -> dict[str, float]:
-        return self.snapshot(now_ms)[2]
+            weight, average = standing(window, now_ms)
+            return window, weight, average
 
     def last_vector(self) -> dict[str, float]:
         """The last non-empty vector, hotkey -> weight ({} before the first): what an hour that
@@ -518,7 +409,7 @@ class Ledger:
         admissions per coldkey, disables) ride along for readers; recompute needs neither. The
         genesis rule, the admitted miners' coldkeys and the ``proven`` hotkeys are published:
         recompute reads them."""
-        window, weight, quality = self.snapshot(now_ms)
+        window, weight, average = self.snapshot(now_ms)
         adm, reach = sorted(admitted), sorted(reachable)
         cold = {h: str((coldkeys or {}).get(h) or "") for h in adm}
         prov = sorted(set(proven) & set(adm))
@@ -543,7 +434,7 @@ class Ledger:
             "prev_sha256": self.last_sha256(),
             "jobs": [_public(o) for o in window],
             "weight": weight,
-            "quality": quality,
+            "average": average,
             "uids": dict(uid_by_hotkey),
             "owner": owner_hotkey,
             "admitted": adm,
@@ -560,14 +451,7 @@ class Ledger:
             "watch": dict(watch or {}),
             "votes": dict(votes or {}),
             "einstein": {"version": __version__, "spec_version": __spec_version__},
-            "constants": {
-                "half_life_h": HALF_LIFE_H,
-                "window_h": WINDOW_H,
-                "immediate": W_IMMEDIATE,
-                "client": W_CLIENT,
-                "trust": TRUST,
-                "remix_credit": REMIX_CREDIT,
-            },
+            "constants": CONSTANTS,
         }
         raw = report_bytes(rep)
         sha = hashlib.sha256(raw).hexdigest()
@@ -601,14 +485,22 @@ def _atomic_write(path: Path, data: bytes) -> None:
     tmp.replace(path)
 
 
-def _job(row: Mapping[str, Any]) -> JobOutcome:
-    return JobOutcome(**{k: v for k, v in row.items() if k not in ("s", "parts", "effort")})
+_FACTS = frozenset(f.name for f in fields(JobOutcome)) - {"s", "parts"}
+"""what an outcome is rebuilt from: an older row's other keys (its effort, size, compute, vote,
+remix credit) are dropped, as its points are"""
+
+
+def outcome_of(row: Mapping[str, Any]) -> JobOutcome:
+    """An outcome from its stored or published row (unscored: :func:`score` fills ``s``)."""
+    o = JobOutcome(**{k: v for k, v in row.items() if k in _FACTS})
+    o.signals = [{k: v for k, v in dict(x).items() if k != "trust"} for x in o.signals or []]
+    return o
 
 
 def recompute(report: Mapping[str, Any]) -> dict[str, Any]:
     """Rebuild every job's score and the vector from one published report; list any job that
     differs."""
-    jobs = score_all(_job(r) for r in report["jobs"])
+    jobs = score_all(outcome_of(r) for r in report["jobs"])
     mismatches = [
         {"job": o.job, "hotkey": o.hotkey, "published": r["s"], "recomputed": o.s}
         for o, r in zip(jobs, report["jobs"], strict=True)

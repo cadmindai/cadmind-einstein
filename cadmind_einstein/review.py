@@ -6,8 +6,9 @@ judged against its brief by CADmind's device judge (:mod:`.judge`, ``cadmind-jud
 validator's bundle, the client's photos), a structured fact sheet and a standard image set, all in
 one **review bundle** the platform renders once per version and serves to every voter, so every
 validator judges the same pixels (the bundle's ``image_set`` digest is part of every vote). A vote
-only scores the miner: Watt's checks decide what is deliverable; nothing here delivers, charges or
-gates anything.
+is recorded, published and archived for calibration; it scores nobody (no score, weight or route
+reads it: DESIGN.md section 5), and Watt's checks decide what is deliverable; nothing here
+delivers, charges or gates anything.
 
 **The judge.** :mod:`.judge` holds the one prompt, the strict reply check, the main-job cap and the
 aggregation; this module holds the bundle, the vote and the average. A vote's samples are the
@@ -472,10 +473,6 @@ def published_value_holds(item: Mapping[str, Any]) -> bool:
 # -- the average across validators (DESIGN.md section 13.5) ----------------------------------------
 
 CLAMP = 0.2
-U_MAX = 0.4
-"""The most the vote counts in the baseline: with our vote alone, and with third parties too (a
-client's stars outweigh it: DESIGN.md section 5)."""
-THIRD_PARTY_FOR_MAX = 3
 THIRD_PARTY_CAP = 1 / 3
 
 
@@ -492,15 +489,14 @@ class Voter:
     noisy: bool = False
 
 
-def aggregate(voters: Sequence[Voter], *, s_ref: float = 1.0) -> tuple[float | None, float]:
-    """``(V, u)`` of one job's votes: merged per coldkey (stake-weighted mean of its hotkeys),
-    each coldkey's value clamped to the median +- ``CLAMP`` when there are three or more, weighted
+def aggregate(voters: Sequence[Voter], *, s_ref: float = 1.0) -> float | None:
+    """``V`` of one job's votes: merged per coldkey (stake-weighted mean of its hotkeys), each
+    coldkey's value clamped to the median +- ``CLAMP`` when there are three or more, weighted
     ``a = 1`` for ours and ``r * min(1, stake / s_ref)`` for a third party (no third-party coldkey
-    over a third of the third parties' weight; a noisy vote at half weight). ``u`` is
-    :data:`U_MAX` (0.4) with our vote, alone or with third parties; third parties without ours
-    reach it at :data:`THIRD_PARTY_FOR_MAX` coldkeys; (None, 0) without votes."""
+    over a third of the third parties' weight; a noisy vote at half weight). None without votes.
+    Published and archived; never scored (DESIGN.md section 5)."""
     if not voters:
-        return None, 0.0
+        return None
     by_ck: dict[str, list[Voter]] = {}
     for v in voters:
         by_ck.setdefault(v.coldkey, []).append(v)
@@ -529,12 +525,8 @@ def aggregate(voters: Sequence[Voter], *, s_ref: float = 1.0) -> tuple[float | N
         merged = [(ck, v, (min(w, cap) if not o else w), o) for ck, v, w, o in merged]
     total = sum(m[2] for m in merged)
     if total <= 0:
-        return None, 0.0
-    value = sum(m[1] * m[2] for m in merged) / total
-    counted = sum(1 for m in third if m[2] > 0)
-    has_ours = any(m[3] for m in merged)
-    u = U_MAX if has_ours else U_MAX * min(1.0, counted / THIRD_PARTY_FOR_MAX)
-    return round(value, 6), round(u, 6)
+        return None
+    return round(sum(m[1] * m[2] for m in merged) / total, 6)
 
 
 # -- one review ------------------------------------------------------------------------------------

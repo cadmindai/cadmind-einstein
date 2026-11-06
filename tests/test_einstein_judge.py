@@ -26,7 +26,6 @@ from cadmind_einstein.judge_tools import (
     tool_list,
 )
 from cadmind_einstein.models import Conversation, OpenAIModel, Reply
-from cadmind_einstein.scoring import Ledger
 from cadmind_einstein.votes import Reviewer
 
 PNG = b"\x89PNG\r\n\x1a\n" + b"0" * 16
@@ -535,9 +534,9 @@ class TestTheToolsJudge(unittest.TestCase):
         with self.assertRaises(jm.ValidatorJudgeError):
             jm.for_validator("2.0")
         with self.assertRaises(ValueError):
-            Reviewer(Ledger(), None, None, me="v", judge_version="1.2b-tools")
+            Reviewer(None, None, me="v", judge_version="1.2b-tools")
         self.assertEqual(
-            Reviewer(Ledger(), None, None, me="v").judge()["judge_version"], jm.JUDGE_VERSION
+            Reviewer(None, None, me="v").judge()["judge_version"], jm.JUDGE_VERSION
         )
         with self.assertRaises(SystemExit) as stop:
             check_judge("1.2b-tools")

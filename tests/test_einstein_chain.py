@@ -340,7 +340,7 @@ class TestReports(unittest.TestCase):
             self.assertFalse(audit([p1, p2], expect_sha256="00" * 32)["ok"])
             # a changed score in an old report breaks the chain at the next one
             rep = json.loads(p1.read_bytes())
-            rep["jobs"][0]["s"] = 0.5
+            rep["jobs"][0]["s"] = 0.25
             p1.write_bytes(report_bytes(rep))
             out = audit([p1, p2])
             self.assertFalse(out["ok"])
@@ -384,7 +384,7 @@ class TestReports(unittest.TestCase):
             self.assertNotIn("not_checked", out)
             # the same version with a changed score is a mismatch
             rep = json.loads(p1.read_bytes())
-            rep["jobs"][0]["s"] = 0.5
+            rep["jobs"][0]["s"] = 0.25
             p1.write_bytes(report_bytes(rep))
             out = audit([p1])
             self.assertFalse(out["ok"])

@@ -7,34 +7,32 @@ lower median of their 0-3 scores, ``v = V_MAP[median]``. ``--judge 1.2b-tools`` 
 start (:func:`.judge.for_validator`): that version reads the delivered project through Watt tools
 and is for CADmind's own pipeline and the miner-side reviewer.
 
+**The vote has no role in scores, weights or routing** (DESIGN.md section 5: the client's signals
+alone decide a job's points). It is recorded, published in the hourly report, shown to miners,
+archived for calibration and compared with practice runs; nothing in :mod:`.scoring` or the router
+reads it.
+
 **Modes** (``--votes``):
 
-- ``counted`` (the default): the vote enters the score as the baseline ``B = u*V + (1 - u)*I``
-  with ``u`` from :func:`.review.aggregate` (0.4, our vote alone or with third parties), so it
-  moves the weights; a client's stars still outweigh it. ``live`` is the same mode's old name;
-- ``shadow``: votes are made, recorded, published in the hourly report and shown to miners, and
-  enter the score with ``u = 0`` -- so they change no score and no weight;
+- ``shadow`` (the default): votes are made, recorded and published. ``counted`` and ``live``,
+  older modes that scored the vote, are accepted as its names;
 - ``off``: nothing is reviewed.
-
-A switch of mode (a restart with another ``--votes``) re-applies every recorded vote
-(:meth:`Reviewer.apply_all`), so the window's scores follow the mode at once.
 
 **A delivery waiting for its parts.** A main project delivered at its interface stage (its
 sub-projects' interfaces defined, each still a placeholder) is not judged yet: the platform says
 so on its bundle (``parts``: ``awaiting``, ``built``, ``total``, ``delivered_ms``) and the vote
 waits, asking again every :data:`PARTS_POLL_S`, until every part is built -- the platform then
 makes the bundle again with the parts assembled in view, and the device is judged whole -- or
-:data:`PARTS_WAIT_S` after its delivery, when it is judged as it stands. Until then the job is
-scored as a job with no vote (``B = I``): never a 0, never a penalty. A platform that says
+:data:`PARTS_WAIT_S` after its delivery, when it is judged as it stands. A platform that says
 nothing of parts gets the vote at once, as before.
 
 **The queue.** The desk tells the reviewer each delivery the platform took and charged
 (:attr:`.desk.Desk.on_delivered`). One review runs at a time (:meth:`Reviewer.pass_once`, called
 by the daemon's review thread): ask the platform for the bundle (it may still be rendering: asked
 again later), fetch it from its signed link, check its digests, ask the judge for its samples,
-sign the vote with the validator's hotkey and record it; the job's score is updated as a late
-signal's is. A failure on our side (the platform, the model, the spend cap) is retried with a
-back-off; an item older than the scoring window is dropped.
+sign the vote with the validator's hotkey and record it. A failure on our side (the platform, the
+model, the spend cap) is retried with a back-off; an item older than the scoring window is
+dropped.
 
 **Spend.** :class:`.models.Spend` caps the model's daily spend: past it no call is made that day
 and an ALERT is logged once.
@@ -50,7 +48,6 @@ archive existed is archived as it is dropped).
 
 from __future__ import annotations
 
-import contextlib
 import statistics
 import threading
 import time
@@ -72,9 +69,9 @@ from .review import (
 )
 from .scoring import HOUR_MS, WINDOW_H
 
-MODES = ("off", "shadow", "counted")
-ALIASES = {"live": "counted"}
-"""older names of a mode, still accepted"""
+MODES = ("off", "shadow")
+ALIASES = {"live": "shadow", "counted": "shadow"}
+"""older names of a mode, still accepted (both scored the vote; nothing does now)"""
 MIN_SAMPLES = 2
 """valid samples a vote needs (of those asked): the judge's own minimum"""
 MAX_TRIES = 8
@@ -127,13 +124,12 @@ class _Kv:
 class Reviewer:
     def __init__(
         self,
-        ledger: Any,
         platform: Any,
         model: Any,
         *,
         me: str,
         signer: Any = None,
-        mode: str = "counted",
+        mode: str = "shadow",
         samples: int = SAMPLES,
         spend: Any = None,
         store: Any = None,
@@ -145,7 +141,7 @@ class Reviewer:
         mode = ALIASES.get(mode, mode)
         if mode not in MODES:
             raise ValueError(f"votes mode is one of {MODES}")
-        self.ledger, self.platform, self.model = ledger, platform, model
+        self.platform, self.model = platform, model
         self.me, self.signer, self.mode, self.samples = me, signer, mode, samples
         self.spend, self.clock = spend, clock
         self.log = log or (lambda _line: None)
@@ -367,7 +363,6 @@ class Reviewer:
         )
         row.update(state="done", why="", done_ms=self.now_ms())
         self.kv.put("review", job, row)
-        self.apply(job)
         self.log(
             job_event(
                 "vote-recorded",
@@ -490,7 +485,7 @@ class Reviewer:
         return [v for k, v in self.kv.items("vote").items() if k.split("|", 1)[0] == job]
 
     def standing_of(self, job: str) -> dict[str, Any]:
-        """``{V, u, u_applied, count, shadow}`` of a job's votes (u_applied: 0 unless counted)."""
+        """``{V, count}`` of a job's votes: their average and how many (never scored)."""
         rows = self.votes_of(job)
         voters = [
             Voter(
@@ -503,35 +498,14 @@ class Reviewer:
             for r in rows
             if r.get("value") is not None and not r.get("abstain")
         ]
-        v, u = aggregate(voters)
-        applied = u if self.mode == "counted" and v is not None else 0.0
-        return {
-            "V": v,
-            "u": u,
-            "u_applied": applied,
-            "count": len(voters),
-            "shadow": self.mode != "counted",
-        }
-
-    def apply(self, job: str) -> None:
-        st = self.standing_of(job)
-        with contextlib.suppress(Exception):
-            self.ledger.vote(job, st["V"], st["u_applied"])
-
-    def apply_all(self) -> int:
-        """Apply every recorded vote again under the current mode (at start: a vote recorded in
-        shadow counts once the mode is ``counted``, and the other way round). Answers how many
-        jobs were applied."""
-        jobs = sorted({str(v.get("job") or "") for v in self.kv.items("vote").values()} - {""})
-        for job in jobs:
-            self.apply(job)
-        return len(jobs)
+        return {"V": aggregate(voters), "count": len(voters)}
 
     # -- publication -------------------------------------------------------------------------------
 
     def report(self, jobs: Iterable[str]) -> dict[str, Any]:
         """The hourly report's ``votes``: the mode, the judge, every vote on a window job in its
-        public form (scores and signature; never the words), and each job's ``V`` and ``u``."""
+        public form (scores and signature; never the words), and each job's ``V`` (never
+        scored)."""
         wanted = set(jobs)
         items = [
             vote_from(v).public() | {"job": v["job"]}

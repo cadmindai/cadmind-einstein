@@ -161,14 +161,16 @@ class TestRestart(unittest.TestCase):
         self.assertEqual((st["result"]["label"], st["result"]["workspace"]), ("delivered", fork))
         self.assertEqual(self.r.p.forks, 1)
 
-    def test_held_failures_telemetry_and_signals_survive(self) -> None:
+    def test_failures_telemetry_signals_and_the_wait_clock_survive(self) -> None:
         self.r.p.queue.append({"job": "m4", "brief": "A wall hook."})
         self.r.tick()
         rejecter, _ = self.r.holder("m4")
         assert self.r.desk is not None
         self.r.desk.reject(rejecter, "m4", "not-capable", "too hard")
+        handed_back = self.r.desk.now_ms()
         desk = self.r.restart()
-        self.assertEqual(len(desk.jobs["m4"].pending), 1)  # held, not yet scored
+        self.assertEqual([(o.hotkey, o.s) for o in desk.ledger.outcomes], [(rejecter, 0.0)])
+        self.assertEqual(desk.miners[rejecter].free_ms, handed_back)  # still at the back
         self.assertEqual(desk.telemetry()[rejecter]["rejected"], 1)
         self.r.poll(A, B, C)
         self.r.tick()
@@ -181,9 +183,25 @@ class TestRestart(unittest.TestCase):
         desk.signal("m4", {"kind": "stars", "stars": 5, "trust": "paid"})
         desk = self.r.restart()
         scored = {o.hotkey: o for o in desk.ledger.outcomes}
-        self.assertEqual(scored[rejecter].s, 0.0)  # overturned
+        self.assertEqual(scored[rejecter].s, 0.0)  # a hand-back, overturned
+        self.assertEqual(scored[hk].s, 1.0)  # five stars
         self.assertEqual(scored[hk].signals[0]["stars"], 5)
         self.assertEqual(desk.telemetry()[rejecter]["overturned"], 1)
+
+    def test_a_failure_an_older_release_held_scores_zero_after_the_upgrade(self) -> None:
+        """Before 0.5.12 a rejection was held on its job (``pending``) until another miner passed;
+        the upgraded validator scores it 0 at load, and writes the job without it."""
+        assert self.r.store is not None and self.r.desk is not None
+        now = self.r.desk.now_ms()
+        held = {"job": "old", "hotkey": A, "ended_ms": now, "kind": "reject", "size": "short"}
+        row = {"job": "old", "brief": "b", "state": "done", "created_ms": now, "pending": [held]}
+        self.r.store.put("job", "old", row)
+        desk = self.r.restart()
+        self.assertEqual([(o.job, o.hotkey, o.s) for o in desk.ledger.outcomes], [("old", A, 0.0)])
+        self.r.tick()
+        assert self.r.store is not None
+        self.assertNotIn("pending", self.r.store.get("job", "old"))
+        self.r.restart()
 
     def test_a_result_the_platform_did_not_take_is_sent_after_a_restart(self) -> None:
         down = {"on": True}

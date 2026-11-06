@@ -130,21 +130,17 @@ class TestPartsShadow(_Parts):
 class TestPartsCounted(_Parts):
     mode = "counted"
 
-    def test_the_score_while_deferred_is_a_job_with_no_vote(self) -> None:
+    def test_the_points_never_wait_for_the_vote_nor_follow_it(self) -> None:
         self.waiting()
         self.deliver()
-        before = self.ledger.outcomes[-1].s
+        self.assertEqual(self.ledger.outcomes[-1].s, 0.5)
         self.assertEqual(self.reviewer.pass_once(), "pending")
-        o = self.ledger.outcomes[-1]
-        self.assertEqual((o.parts["V"], o.parts["u"]), (-1.0, 0.0), "no vote, not a 0")
-        self.assertEqual(o.s, before)
-        self.assertAlmostEqual(o.parts["B"], o.parts["I"])
+        self.assertEqual(self.ledger.outcomes[-1].s, 0.5)
         self.built()
         self.clock.t += PARTS_POLL_S
         self.assertEqual(self.reviewer.pass_once(), "voted")
-        o = self.ledger.outcomes[-1]
-        self.assertEqual(o.parts["u"], 0.4)
-        self.assertAlmostEqual(o.s, 0.4 + 0.6 * (0.4 * 0.65 + 0.6 * 1.0))
+        self.assertEqual(self.reviewer.standing_of(self.ledger.outcomes[-1].job)["V"], 0.65)
+        self.assertEqual(self.ledger.outcomes[-1].s, 0.5)
 
 
 if __name__ == "__main__":
