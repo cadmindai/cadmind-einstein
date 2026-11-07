@@ -7,6 +7,14 @@ All notable changes to this project are listed here. The format follows
 
 ## [Unreleased]
 
+## [0.5.15] - 2026-11-07
+
+### Fixed
+
+- The copy check no longer compares an attempt with other attempts at the same job. Builders of one job start from
+  fresh grants of the same seed and never see each other's work; an assembly of fixed parts comes out identical for
+  every builder, and later attempts were failed as copies (and an honest miner disabled for it).
+
 ## [0.5.14] - 2026-11-07
 
 ### Changed
