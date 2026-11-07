@@ -7,6 +7,8 @@ All notable changes to this project are listed here. The format follows
 
 ## [Unreleased]
 
+## [0.5.14] - 2026-11-07
+
 ### Changed
 
 - **Reference miner: what a `watt` command costs.** Every build, test, inspect, render and report builds the whole
