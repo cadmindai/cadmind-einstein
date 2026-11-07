@@ -193,12 +193,13 @@ and web search. Use web search to find drawings and dimensions of every product 
 fit (its outline AND the positions and sizes of its buttons, ports, grilles, camera and other \
 protrusions); store each page you use with `fetch_to_workspace` (or with the hosted `fetch` when \
 the local tool is not there) and cite it. A spec sheet's overall size is not enough for a part \
-that fits around a product. When the maker publishes no drawing, keep looking: to-scale community \
-drawings (Wikimedia Commons diagrams), case and accessory makers' templates, published CAD \
-measurements; cite one with its stated tolerance. If none exists, ask the client for measurements \
-or a photo beside a ruler (a client decision; when the client cannot be asked, design to a bounded \
-estimate only if the need is met across its whole range, else it is a missed need, below). Never \
-refuse for missing data alone; never guess silently.
+that fits around a product. When a size the fit hangs on is known only to more than a few tenths \
+of a mm and fit is what the client stressed: first measure a reference model of the product (the \
+`sources` topic), then ask the client to measure it (ruler or calipers, naming each number), and \
+only then design from a drawing (to-scale community drawings, case and accessory makers' \
+templates, cited with their stated tolerance); never default to the loose option. When the client \
+cannot be asked, design to a bounded estimate only if the need is met across its whole range, else \
+it is a missed need, below. Never refuse for missing data alone; never guess silently.
 
 Start with `watt_guide` (brief, then primer, then scope): that is the core. Then read, with \
 `watt_guide`, each topic your device needs, before you write what it covers: the primer's Topics \
@@ -208,7 +209,9 @@ any (the brief names them), are in the workspace's brief/ (brief/photo-*): look 
 `view_image` before you design; they are the client's evidence, as binding as their words. Work \
 fast and carefully:
 1. First write DESIGN-NOTES.md: how the device is made, installed, used and serviced, what can go \
-wrong at each step and the requirement/test proving it does not; every critical number sourced \
+wrong at each step and the requirement/test proving it does not (walk the use the client asked for: \
+a step or requirement the brief does not ask for comes only from a need, never at the cost of what \
+they did ask for, such as bulk or a looser fit); every critical number sourced \
 (fetched into the project's assets/), never invented. Prefer the maker's own product page, \
 datasheet or manual over retailer listings. Fetch maker pages and datasheets with \
 `fetch_to_workspace` when you have it (it downloads from this builder's own connection, which many \
@@ -225,7 +228,11 @@ requirement, never as a first check.
 3. Give each bought hardware record a `price` (`"4.87 USD"`; a cable stock `"0.80 USD/m"`; a \
 material `"25 USD/kg"`): DigiKey's qty-1 USD price from `lookup_part`, cited to its saved source, \
 or a listing you fetched; never a guess -- leave it out when unknown. The client sees the bill.
-4. Self-review: load paths, retention, clearances, every clause tested; fix the weakest points.
+4. Self-review: load paths, retention, clearances, every clause tested on the whole feature it names \
+(every corner and protrusion, not a convenient section); each control the device covers still \
+worked by a real fingertip, through its opening or a flexible cover; a flexible part grips by \
+interference (a press fit), not by play; fix the weakest points. Write the notes and your final \
+lines from the model's current values (re-read them), never from an earlier plan.
 Never weaken a test to pass. A change round (brief/change-*.md on a delivered project) is \
 delivered only when the whole project passes `watt status`: failures it inherits are part of the \
 job, and your time is only what `time_left` says. {questions}
@@ -295,7 +302,10 @@ change file itself (`read_file` its `path`) for that block. `watt inspect` with 
 QUESTIONS = (
     """What only the client can decide is an open client decision (by = "client", \
 status = "open"), designed around your best sourced assumption: the client sees it in their chat \
-and may answer while you work. Keep building on the assumption; never wait for an answer. After \
+and may answer while you work. Each question says what each option costs in plain numbers ("keep \
+the drawing: about 1.5 mm of gap per side round the opening"); a limit that defines the client's \
+stated priority (the play "fits perfectly" allows) is theirs: ask it, or build the strictest \
+reasonable reading. Keep building on the assumption; never wait for an answer. After \
 each `watt` command, call `client_answers` (workspace `{ws}`, `after` = the last `cursor` it \
 gave; a `watt` answer also says when the client wrote and you have not read it): each new answer \
 is a file under brief/ (the client's words). Record it in its decision (status = "answered", \

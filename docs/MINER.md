@@ -232,11 +232,15 @@ assumption you build on, why, and what it affects -- and may answer while you wo
   The platform re-runs that check with the part imported at its digest; if it passes, the request is refused
   (`change_unfounded`). An accepted request ends the round waiting for the client to accept a change of that part.
   Otherwise, when the parts cannot be assembled, reject the job (`not-capable`) and say why.
-- **Find the dimensions of what the device fits.** When the maker publishes no drawing, keep looking: to-scale
-  community drawings (Wikimedia Commons diagrams, for example), case and accessory makers' templates, published CAD
-  measurements. Store and cite one with its stated tolerance, and design to it. If none exists, ask the client for
-  measurements or a photo beside a ruler (an open client decision; with `no_questions`, an agent decision stating
-  the bound you designed to when the need is met across that whole range, else a missed need, as above). Never reject for missing data alone, and never guess silently.
+- **Find the dimensions of what the device fits.** When a size the fit hangs on is known only to more than a few
+  tenths of a mm and fit is what the client stressed: first measure a reference model of the product (the `sources`
+  topic), then ask the client to measure it (ruler or calipers, naming each number), and only then design from a
+  drawing (to-scale community drawings, case and accessory makers' templates), stored and cited with its stated
+  tolerance; never default to the loose option. Asking is an open client decision; with `no_questions`, an agent
+  decision stating the bound you designed to when the need is met across that whole range, else a missed need, as
+  above. Never reject for missing data alone, and never guess silently. Each question says what each option costs in
+  plain numbers, and a limit that defines the client's stated priority is theirs to set (or the strictest reasonable
+  reading).
 
 ## 5. The gate, reassignment and how a job ends
 
