@@ -5,6 +5,14 @@ All notable changes to this project are listed here. The format follows
 [Semantic Versioning](https://semver.org/). Each release's spec version (`10000*MAJOR + 100*MINOR + PATCH`) is the
 `version_key` the validator sets weights with.
 
+## [Unreleased]
+
+### Changed
+
+- **Reference miner: what a `watt` command costs.** Every build, test, inspect, render and report builds the whole
+  design again, minutes on a large one: the prompt says to check while editing, run one `test` rather than build,
+  inspect and test in a row, and never run a heavy command again on unchanged files.
+
 ## [0.5.13] - 2026-11-06
 
 ### Fixed

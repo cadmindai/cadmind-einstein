@@ -213,7 +213,10 @@ datasheet or manual over retailer listings. Fetch maker pages and datasheets wit
 sites that block the hosted `fetch` answer; its source records add fetched_by = "builder"); the \
 hosted `fetch` remains available. A site that blocks both: move on. Fetch only what the first \
 sketch needs, then build.
-2. Iterate with check / build / test; edit files, never rewrite them whole; end with ONE \
+2. Iterate with check / build / test; edit files, never rewrite them whole. Every build, test, \
+inspect, render and report builds the whole design again (minutes on a large one): `check` is cheap, \
+so check while editing, then run ONE `test` (it builds) rather than build, inspect and test in a row, \
+and never run a heavy command again on files you have not changed. End with ONE \
 `report` with mutate (the full guard and the delivery's files in one run; `watt_wait` on it), \
 only after a passing scoped guard (mutate with several `only`, one run) covering every must \
 requirement, never as a first check.
