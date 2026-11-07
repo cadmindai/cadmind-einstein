@@ -190,6 +190,17 @@ class TestDisguisedCopies(unittest.TestCase):
         other = {**tiny, "src/p.py": "a = 1\nb = 3\n"}  # a different (small) design
         self.assertIsNone(cc.check("j2", B, "d2", fp(other)))
 
+    def test_another_attempt_at_the_same_job_is_no_copy(self) -> None:
+        """Builders of one job start from fresh grants of one seed and never see each other's work: an identical
+        result there is the job's answer (an assembly of fixed parts), not a copy. Another job's still is."""
+        cc = CopyCheck()
+        self.assertIsNone(cc.check("j1", A, "digest-1", fp(VICTIM)))
+        self.assertIsNone(cc.check("j1", B, "digest-1", fp(VICTIM)))
+        found = cc.check("j2", B, "digest-1", fp(VICTIM))
+        self.assertIsNotNone(found)
+        assert found is not None
+        self.assertEqual(found["job"], "j1")
+
     def test_layout_strings_and_number_spelling_do_not_matter(self) -> None:
         a = fp({"src/x.py": "x = f(d=2, why='a')\n"})
         b = fp({"src/x.py": 'x = f(\n    d=2.0,\n    why="another reason",\n)\n'})

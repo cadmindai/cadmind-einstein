@@ -407,7 +407,10 @@ class CopyCheck:
         found: dict[str, object] | None = None
         best = -1.0
         for e in list(self.recent):
-            if e.hotkey == hotkey:
+            if e.hotkey == hotkey or e.job == job:
+                # another attempt at the same job is no source to copy from: each builder starts from a fresh grant
+                # of the same seed and never sees another's work, and parts that only assemble come out identical
+                # (the tank's assembly, 2026-11-07: three builders, one digest, two flagged as copies)
                 continue
             identical = bool(digest) and digest == e.digest
             cmp = self.compare(feats, e.features, base=base, coldkeys=(coldkey, e.coldkey))
