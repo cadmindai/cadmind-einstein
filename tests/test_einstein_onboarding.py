@@ -660,6 +660,105 @@ class TestAskKey(unittest.TestCase):
         self.assertEqual(code, 202)
 
 
+class TestUnblock(_Case):
+    """A wrong disable is lifted by the operator, not by editing the state with the daemon down."""
+
+    def strike(self, hk: str) -> None:
+        with self.desk._mut():
+            self.desk.copied[hk] = self.desk.copied.get(hk, 0) + 2
+        acted = self.desk.enforce()
+        self.assertTrue(self.desk.wait_idle())
+        self.assertEqual([a["hotkey"] for a in acted], [hk])
+
+    def test_unblock_lifts_the_block_and_the_strike_and_the_counts_do_not_strike_again(
+        self,
+    ) -> None:
+        self.onboard(A)
+        self.strike(A)
+        m = self.desk.miners[A]
+        self.assertGreater(m.blocked_until_ms, self.desk.now_ms())
+        self.assertFalse(m.admitted or m.key_id)
+        self.assertNotIn(A, self.p.keys)  # revoked on the platform
+        with self.assertRaises(DeskError) as e:
+            self.key(A)
+        self.assertEqual(e.exception.status, 403)
+        got = self.desk.unblock(A, "the copies were one job's own attempts", readmit=True)
+        self.assertEqual((got["strikes"], got["readmitted"], got["keyed"]), (0, True, False))
+        self.assertEqual(m.blocked_until_ms, 0)
+        self.assertNotIn(A, self.desk.strikes)
+        self.assertTrue(m.admitted)
+        self.assertNotIn(A, self.p.keys)  # never a key: the miner mints one as usual
+        self.assertEqual(self.desk.enforce(), [])  # the same counts act once
+        self.assertIn("key_id", self.key(A))
+        self.assertIn(A, self.desk.admitted())
+
+    def test_a_taken_back_strike_does_not_lengthen_the_next_block(self) -> None:
+        self.onboard(A)
+        self.strike(A)
+        self.desk.unblock(A, "first", readmit=False)
+        self.strike(A)
+        self.assertEqual(self.desk.strikes[A], 1)
+        self.desk.unblock(A, "again")
+        self.assertNotIn(A, self.desk.strikes)
+        self.strike(A)  # new counts: a real strike again, the first one's length
+        until = self.desk.miners[A].blocked_until_ms - self.desk.now_ms()
+        self.assertEqual(until, int(self.desk.abuse.disable_s * 1000))
+
+    def test_without_readmit_it_takes_the_entry_test_again(self) -> None:
+        self.onboard(A)
+        self.strike(A)
+        got = self.desk.unblock(A, "wrong", readmit=False)
+        self.assertFalse(got["admitted"])
+        self.assertNotIn(A, self.desk.admitted())
+
+    def test_readmit_needs_a_passed_entry_test(self) -> None:
+        self.desk.approve(A)
+        self.key(A)
+        self.desk.admission(A)  # asked, never passed
+        self.assertTrue(self.desk.wait_idle())
+        self.strike(A)
+        with self.assertRaises(DeskError) as e:
+            self.desk.unblock(A, "wrong", readmit=True)
+        self.assertEqual(e.exception.status, 409)
+        self.assertGreater(self.desk.miners[A].blocked_until_ms, 0)  # a refusal changes nothing
+        self.assertEqual(self.desk.strikes[A], 1)
+
+    def test_readmit_needs_the_approval_too(self) -> None:
+        self.onboard(A)
+        self.strike(A)
+        self.desk.revoke(A, "gone")
+        with self.assertRaises(DeskError):
+            self.desk.unblock(A, "wrong", readmit=True)
+
+    def test_a_block_from_before_the_flag_is_readmitted_on_its_passed_test(self) -> None:
+        self.onboard(A)
+        self.strike(A)
+        self.desk.miners[A].admitted_when_blocked = False  # a state written by 0.5.15
+        self.assertTrue(self.desk.unblock(A, "wrong", readmit=True)["readmitted"])
+
+    def test_nothing_to_lift_and_a_reason_is_required(self) -> None:
+        self.onboard(A)
+        with self.assertRaises(DeskError) as e:
+            self.desk.unblock(A, "nothing")
+        self.assertEqual(e.exception.status, 409)
+        self.strike(A)
+        with self.assertRaises(DeskError):
+            self.desk.unblock(A, " ")
+        with self.assertRaises(DeskError):
+            self.desk.unblock(OWNER, "x")
+
+    def test_an_unblock_survives_a_restart(self) -> None:
+        self.onboard(A)
+        self.strike(A)
+        self.desk.unblock(A, "wrong", readmit=True)
+        self.desk.stop()
+        self.desk = self.make()
+        m = self.desk.miners[A]
+        self.assertEqual((m.blocked_until_ms, m.admitted), (0, True))
+        self.assertNotIn(A, self.desk.strikes)
+        self.assertEqual(self.desk.enforce(), [])
+
+
 TOKEN = "t" * 32
 
 
@@ -773,11 +872,33 @@ class TestHttpAndCli(unittest.TestCase):
             urllib.request.urlopen(req, timeout=10)  # noqa: S310
         self.assertEqual(e.exception.code, 400)
 
+    def test_unblock_over_the_cli(self) -> None:
+        self.desk.disable(A, for_s=3600.0, reason="wrong")
+        with self.desk._mut():
+            self.desk.strikes[A] = 1
+        rc, out, err = self.cli("unblock", A, "--reason", "a false copy")
+        self.assertEqual(rc, 0, err)
+        got = json.loads(out)
+        self.assertEqual((got["hotkey"], got["strikes"], got["readmitted"]), (A, 0, False))
+        self.assertEqual(self.desk.miners[A].blocked_until_ms, 0)
+        rc, _, err = self.cli("unblock", A, "--reason", "again", "--readmit")
+        self.assertEqual(rc, 1)
+        self.assertIn("not disabled", err)
+        req = urllib.request.Request(  # noqa: S310 -- loopback
+            self.base + "/v1/operator/unblock",
+            data=json.dumps({"hotkey": A, "reason": "x", "readmit": "yes"}).encode(),
+            headers={"Authorization": f"Bearer {TOKEN}"},
+        )
+        with self.assertRaises(urllib.error.HTTPError) as e:
+            urllib.request.urlopen(req, timeout=10)  # noqa: S310
+        self.assertEqual(e.exception.code, 400)
+
     def test_the_operator_routes_need_the_token(self) -> None:
         for path, data in (
             ("/v1/operator/key_requests", None),
             ("/v1/operator/approve", json.dumps({"hotkey": A}).encode()),
             ("/v1/operator/revoke", json.dumps({"hotkey": A, "reason": "x"}).encode()),
+            ("/v1/operator/unblock", json.dumps({"hotkey": A, "reason": "x"}).encode()),
             ("/v1/operator/launch_equal", json.dumps({"on": True}).encode()),
         ):
             req = urllib.request.Request(self.base + path, data=data)  # noqa: S310 -- loopback

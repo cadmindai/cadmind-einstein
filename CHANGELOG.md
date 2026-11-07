@@ -7,6 +7,22 @@ All notable changes to this project are listed here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- **The operator can lift a wrong disable.** `POST /v1/operator/unblock {hotkey, reason, readmit?}` and
+  `cadmind-einstein-operator unblock HOTKEY --reason WHY [--readmit]`: the block ends, the last strike is taken back
+  (the next block is the shorter one again), and the abuse counts the hotkey has so far are marked acted on, so the
+  same counts do not disable it again on the next tick. `readmit` gives back the admission only to a hotkey that had
+  passed its entry test and is still approved; otherwise it takes the test again. It never grants a key: the miner
+  mints a new one through its usual key request. Logged and kept in the validator's state. Before, a false disable
+  could only be undone by editing the state with the validator stopped.
+
+### Fixed
+
+- **A miner whose key was revoked while it was down mints a new one at startup.** The agent key loaded from state
+  is checked with the platform first; one it no longer takes (401) is minted again at once, where before the miner
+  waited up to an hour for its idle check. When the platform cannot tell, the stored key is kept.
+
 ## [0.5.15] - 2026-11-07
 
 ### Fixed

@@ -575,6 +575,27 @@ class TestSendAndKeepAdmitted(unittest.TestCase):
             agent_miner.keep_admitted(call, mint, lambda w=works: w, log=lambda m: None)
         self.assertEqual((minted, calls), ([], ["/v1/miners/admission"] * 2))
 
+    def test_a_stored_key_the_platform_refuses_is_minted_again_at_startup(self) -> None:
+        minted: list[bool] = []
+        said: list[str] = []
+
+        def mint() -> bool:
+            minted.append(True)
+            return True
+
+        agent_miner.check_stored_key(mint, lambda: False, log=said.append)
+        self.assertEqual(minted, [True])
+        self.assertIn("minting a new one", said[0])
+        minted.clear()
+        for works in (True, None):  # taken, or the platform could not tell: the stored key stays
+            agent_miner.check_stored_key(mint, lambda w=works: w, log=said.append)
+        self.assertEqual(minted, [])
+
+    def test_a_refused_mint_at_startup_leaves_it_to_the_hourly_check(self) -> None:
+        said: list[str] = []
+        agent_miner.check_stored_key(lambda: False, lambda: False, log=said.append)
+        self.assertIn("hourly check", said[-1])
+
     def test_key_works_reads_the_platforms_answer(self) -> None:
         import urllib.error
 

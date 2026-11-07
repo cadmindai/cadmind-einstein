@@ -632,6 +632,9 @@ class Miner:
     """its wait clock: when its last client job's assignment ended (its submit, its hand-back, or
     the job's end); 0 before its first. The router gives the next job to the available miner whose
     clock is oldest (:meth:`Desk.route`)."""
+    admitted_when_blocked: bool = False
+    """it was admitted when its last block took the admission away (:meth:`Desk.unblock` may give
+    it back)"""
 
 
 @dataclass
@@ -1207,6 +1210,8 @@ class Desk:
         m = self.miners.setdefault(hotkey, Miner(hotkey))
         until = self.now_ms() + int(for_s * 1000)
         m.blocked_until_ms = max(m.blocked_until_ms, until)
+        if m.admitted:
+            m.admitted_when_blocked = True
         m.key_id, m.admitted = "", False
         self._queue_revoke(hotkey)
         job = self.jobs.get(m.job)
@@ -1218,6 +1223,72 @@ class Desk:
             {"hotkey": hotkey, "reason": reason, "at_ms": self.now_ms(), "until_ms": until}
         )
         del self.disabled_log[:-500]
+
+    def unblock(self, hotkey: str, reason: str, *, readmit: bool = False) -> dict[str, Any]:
+        """The operator lifts a wrong disable of ``hotkey``: its block ends now, its last strike is
+        taken back (the next one blocks for the shorter time again), and the abuse counts it has
+        now are marked as acted on, so the same counts do not disable it again on the next tick.
+
+        ``readmit`` gives back the admission the block took, only to a hotkey that had passed its
+        entry test (``admission_ms`` set and admitted when blocked, or an entry test of it that
+        ended admitted) and is approved for its key; otherwise it takes the entry test again.
+        Never a key: the miner mints a new one through ``agent_key`` as usual. Logged and
+        persisted; answers what changed."""
+        why = _clean(reason, REASON_MAX)
+        if not why:
+            raise DeskError("an unblock says why, for the log")
+        hotkey = str(hotkey or "").strip()
+        if not hotkey:
+            raise DeskError("hotkey required")
+        if hotkey in self.excluded:
+            raise DeskError("the subnet owner's and the validator's hotkeys do not mine")
+        with self._mut():
+            m = self.miners.get(hotkey)
+            now = self.now_ms()
+            strikes = self.strikes.get(hotkey, 0)
+            if m is None or (m.blocked_until_ms <= now and strikes == 0):
+                raise DeskError("this hotkey is not disabled and has no strike", 409)
+            readmitted = readmit and not m.admitted
+            if readmitted:  # checked before anything changes: a refusal changes nothing
+                passed = m.admission_ms > 0 and (
+                    m.admitted_when_blocked or self._passed_entry_test(hotkey)
+                )
+                if not passed:
+                    raise DeskError("this hotkey never passed its entry test: not readmitted", 409)
+                if not self.approved(hotkey):
+                    raise DeskError("this hotkey is not approved for its key: not readmitted", 409)
+            was_until = m.blocked_until_ms
+            m.blocked_until_ms = 0
+            if strikes > 1:
+                self.strikes[hotkey] = strikes - 1
+            else:
+                self.strikes.pop(hotkey, None)
+            self.abuse_seen[hotkey] = self._abuse_counts(hotkey)
+            if readmitted:
+                m.admitted = True
+            m.admitted_when_blocked = False
+            self.log(
+                f"unblocked by the operator: {hotkey} (strike {strikes} -> "
+                f"{self.strikes.get(hotkey, 0)}{', readmitted' if readmitted else ''}): {why}"
+            )
+            return {
+                "hotkey": hotkey,
+                "was_blocked_until_ms": was_until,
+                "strikes": self.strikes.get(hotkey, 0),
+                "admitted": m.admitted,
+                "readmitted": readmitted,
+                "keyed": bool(m.key_id),
+            }
+
+    def _passed_entry_test(self, hotkey: str) -> bool:
+        """Inside the lock: an entry test of ``hotkey`` ended admitted (a block taken before
+        :attr:`Miner.admitted_when_blocked` was recorded)."""
+        return any(
+            j.kind == "admission"
+            and j.target == hotkey
+            and (j.result or {}).get("label") == "admitted"
+            for j in self.jobs.values()
+        )
 
     def _abuse_counts(self, hotkey: str) -> dict[str, int]:
         return {

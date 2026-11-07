@@ -55,9 +55,11 @@ by which the validator groups practice results. ``cadmind-einstein-miner practic
 brief -- this running miner builds it like any job, never scored -- or prints the results.
 
 A submit or a reject the validator did not take (no answer, 429 or 5xx) is sent again with a
-backoff (:func:`send`). While idle, the miner checks every hour that its agent key still works and
-that it is admitted: a key the validator revoked (abuse, deregistration) is minted again, and a
-dropped admission is requested again (:func:`keep_admitted`). A key request the subnet team has
+backoff (:func:`send`). At startup a key loaded from state is checked with the platform, and one it
+no longer takes is minted again at once (:func:`check_stored_key`). While idle, the miner checks
+every hour that its agent key still works and that it is admitted: a key the validator revoked
+(abuse, deregistration) is minted again, and a dropped admission is requested again
+(:func:`keep_admitted`). A key request the subnet team has
 not approved yet is answered "pending" (202): the miner waits and asks again
 (:func:`.fake_miner.ask_key`), with ``--contact`` sent as a note for the team.
 
@@ -783,6 +785,18 @@ def keep_admitted(call: Any, mint: Any, works: Any, *, log: Any) -> None:
         )
 
 
+def check_stored_key(mint: Any, works: Any, *, log: Any) -> None:
+    """At startup, the agent key loaded from state: one the platform no longer takes (``works()``
+    False, a 401: the validator revoked it while the miner was down, or disabled the miner) is
+    minted again (``mint()``) the way :func:`keep_admitted` does, instead of an hour later; when
+    the platform cannot tell (None) the stored key is kept. A mint refused now (a block still
+    standing) is tried again by the hourly check."""
+    if works() is False:
+        log("the stored agent key is no longer taken by the platform: minting a new one")
+        if not mint():
+            log("no new agent key yet: the hourly check asks again")
+
+
 def setup_label(a: argparse.Namespace) -> str:
     """This miner's setup label: ``--setup``, else :data:`SETUP_ENV` (one line, 80 characters)."""
     from .practice import clean_setup  # noqa: PLC0415
@@ -1197,6 +1211,7 @@ def main(argv: list[str] | None = None) -> int:
     if key_file.exists():
         _write_private(mcp_file, json.dumps(mcp_config(a, key_file.read_text().strip(), key_file)))
         log("agent key loaded from state")
+        check_stored_key(mint, lambda: key_works(a.platform, key_file.read_text().strip()), log=log)
     elif not mint():
         return 1
 

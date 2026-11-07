@@ -5,15 +5,20 @@
     cadmind-einstein-operator ... approve HOTKEY
     cadmind-einstein-operator ... refuse HOTKEY --reason "WORDS THE MINER READS"
     cadmind-einstein-operator ... revoke HOTKEY --reason "WORDS THE MINER READS"
+    cadmind-einstein-operator ... unblock HOTKEY --reason "WHY, FOR THE LOG" [--readmit]
     cadmind-einstein-operator ... launch-equal on|off|status
 
 ``pending`` lists the key requests (hotkey, coldkey, first and last ask, client address, the
 miner's note); ``approve`` lets the hotkey's next ``agent_key`` call mint its key; ``refuse``
 answers its asks with the reason; ``revoke`` deletes its key, drops its admission and sends the job
-it holds to another miner unscored; ``launch-equal`` turns the launch rule (equal weight per
-admitted hotkey) on or off at runtime, saved across restarts (unless ``--launch-equal`` sets it). An
-approved miner still passes the entry test once before any job or weight. The token file (the
-validator's ``--token-file``, mode 0600) is read, never printed.
+it holds to another miner unscored; ``unblock`` lifts a wrong disable (the block ends, the last
+strike is taken back, the abuse counts so far are marked acted on so they do not disable it again;
+``--readmit`` gives back the admission of a hotkey that had passed its entry test, else it takes
+the test again; it never grants a key: the miner mints a new one as usual); ``launch-equal``
+turns the launch rule (equal weight per admitted hotkey) on or off at runtime, saved across
+restarts (unless ``--launch-equal`` sets it). An approved miner still passes the entry test once
+before any job or weight. The token file (the validator's ``--token-file``, mode 0600) is read,
+never printed.
 """
 
 from __future__ import annotations
@@ -69,8 +74,8 @@ def call(
 def parser() -> argparse.ArgumentParser:
     ap = argparse.ArgumentParser(
         prog="cadmind-einstein-operator",
-        description="manual miner onboarding: list, approve, refuse and revoke agent keys; the"
-        " launch rule",
+        description="manual miner onboarding: list, approve, refuse and revoke agent keys; lift"
+        " a disable; the launch rule",
     )
     ap.add_argument("--validator", default="http://127.0.0.1:8793", help="the validator's URL")
     ap.add_argument("--token-file", type=Path, required=True, help="the validator's Bearer token")
@@ -87,6 +92,14 @@ def parser() -> argparse.ArgumentParser:
         p = sub.add_parser(name, help=f"{name} a hotkey (the miner reads the reason)")
         p.add_argument("hotkey")
         p.add_argument("--reason", required=True)
+    p = sub.add_parser("unblock", help="lift a hotkey's disable and take back its last strike")
+    p.add_argument("hotkey")
+    p.add_argument("--reason", required=True, help="why, for the validator's log")
+    p.add_argument(
+        "--readmit",
+        action="store_true",
+        help="give back its admission (only if it had passed its entry test)",
+    )
     p = sub.add_parser("launch-equal", help="the launch rule: on, off, or its status")
     p.add_argument("switch", choices=("on", "off", "status"))
     return ap
@@ -105,6 +118,14 @@ def main(argv: list[str] | None = None) -> int:
             code, out = call(
                 a.validator, token, "POST", "/v1/operator/launch_equal", {"on": a.switch == "on"}
             )
+    elif a.command == "unblock":
+        code, out = call(
+            a.validator,
+            token,
+            "POST",
+            "/v1/operator/unblock",
+            {"hotkey": a.hotkey, "reason": a.reason, "readmit": a.readmit},
+        )
     elif a.command == "approve":
         code, out = call(a.validator, token, "POST", "/v1/operator/approve", {"hotkey": a.hotkey})
     else:

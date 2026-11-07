@@ -38,9 +38,13 @@ hotkeys: the platform's miner dashboard). Onboarding (the operator; ``cadmind-ei
 ``GET /v1/operator/key_requests?state=pending|approved|refused|revoked|all``, ``POST
 /v1/operator/approve {hotkey}``, ``POST /v1/operator/refuse {hotkey, reason}`` and ``POST
 /v1/operator/revoke {hotkey, reason}`` (the key deleted, the admission dropped, its job sent to
-another miner unscored); ``GET /v1/operator/launch_equal`` and ``POST /v1/operator/launch_equal
-{on}`` (the launch rule, on or off at runtime). Jobs are not posted here: the validator CLAIMS them
-from the platform's queue when it has a free admitted miner (``platform.claim``).
+another miner unscored); ``POST /v1/operator/unblock {hotkey, reason, readmit?}`` (a wrong
+disable lifted: the block ends, the last strike is taken back, the abuse counts so far are marked
+acted on; ``readmit: true`` gives back the admission of a hotkey that had passed its entry test;
+never a key: the miner mints a new one as usual); ``GET /v1/operator/launch_equal`` and ``POST
+/v1/operator/launch_equal {on}`` (the launch rule, on or off at runtime). Jobs are not posted
+here: the validator CLAIMS them from the platform's queue when it has a free admitted miner
+(``platform.claim``).
 
 Public (no auth): ``GET /v1/reports`` (every hourly report's name and SHA-256, and the block its
 hash was committed at), ``GET /v1/reports/hour-N.json`` (the report's exact bytes), for
@@ -101,6 +105,7 @@ BEARER = (
     "/v1/operator/approve",
     "/v1/operator/refuse",
     "/v1/operator/revoke",
+    "/v1/operator/unblock",
     "/v1/operator/launch_equal",
 )
 """POST routes for the platform and the operator"""
@@ -723,6 +728,14 @@ def serve(
                 elif self.path == "/v1/operator/revoke":
                     hk = str(body.get("hotkey") or "")
                     self._send(200, desk.revoke(hk, str(body.get("reason") or "")))
+                elif self.path == "/v1/operator/unblock":
+                    readmit = body.get("readmit", False)
+                    if not isinstance(readmit, bool):
+                        self._send(400, {"error": "readmit is true or false"})
+                    else:
+                        hk = str(body.get("hotkey") or "")
+                        why = str(body.get("reason") or "")
+                        self._send(200, desk.unblock(hk, why, readmit=readmit))
                 else:
                     self._send(404, {"error": "no such route"})
             except DeskError as e:

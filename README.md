@@ -253,6 +253,7 @@ cadmind-einstein-operator --validator http://127.0.0.1:8793 --token-file ~/.conf
 cadmind-einstein-operator ... approve MINER_SS58
 cadmind-einstein-operator ... refuse MINER_SS58 --reason "words the miner reads"
 cadmind-einstein-operator ... revoke MINER_SS58 --reason "words the miner reads"
+cadmind-einstein-operator ... unblock MINER_SS58 --reason "why, for the log" [--readmit]
 cadmind-einstein-operator ... launch-equal on|off|status
 ```
 
@@ -260,6 +261,10 @@ cadmind-einstein-operator ... launch-equal on|off|status
 every decision too). `approve` lets the hotkey's next key request mint its key; `refuse` answers its asks with the
 reason; `revoke` deletes its key, drops its admission, sends the job it holds to another miner without scoring
 anyone, and takes it out of the next weight vector. A revoked hotkey approved again takes the entry test again.
+`unblock` lifts a wrong disable: the block ends, its last strike is taken back, and the abuse counts it has so far
+are marked acted on, so they do not disable it again on the next tick; `--readmit` gives back its admission if it had
+passed its entry test (otherwise it takes the test again). It never grants a key: the miner mints a new one through
+its usual key request.
 Approvals are kept in the validator's state. The token is read from its file (0600) and never printed.
 
 A local stack needs no chain: `--dev-uri //Validator --metagraph-file hotkeys.json` (a JSON list of hotkeys, or
@@ -418,6 +423,7 @@ Every answer on these routes is signed by the validator's hotkey (`X-Einstein-Va
 | `POST /v1/operator/approve {hotkey}` | approve a hotkey's key request |
 | `POST /v1/operator/refuse {hotkey, reason}` | refuse it; the miner reads the reason |
 | `POST /v1/operator/revoke {hotkey, reason}` | delete its key, drop its admission, reassign its job unscored |
+| `POST /v1/operator/unblock {hotkey, reason, readmit?}` | lift a wrong disable and its last strike; `readmit` restores a passed admission; never a key |
 | `GET`/`POST /v1/operator/launch_equal {on}` | the launch rule's switch, read or set at runtime |
 
 ### Public routes (no auth)
@@ -543,7 +549,7 @@ still checked.
 | `cadmind_einstein/fetch_mcp.py` | `cadmind-einstein-fetch-mcp`: the miner's local fetch tool (stdio MCP), a fenced download uploaded to the job workspace |
 | `cadmind_einstein/cli.py` | the shared Bittensor-style flags and logging setup |
 | `cadmind_einstein/version.py` | the spec version and the release check |
-| `cadmind_einstein/onboarding.py` | `cadmind-einstein-operator`: list, approve, refuse and revoke miners' key requests |
+| `cadmind_einstein/onboarding.py` | `cadmind-einstein-operator`: list, approve, refuse and revoke miners' key requests; lift a disable |
 | `cadmind_einstein/fake_miner.py` | `cadmind-einstein-fake-miner`: scripted miner (no model) for local end-to-end runs |
 | `deploy/` | systemd units (validator, miner, opt-in updater), an nginx TLS front, pm2 and Docker Compose examples |
 | `scripts/auto_update.sh` | the opt-in updater |
