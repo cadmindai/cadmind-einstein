@@ -13,6 +13,17 @@ All notable changes to this project are listed here. The format follows
   design again, minutes on a large one: the prompt says to check while editing, run one `test` rather than build,
   inspect and test in a row, and never run a heavy command again on unchanged files.
 
+### Fixed
+
+- **A client's answer to a split project's decision is checked where the part records it.** A parent assembled
+  from vendored parts may state a decision only as Watt's link, `same_as = "subs.<key>.decision.<id>"`, whose
+  status and answer live in the part's `subprojects/<key>/spec/*.toml`. The answers gate read only the parent's own
+  `spec/` and did not follow the link, so an answer the part recorded properly failed with "does not quote". The
+  gate now reads the vendored parts' specs, follows the link (a part's own links and supersedes too, bounded, never
+  outside `subprojects/<key>/`) and applies the same open, quote and choice checks there; its reasons name the
+  link (`decision mount (same as subs.lid.decision.fixing)`), and a link whose target is missing says the linked
+  part's decision is missing.
+
 ## [0.5.13] - 2026-11-06
 
 ### Fixed

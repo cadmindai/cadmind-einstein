@@ -20,6 +20,11 @@ the project's own files (the export), trusting nothing the builder says:
   recorded choice. When a decision was answered more than once, its latest answer is the one that
   counts. An answer that arrived after the hand-over never counts against the builder: it is the
   next round's.
+- in a split project, a parent decision may be only a link to a part's decision (Watt's
+  ``same_as = "subs.<key>.decision.<id>"``, ADR-014): the question, its status and its answer are
+  the part's, in the part's tree vendored under ``subprojects/<key>/``. The check follows the link
+  (and a part's own links, ``subprojects/<key>/subprojects/<inner>/``) and asks the same of the
+  part's decision.
 - a job whose client asked not to be asked questions (``no_questions``) leaves no client decision
   open: each would-be question is the builder's own decision (``by = "agent"``, ``status =
   "decided"``), a need no option keeps included (``misses``: Watt accepts it on such a job, since the
@@ -48,7 +53,23 @@ MAX_SPEC_BYTES = 2_000_000
 """A spec file larger than this is not read (it is not a hand-written project file)."""
 MAX_ANSWER_BYTES = 64_000
 MAX_CHAIN = 16
-"""How far a ``superseded_by`` chain is followed."""
+"""How far a ``superseded_by`` / ``same_as`` chain is followed."""
+MAX_DEPTH = 4
+"""How deep vendored parts are read: ``subprojects/<key>/`` nested at most this many times."""
+MAX_SPECS_BYTES = 32_000_000
+"""All the vendored parts' spec files read from one export, together."""
+TREE = "subprojects/"
+"""Where a split project's parts are vendored (Watt's ``subprojects/<key>/``)."""
+KEY = r"[a-z][a-z0-9_]{0,31}"
+"""A part's key, as Watt's sub-project ids are spelled."""
+SAME_AS = re.compile(rf"^subs\.({KEY})\.decision\.([^.\s/]+)$")
+"""A ``same_as`` link: ``subs.<key>.decision.<id>``."""
+MIRRORED = "_m"
+"""A mirrored part's twin (``<key>_m``) is built from its original's tree,
+``subprojects/<key>/``."""
+SPEC_PATH = re.compile(rf"^((?:{TREE}{KEY}/){{0,{MAX_DEPTH}}})spec/[^/]+\.toml$")
+"""A spec file of the project or of a vendored part: group 1 is the part's root ('' for the
+project)."""
 SAID = 3
 """How many problems the gate's reason names (the rest are counted)."""
 MAX_REPORT_BYTES = 64_000_000
@@ -140,11 +161,15 @@ def _from_of(decision: Mapping[str, Any]) -> str:
     return ""
 
 
-def decisions_of(spec_files: Mapping[str, str]) -> dict[str, dict[str, Any]]:
-    """Every ``[decision.<id>]`` of the project's ``spec/*.toml`` (path -> text), by id. A file that
-    does not parse is skipped (Watt's own checks refuse it long before)."""
+def decisions_of(spec_files: Mapping[str, str], root: str = "") -> dict[str, dict[str, Any]]:
+    """Every ``[decision.<id>]`` of the project's ``spec/*.toml`` (path -> text), by id; with
+    ``root`` (``subprojects/<key>/``), of that vendored part's instead. A file that does not parse
+    is skipped (Watt's own checks refuse it long before)."""
     out: dict[str, dict[str, Any]] = {}
-    for _, text in sorted(spec_files.items()):
+    for path, text in sorted(spec_files.items()):
+        got = SPEC_PATH.match(path)
+        if got is None or got.group(1) != root:
+            continue
         try:
             table = tomllib.loads(text).get("decision")
         except tomllib.TOMLDecodeError:
@@ -163,19 +188,86 @@ def open_client(decisions: Mapping[str, Mapping[str, Any]]) -> list[str]:
     )
 
 
-def _chain(
-    decisions: Mapping[str, Mapping[str, Any]], ident: str
-) -> list[tuple[str, Mapping[str, Any]]]:
-    out: list[tuple[str, Mapping[str, Any]]] = []
-    seen: set[str] = set()
-    while ident in decisions and ident not in seen and len(out) < MAX_CHAIN:
-        seen.add(ident)
+def _links(decision: Mapping[str, Any]) -> list[str]:
+    """A decision's ``same_as`` links, as Watt reads them: one string, or a list of them."""
+    got = decision.get("same_as")
+    if isinstance(got, str):
+        return [got]
+    if isinstance(got, list):
+        return [str(r) for r in got]
+    return []
+
+
+@dataclass(frozen=True)
+class _Step:
+    """One decision on the way from the answered one to where it is recorded."""
+
+    ident: str
+    decision: Mapping[str, Any]
+    where: str
+    """how the gate names it: the answered id, then each hop (same as ..., superseded by ...)"""
+    link: bool
+    """whether it is only a ``same_as`` link (its part's decision states the rest)"""
+
+
+class _Parts:
+    """The decisions of the project and of each vendored part, read once per root."""
+
+    def __init__(
+        self, decisions: Mapping[str, Mapping[str, Any]], specs: Mapping[str, str] | None
+    ) -> None:
+        self._specs = specs or {}
+        self._roots = {
+            g.group(1) for g in (SPEC_PATH.match(p) for p in self._specs) if g is not None
+        }
+        self._by_root: dict[str, Mapping[str, Mapping[str, Any]]] = {"": decisions}
+
+    def at(self, root: str) -> Mapping[str, Mapping[str, Any]]:
+        if root not in self._by_root:
+            self._by_root[root] = decisions_of(self._specs, root)
+        return self._by_root[root]
+
+    def follow(self, root: str, ref: str) -> tuple[str, str] | None:
+        """``(part root, decision id)`` a ``same_as`` link stated in ``root`` names; None when it
+        names nothing the export has."""
+        got = SAME_AS.match(ref.strip())
+        if got is None or root.count(TREE) >= MAX_DEPTH:
+            return None
+        key, ident = got.group(1), got.group(2)
+        for k in (key, key.removesuffix(MIRRORED)) if key.endswith(MIRRORED) else (key,):
+            part = f"{root}{TREE}{k}/"
+            if part in self._roots:
+                return (part, ident) if ident in self.at(part) else None
+        return None
+
+
+def _chain(parts: _Parts, ident: str) -> tuple[list[_Step], str]:
+    """The decisions an answer to ``ident`` goes through: ``superseded_by`` within a project or
+    part, ``same_as`` into a part. Second: the link whose part's decision is missing, or ''."""
+    out: list[_Step] = []
+    seen: set[tuple[str, str]] = set()
+    root, hops = "", []
+    while len(out) < MAX_CHAIN and (root, ident) not in seen:
+        decisions = parts.at(root)
+        if ident not in decisions:
+            break
+        seen.add((root, ident))
         d = decisions[ident]
-        out.append((ident, d))
+        where = f"{out[0].ident} ({', '.join(hops)})" if out else ident
+        links = _links(d)
+        out.append(_Step(ident, d, where, bool(links)))
+        if links:
+            followed = next(((r, t) for r in links if (t := parts.follow(root, r))), None)
+            if followed is None:
+                return out, links[0]
+            ref, (root, ident) = followed
+            hops.append(f"same as {ref}")
+            continue
         if d.get("status") != "superseded":
             break
         ident = str(d.get("superseded_by") or "")
-    return out
+        hops.append(f"superseded by {ident}")
+    return out, ""
 
 
 def unrecorded(
@@ -183,9 +275,11 @@ def unrecorded(
     decisions: Mapping[str, Mapping[str, Any]],
     *,
     before_ms: int = 0,
+    specs: Mapping[str, str] | None = None,
 ) -> list[str]:
     """What is wrong with how the project records its client's answers, one line each; [] when every
-    answer that arrived before ``before_ms`` (0: every one) is recorded."""
+    answer that arrived before ``before_ms`` (0: every one) is recorded. ``specs`` (path -> text,
+    as :func:`project_files` reads them) are where a ``same_as`` link finds its part's decision."""
     latest: dict[str, AnswerFile] = {}
     for a in answers:
         if before_ms and a.at_ms > before_ms:
@@ -193,52 +287,63 @@ def unrecorded(
         was = latest.get(a.decision)
         if was is None or (a.at_ms, a.path) > (was.at_ms, was.path):
             latest[a.decision] = a
+    parts = _Parts(decisions, specs)
     problems: list[str] = []
     for ident, a in sorted(latest.items()):
-        chain = _chain(decisions, ident)
+        chain, missing = _chain(parts, ident)
         if not chain:
             problems.append(
                 f"{a.path} answers decision {ident}, which the project no longer has (never"
                 " delete a decision: answer it, or supersede it)"
             )
             continue
-        status = str(chain[0][1].get("status") or "")
-        if status == "open":
+        if missing:
             problems.append(
-                f"{a.path} answers decision {ident}, which is still open: record it (status"
+                f"{a.path} answers decision {chain[-1].where}, which is same_as {missing}: the"
+                " linked part's decision is missing from the project (vendor the part's tree under"
+                " subprojects/<key>/ as it was delivered, or link a decision the part has)"
+            )
+            continue
+        stated = [s for s in chain if not s.link]
+        first = stated[0] if stated else chain[0]
+        if str(first.decision.get("status") or "") == "open":
+            problems.append(
+                f"{a.path} answers decision {first.where}, which is still open: record it (status"
                 ' "answered", its choice, answer = { from = "client: <quote> (cadmind.ai,'
                 ' <date>)" }) and re-run what it reaches'
             )
             continue
-        last_id = chain[-1][0]
         recorded = [
-            (i, d)
-            for i, d in chain
-            if d.get("status") in ("answered", "decided") and quotes(_from_of(d), a)
+            s
+            for s in stated
+            if s.decision.get("status") in ("answered", "decided")
+            and quotes(_from_of(s.decision), a)
         ]
         if not recorded:
-            where = ident if last_id == ident else f"{ident} (superseded by {last_id})"
             problems.append(
-                f"decision {where} does not quote the client's answer {a.path}: its answer.from"
-                ' must be "client: <words from that file> (cadmind.ai, <date>)"'
+                f"decision {chain[-1].where} does not quote the client's answer {a.path}: its"
+                ' answer.from must be "client: <words from that file> (cadmind.ai, <date>)"'
             )
             continue
-        rid, rec = recorded[-1]
+        rec = recorded[-1].decision
         picked = a.choice and not a.words and a.choice in (rec.get("options") or {})
         if picked and str(rec.get("choice") or "") != a.choice:
             problems.append(
-                f"decision {rid} records choice {rec.get('choice')!r}; the client chose"
-                f" {a.choice!r} ({a.path})"
+                f"decision {recorded[-1].where} records choice {rec.get('choice')!r}; the client"
+                f" chose {a.choice!r} ({a.path})"
             )
     return problems
 
 
 def project_files(export: bytes) -> tuple[dict[str, str], dict[str, str]]:
     """``(brief answer files, spec files)`` of a project export (a zip): path in the project ->
-    text. The export's entries may sit under one top directory (the workspace's name); either way
-    paths are the project's own."""
+    text. The spec files are the project's ``spec/*.toml`` and those of its vendored parts
+    (``subprojects/<key>/spec/*.toml``, nested parts too, :data:`MAX_DEPTH`). The export's entries
+    may sit under one top directory (the workspace's name); either way paths are the project's
+    own."""
     briefs: dict[str, str] = {}
     specs: dict[str, str] = {}
+    budget = MAX_SPECS_BYTES
     with zipfile.ZipFile(io.BytesIO(export)) as z:
         infos = [i for i in z.infolist() if not i.is_dir()]
         names = [i.filename for i in infos]
@@ -253,18 +358,17 @@ def project_files(export: bytes) -> tuple[dict[str, str], dict[str, str]]:
                 if top and info.filename.startswith(top)
                 else info.filename
             )
-            if ".." in rel.split("/"):
+            if ".." in rel.split("/") or rel.startswith("/"):
                 continue
             top_level = rel.count("/") == 1
             if top_level and rel.startswith("brief/") and ANSWER_NAME.match(rel[6:]):
                 if info.file_size <= MAX_ANSWER_BYTES:
                     briefs[rel] = z.read(info).decode("utf-8", errors="replace")
-            elif (
-                top_level
-                and rel.startswith("spec/")
-                and rel.endswith(".toml")
-                and info.file_size <= MAX_SPEC_BYTES
-            ):
+            elif SPEC_PATH.match(rel) and info.file_size <= MAX_SPEC_BYTES:
+                if rel.startswith(TREE):  # a part's: within the parts' budget
+                    if info.file_size > budget:
+                        continue
+                    budget -= info.file_size
                 specs[rel] = z.read(info).decode("utf-8", errors="replace")
     return briefs, specs
 
@@ -341,7 +445,7 @@ def check(
         return "the delivered project could not be read to check the client's answers"
     decisions = decisions_of(specs)
     answers = [a for a in (parse_answer(p, t) for p, t in briefs.items()) if a is not None]
-    problems = unrecorded(answers, decisions, before_ms=before_ms)
+    problems = unrecorded(answers, decisions, before_ms=before_ms, specs=specs)
     said: list[str] = []
     if problems:
         more = f" (and {len(problems) - SAID} more)" if len(problems) > SAID else ""

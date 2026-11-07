@@ -223,6 +223,97 @@ class TestCheck(unittest.TestCase):
         )
 
 
+LINK = """[decision.mount]
+same_as = "subs.lid.decision.fixing"
+affects = ["R.holds"]
+"""
+"""A split parent's decision that is its part's (Watt's ``same_as``, ADR-014): no status, no
+answer."""
+PART = "subprojects/lid/spec/decisions.toml"
+
+
+def in_part(decision: str, ident: str = "fixing") -> str:
+    return decision.replace("[decision.mount]", f"[decision.{ident}]")
+
+
+class TestSplitProject(unittest.TestCase):
+    """An answer to a parent decision that is only a link into a vendored part is checked where
+    the part records it."""
+
+    def test_a_link_into_a_part_that_records_the_answer_passes(self) -> None:
+        files = {PATH: ANSWER, "spec/decisions.toml": LINK, PART: in_part(ANSWERED)}
+        self.assertEqual(check(exported(files)), "")
+        # a list of links, as Watt also reads it, and the part's own supersede followed inside it
+        listed = LINK.replace('"subs.lid.decision.fixing"', '["subs.lid.decision.fixing"]')
+        moved = in_part(OPEN).replace(
+            'status = "open"', 'status = "superseded"\nsuperseded_by = "fixing2"'
+        ) + in_part(ANSWERED, "fixing2")
+        self.assertEqual(
+            check(exported({PATH: ANSWER, "spec/decisions.toml": listed, PART: moved})), ""
+        )
+
+    def test_a_part_still_open_names_the_link(self) -> None:
+        files = {PATH: ANSWER, "spec/decisions.toml": LINK, PART: in_part(OPEN)}
+        why = check(exported(files))
+        self.assertIn("still open", why)
+        self.assertIn("decision mount (same as subs.lid.decision.fixing)", why)
+
+    def test_a_part_recording_another_choice_fails(self) -> None:
+        other = in_part(ANSWERED.replace('choice = "tape"', 'choice = "screws"'))
+        why = check(exported({PATH: ANSWER, "spec/decisions.toml": LINK, PART: other}))
+        self.assertIn("decision mount (same as subs.lid.decision.fixing) records choice", why)
+        self.assertIn("the client chose 'tape'", why)
+        unquoted = in_part(ANSWERED.replace("client: tape (foam tape: holds less)", "client: x"))
+        why = check(exported({PATH: ANSWER, "spec/decisions.toml": LINK, PART: unquoted}))
+        self.assertIn("decision mount (same as subs.lid.decision.fixing) does not quote", why)
+
+    def test_a_missing_link_target_says_the_parts_decision_is_missing(self) -> None:
+        for files in (
+            {PATH: ANSWER, "spec/decisions.toml": LINK},  # the part is not vendored
+            {PATH: ANSWER, "spec/decisions.toml": LINK, PART: in_part(ANSWERED, "other")},
+            {
+                PATH: ANSWER,
+                "spec/decisions.toml": LINK.replace("subs.lid", "subs.../lid"),
+                PART: in_part(ANSWERED),
+            },
+        ):
+            why = check(exported(files))
+            self.assertIn("same_as subs.", why)
+            self.assertIn("linked part's decision is missing", why)
+
+    def test_nested_links_are_followed_and_cycles_end(self) -> None:
+        inner = "subprojects/lid/subprojects/hinge/spec/decisions.toml"
+        relink = LINK.replace("[decision.mount]", "[decision.fixing]").replace(
+            "subs.lid.decision.fixing", "subs.hinge.decision.pin"
+        )
+        files = {
+            PATH: ANSWER,
+            "spec/decisions.toml": LINK,
+            PART: relink,
+            inner: in_part(OPEN, "pin"),
+        }
+        why = check(exported(files))
+        self.assertIn(
+            "decision mount (same as subs.lid.decision.fixing, same as subs.hinge.decision.pin),"
+            " which is still open",
+            why,
+        )
+        files[inner] = in_part(ANSWERED, "pin")
+        self.assertEqual(check(exported(files)), "")
+        # a supersede loop inside the part ends, and fails the gate
+        loop = in_part(OPEN).replace(
+            'status = "open"', 'status = "superseded"\nsuperseded_by = "fixing2"'
+        ) + in_part(OPEN, "fixing2").replace(
+            'status = "open"', 'status = "superseded"\nsuperseded_by = "fixing"'
+        )
+        why = check(exported({PATH: ANSWER, "spec/decisions.toml": LINK, PART: loop}))
+        self.assertIn("does not quote", why)
+        # a part's specs never mix into the parent's own decisions
+        self.assertEqual(
+            sorted(decisions_of({"spec/a.toml": LINK, PART: in_part(OPEN)})), ["mount"]
+        )
+
+
 class TestDeskAnswers(unittest.TestCase):
     """The desk on the in-memory platform: the answers check is part of the gate, on the validator's
     fork."""
