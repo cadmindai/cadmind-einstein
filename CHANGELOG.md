@@ -19,6 +19,12 @@ All notable changes to this project are listed here. The format follows
 
 ### Fixed
 
+- **The copy check no longer compares rounds of one project started from the same files.** An attempt now records
+  what it started from (the job's seed workspace, a continuation's base, and the design digest each one's export
+  states); an output that shares one of those starts is not compared. With the seed's features subtracted, the small
+  delta of a round (an assembly) is the same for every builder: a client's next round, started from the same kept
+  version as a round that never delivered, was failed as a copy of it and its miner disabled. Different starts are
+  compared as before, and copy entries kept before this release (no start recorded) are compared as before.
 - **A miner whose key was revoked while it was down mints a new one at startup.** The agent key loaded from state
   is checked with the platform first; one it no longer takes (401) is minted again at once, where before the miner
   waited up to an hour for its idle check. When the platform cannot tell, the stored key is kept.

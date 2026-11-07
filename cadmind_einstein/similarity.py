@@ -317,6 +317,9 @@ class Entry:
     coldkey: str = ""
     copy: bool = False
     """judged a copy: compared against, but its features never count toward the common set"""
+    origins: frozenset[str] = frozenset()
+    """what the attempt started from (the job's seed workspace, the seed's digest, a continuation's
+    base); empty when unknown (a job from the brief alone, or an entry kept before 0.5.16)"""
 
 
 @dataclass
@@ -399,11 +402,15 @@ class CopyCheck:
         *,
         coldkey: str = "",
         remember: bool = True,
+        origins: Iterable[str] = (),
     ) -> dict[str, object] | None:
         """The closest other-hotkey output this one copies, or None; then remember this one.
         ``on_pair`` hears every comparison made -- its similarity, containment, the distinctive
-        sizes and the reason -- for calibrating the thresholds; it changes no verdict."""
+        sizes and the reason -- for calibrating the thresholds; it changes no verdict.
+        ``origins`` names what this attempt started from (:attr:`Entry.origins`): an output that
+        shares one is not compared."""
         feats = sh.features if isinstance(sh, Fingerprint) else sh
+        began = frozenset(o for o in origins if o)
         found: dict[str, object] | None = None
         best = -1.0
         for e in list(self.recent):
@@ -411,6 +418,12 @@ class CopyCheck:
                 # another attempt at the same job is no source to copy from: each builder starts from a fresh grant
                 # of the same seed and never sees another's work, and parts that only assemble come out identical
                 # (the tank's assembly, 2026-11-07: three builders, one digest, two flagged as copies)
+                continue
+            if began & e.origins:
+                # nor is an attempt at another round started from the same project: with the seed's
+                # features subtracted, what is left of a small round (an assembly) is the natural
+                # answer, identical for every builder (2026-11-08: a round after a round that never
+                # delivered, both from the same kept version, flagged as a copy)
                 continue
             identical = bool(digest) and digest == e.digest
             cmp = self.compare(feats, e.features, base=base, coldkeys=(coldkey, e.coldkey))
@@ -444,5 +457,7 @@ class CopyCheck:
                     "why": cmp["why"],
                 }
         if remember:
-            self.remember(Entry(job, hotkey, digest, feats, coldkey, copy=found is not None))
+            self.remember(
+                Entry(job, hotkey, digest, feats, coldkey, copy=found is not None, origins=began)
+            )
         return found

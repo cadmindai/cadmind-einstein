@@ -602,6 +602,17 @@ def _flag(value: object) -> bool | None:
     return value if isinstance(value, bool) else None
 
 
+def _origins(seed: str, start: str, seeded: bytes, started: bytes) -> list[str]:
+    """What a round started from, for the copy check (:attr:`.similarity.Entry.origins`): its seed
+    workspace and a continuation's base, and the design digest each one's export states (the same
+    version kept under another workspace is the same start). Empty for a job from the brief."""
+    out = [f"ws:{seed}" if seed else "", f"ws:{start}" if start else ""]
+    for export in (seeded, started):
+        d = report_digest(export) if export else ""
+        out.append(f"digest:{d}" if d else "")
+    return sorted({o for o in out if o})
+
+
 def _hotkey(m: Miner) -> str:
     return m.hotkey
 
@@ -943,8 +954,12 @@ class Desk:
         for k, row in copies:
             job, hk, digest, sh = row[:4]
             cold, was_copy = (str(row[4]), bool(row[5])) if len(row) >= 6 else ("", False)
+            # what it started from: rows kept before 0.5.16 have none (compared as before)
+            origins = frozenset(str(o) for o in row[6] if o) if len(row) >= 7 else frozenset()
             feats = frozenset(bytes.fromhex(x) for x in sh)
-            self.copies.remember(Entry(job, hk, digest, feats, cold, copy=was_copy))
+            self.copies.remember(
+                Entry(job, hk, digest, feats, cold, copy=was_copy, origins=origins)
+            )
             self._copy_seq = max(self._copy_seq, int(k))
         self._recover()
 
@@ -1001,7 +1016,15 @@ class Desk:
         self.store.put(
             "copy",
             f"{self._copy_seq:012d}",
-            [e.job, e.hotkey, e.digest, [x.hex() for x in e.features], e.coldkey, e.copy],
+            [
+                e.job,
+                e.hotkey,
+                e.digest,
+                [x.hex() for x in e.features],
+                e.coldkey,
+                e.copy,
+                sorted(e.origins),
+            ],
         )
         old = self._copy_seq - max(1, self.copies.policy.window)
         if old > 0:
@@ -3551,6 +3574,9 @@ class Desk:
         )
         base: frozenset[bytes] = frozenset()
         mine: frozenset[bytes] = frozenset()
+        # what the round started from, for the copy check: attempts that share one are not
+        # compared (they began from the same files)
+        origins: list[str] = []
         no_change = False
         if verdict["deliverable"] and job.kind == "client":
             seeded, started = b"", b""
@@ -3566,6 +3592,7 @@ class Desk:
                 with contextlib.suppress(Exception):  # ours too: unread, nothing more subtracted
                     started = self.platform.export(start)
                     base = base | fingerprint(started).features
+            origins = _origins(job.seed, start, seeded, started)
             if self._built_nothing(job, str(verdict["digest"]), seeded, started):
                 no_change = self._answers_changed_nothing(job, seeded, export)
                 if not no_change:
@@ -3635,6 +3662,7 @@ class Desk:
                     base,
                     on_pair=self._watch_pair,
                     coldkey=cold,
+                    origins=origins,
                 )
                 self._remember_copy(self.copies.recent[-1])
                 outcome.copy_of = str(copy["job"]) if copy else ""

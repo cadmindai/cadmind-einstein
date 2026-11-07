@@ -201,6 +201,23 @@ class TestDisguisedCopies(unittest.TestCase):
         assert found is not None
         self.assertEqual(found["job"], "j1")
 
+    def test_another_round_started_from_the_same_project_is_no_copy(self) -> None:
+        """Two rounds of one project, both from its kept version: with the seed subtracted, what is
+        left (an assembly) is the same small answer for every builder. Another project's still is a
+        copy, and an output whose start is unknown is compared as before."""
+        cc = CopyCheck()
+        self.assertIsNone(cc.check("j1", A, "digest-1", fp(VICTIM), origins=["ws:seed-1"]))
+        self.assertIsNone(cc.check("j2", B, "digest-1", fp(VICTIM), origins=["ws:seed-1"]))
+        found = cc.check("j3", C, "digest-1", fp(VICTIM), origins=["ws:seed-2"])
+        self.assertIsNotNone(found)
+        self.assertIsNotNone(cc.check("j4", D, "digest-1", fp(VICTIM)))  # from the brief
+        cc = CopyCheck()
+        cc.check("j1", A, "digest-1", fp(VICTIM))  # an entry kept before the start was recorded
+        self.assertIsNotNone(cc.check("j2", B, "digest-1", fp(VICTIM), origins=["ws:seed-1"]))
+        cc = CopyCheck()
+        cc.check("j1", A, "digest-1", fp(VICTIM), origins=["", ""])  # empty names nothing
+        self.assertIsNotNone(cc.check("j2", B, "digest-1", fp(VICTIM), origins=[""]))
+
     def test_layout_strings_and_number_spelling_do_not_matter(self) -> None:
         a = fp({"src/x.py": "x = f(d=2, why='a')\n"})
         b = fp({"src/x.py": 'x = f(\n    d=2.0,\n    why="another reason",\n)\n'})

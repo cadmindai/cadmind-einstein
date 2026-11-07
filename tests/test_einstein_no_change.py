@@ -8,7 +8,7 @@ import hashlib
 import json
 import random
 import unittest
-from typing import Any
+from typing import Any, ClassVar
 
 from bittensor.sp_core import Keypair
 
@@ -235,6 +235,36 @@ class TestOtherPathsStand(Case):
         files = {**DESIGN, "build/report.json": json.dumps({"digest": design_digest(DESIGN)})}
         self.round("j", {ANSWER: PICKED, **files})
         self.assertEqual(self.desk.status("j")["result"]["label"], "delivered")
+
+
+class TestRoundsOfOneProject(Case):
+    """2026-11-08: a round that never delivered, then the client's next round, both granted from
+    the project's kept version; the second builder's assembly was flagged a copy of the first's."""
+
+    ASSEMBLY: ClassVar[dict[str, str]] = {
+        "src/assembly.txt": "place arm on base\nplace rib on arm\n"
+    }
+
+    def test_the_next_round_from_the_same_seed_is_no_copy(self) -> None:
+        seed = self.p.seed()
+        first = self.round("j1", self.ASSEMBLY, seed=seed)
+        second = self.round("j2", self.ASSEMBLY, seed=seed, exclude=[first])
+        self.assertNotEqual(first, second)
+        self.assertEqual(self.desk.jobs["j2"].attempts[0].kind, "pass")
+        self.assertEqual(self.desk.copied.get(second, 0), 0)
+
+    def test_the_same_output_from_another_project_is_still_a_copy(self) -> None:
+        seed = self.p.seed()
+        other = self.p.seed()
+        self.p.ws[other]["files"]["src/parts/arm.txt"] = "another project's arm"
+        files = self.p.ws[other]["files"]
+        files["build/report.json"] = json.dumps({"digest": design_digest(files)})
+        first = self.round("j1", self.ASSEMBLY, seed=seed)
+        stolen = {**self.p.ws[seed]["files"], **self.ASSEMBLY}
+        stolen = {k: v for k, v in stolen.items() if not k.startswith("build/")}
+        second = self.round("j2", stolen, seed=other, exclude=[first])
+        self.assertEqual(self.desk.jobs["j2"].attempts[0].kind, "copy")
+        self.assertEqual(self.desk.copied.get(second, 0), 1)
 
 
 class TestReading(unittest.TestCase):

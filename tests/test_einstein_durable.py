@@ -251,6 +251,25 @@ class TestRestart(unittest.TestCase):
         wait_state(desk, "c2", ("queued", "done"))
         self.assertEqual(desk.status("c2")["attempts"][0]["kind"], "copy")
 
+    def test_copy_entries_keep_their_start_and_older_rows_load_without_one(self) -> None:
+        with tempfile.TemporaryDirectory() as d:
+            store = Store(Path(d) / "s.sqlite3")
+            feats = ["ab" * 8, "cd" * 8]
+            store.put("copy", f"{1:012d}", ["old", A, "d1", feats, "owner-a", False])
+            store.put("copy", f"{2:012d}", ["older", B, "d2", feats])
+            store.put("copy", f"{3:012d}", ["new", C, "d3", feats, "owner-c", False, ["ws:s1"]])
+            desk = Desk(FakePlatform(), Ledger(), registered=list, store=store)
+            try:
+                got = {e.job: e.origins for e in desk.copies.recent}
+                self.assertEqual(
+                    got, {"old": frozenset(), "older": frozenset(), "new": frozenset({"ws:s1"})}
+                )
+                with desk._mut():
+                    desk._remember_copy(desk.copies.recent[-1])
+                self.assertEqual(store.get("copy", f"{4:012d}")[6], ["ws:s1"])
+            finally:
+                desk.stop()
+
     def test_a_restart_mid_hour_reports_what_an_uninterrupted_run_would(self) -> None:
         with tempfile.TemporaryDirectory() as d1, tempfile.TemporaryDirectory() as d2:
             uids = {OWNER: 0, A: 1, B: 2}
