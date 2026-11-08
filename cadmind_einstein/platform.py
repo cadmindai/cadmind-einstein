@@ -470,6 +470,21 @@ class OperatorClient:
         )
         return dict(out) if isinstance(out, Mapping) else {}
 
+    def finding(self, job: str, finding: Mapping[str, Any]) -> dict[str, Any]:
+        """A vote's finding on a delivered job (:func:`.votes.main_failure`): a ``main`` line of
+        its brief the vote ruled ``fails`` -- ``{id, line, quote, nudge, value, judge_version}``.
+        The platform shows it to the client as a notice; it gates nothing. Sent again, it
+        replaces the one before. 404 for a job the platform does not hold as a delivery."""
+        out = self._call(
+            "POST",
+            f"/api/engine/einstein/jobs/{quote(job, safe='')}/finding",
+            {"finding": dict(finding)},
+            base=self.queue,
+            role=QUEUE,
+            job=True,
+        )
+        return dict(out) if isinstance(out, Mapping) else {}
+
     def fetch_bundle(self, url: str, max_bytes: int) -> bytes:
         """A bundle's bytes from its signed link (no credential is sent: the link is the
         authority). Only a link on the platform's own origin is fetched."""

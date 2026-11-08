@@ -7,6 +7,19 @@ All notable changes to this project are listed here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- **An assembly's judge sees what its parts proved (judge `cadmind-judge/1.3c`).** A review bundle of an assembly
+  made of sub-projects carries `parts.json`: each vendored part's purpose, promises, published requirements with the
+  checker's verdict on each, whether it meets the contract the assembly requires of it, and its open decisions. 1.3c
+  shows it to the judge as the fact sheet's `subprojects`, with the validator's own latest vote on each part
+  (`judged`), and rules that a function proved inside a part counts as shown at the assembly that places the part as
+  its contract says. Its own prompt, `judge_prompt_1.3c.md`; 1.3b's prompt and digest are unchanged, and
+  `--judge 1.3b` rolls back. Votes stay shadow.
+- **A failing main line reaches the client.** A vote whose deciding sample rules a `main` line `fails` is sent to the
+  platform as a finding (`POST /api/engine/einstein/jobs/{job}/finding`: the line, its quote of the brief, the nudge
+  on it), sent again until taken. The platform shows it as a notice; it gates nothing.
+
 ## [0.5.16] - 2026-11-08
 
 ### Added

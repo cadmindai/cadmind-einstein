@@ -268,14 +268,15 @@ class TestModes(unittest.TestCase):
 class TestVersionsAndDigests(unittest.TestCase):
     def test_two_versions_two_digests_and_any_change_moves_one(self) -> None:
         self.assertEqual(
-            set(jm.VERSIONS), {"1.2b", "1.2b-tools", "1.3", "1.3-tools", "1.3b", "1.3b-tools"}
+            set(jm.VERSIONS),
+            {"1.2b", "1.2b-tools", "1.3", "1.3-tools", "1.3b", "1.3b-tools", "1.3c", "1.3c-tools"},
         )
         base, tools = jm.Judge("1.2b"), jm.Judge("1.2b-tools")
         self.assertEqual(
             (base.version, tools.version), ("cadmind-judge/1.2b", "cadmind-judge/1.2b-tools")
         )
         self.assertNotEqual(base.digest(), tools.digest())
-        self.assertEqual(jm.Judge("1.3b").digest(), jm.Judge().digest())  # default since 0.5.5
+        self.assertEqual(jm.Judge("1.3c").digest(), jm.Judge().digest())  # default since 0.5.17
         # the tool budget is part of the tools judge (it is in the prompt), not of 1.2b
         self.assertNotEqual(tools.digest(), jm.Judge("1.2b-tools", tool_budget=8).digest())
         self.assertEqual(base.digest(), jm.Judge("1.2b", tool_budget=8).digest())
@@ -289,7 +290,7 @@ class TestVersionsAndDigests(unittest.TestCase):
             self.assertNotEqual(before, jm.Judge().digest())
         finally:
             jm.V_MAP[1] = old
-        self.assertEqual(jm.Judge("1.3b").digest(), jm.Judge().digest())  # default since 0.5.5
+        self.assertEqual(jm.Judge("1.3c").digest(), jm.Judge().digest())  # default since 0.5.17
         with self.assertRaises(ValueError):
             jm.Judge("1.1")
 
@@ -310,6 +311,7 @@ RELEASED_DIGESTS = {
     "1.2b": "sha256:daf3c7db2ba13874744b663ef08a7f2cabe4266b38d294d57ef054b5407635e8",
     "1.2b-tools": "sha256:d1186b9ee354e5dd2290c674b0cf5ded50c565d64d89a178a3a8ffabab2e1edf",
     "1.3": "sha256:0f9ee439704d29808150feb58689a9fbe35a5cedb9574028d29f6ae19e2cd18f",
+    "1.3b": "sha256:8803a031601b5f4e3f5743064a2b3d5d649c6a35d4c43d17b5d3bec4a4efb23d",
 }
 """The validators' released judges: adding a version must not move these."""
 
@@ -420,15 +422,18 @@ class TestJudge13(unittest.TestCase):
     def test_the_released_digests_do_not_move(self) -> None:
         for name, digest in RELEASED_DIGESTS.items():
             self.assertEqual(jm.judge_digest(name), digest)
-        self.assertEqual(jm.RELEASED, ("1.2b", "1.2b-tools", "1.3", "1.3-tools", "1.3b", "1.3b-tools"))
-        self.assertEqual(jm.VALIDATOR_VERSION, "1.3b")
+        self.assertEqual(
+            jm.RELEASED,
+            ("1.2b", "1.2b-tools", "1.3", "1.3-tools", "1.3b", "1.3b-tools", "1.3c", "1.3c-tools"),
+        )
+        self.assertEqual(jm.VALIDATOR_VERSION, "1.3c")
 
     def test_its_own_prompt_file_and_digest(self) -> None:
         new, tools = jm.Judge("1.3"), jm.Judge("1.3-tools")
         self.assertEqual(new.version, "cadmind-judge/1.3")
         self.assertEqual(jm.VERSIONS["1.3"].prompt, "judge_prompt_1.3.md")
         digests = {jm.judge_digest(v) for v in jm.VERSIONS}
-        self.assertEqual(len(digests), 6)
+        self.assertEqual(len(digests), 8)
         self.assertNotEqual(tools.digest(), jm.Judge("1.3-tools", tool_budget=8).digest())
         self.assertEqual(set(jm.sections("1.3")), set(jm.SECTIONS))
         self.assertIn("NOT RELEASED", jm.prompt_text("1.3"))

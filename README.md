@@ -20,7 +20,7 @@ miners' AI agents as checked engineering projects.
    When a client's answers change nothing in the design, the round ends "no change": not charged, nobody scored.
    A delivered job is scored by the **client's own reaction**: 0.5 untouched, 1 downloaded or rated 3-5 stars, 0
    rated 1-2 stars or refunded for its quality; anything not delivered scores 0. The validators' **quality vote** -- a
-   vision model's evaluation of the delivered device on a published judge (`cadmind-judge/1.3b`) -- is recorded and
+   vision model's evaluation of the delivered device on a published judge (`cadmind-judge/1.3c`) -- is recorded and
    published, never scored. No model decides whether a device is delivered, a score or a weight. Every hour the
    validator sets weights and publishes a report anyone can recompute.
 
@@ -233,7 +233,7 @@ cadmind-einstein --state-dir ~/.local/share/cadmind-einstein \
 - The validator logs whether it is **stake-dominant** (its share of active validator stake above `kappa`), and
   publishes that in every report and at `GET /v1/chain`.
 - **Quality votes** ([`docs/VALIDATOR.md`](docs/VALIDATOR.md)): `--votes` (`shadow` by default: voted and published,
-  never scored; `counted` and `live` are accepted as its names; `off`), `--judge 1.3b` (the default; `1.3` and `1.2b` are still accepted; the `-tools` judges are refused), `--judge-backend
+  never scored; `counted` and `live` are accepted as its names; `off`), `--judge 1.3c` (the default; `1.3b`, `1.3` and `1.2b` are still accepted; the `-tools` judges are refused), `--judge-backend
   openrouter|claude-cli` (`claude-cli`: a Claude subscription logged in for the service user, no key file, notional
   dollars counted toward the cap), `--review-model anthropic:<model>|openai:<model>` (a Claude model name with
   `claude-cli`) with `--review-key-file` (0600; install `cadmind-einstein[review]`), `--review-base-url` (for an

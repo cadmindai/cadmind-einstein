@@ -20,6 +20,13 @@ judged calls :func:`judge`, so one prompt, one version and one digest control th
                     their routes) and Watt's refusal: a version Watt refuses today is capped at 1
                     (its own prompt, ``judge_prompt_1.3b.md``). The validators' judge since 0.5.5.
 ``1.3b-tools``      the same with the instruments.
+``1.3c``            1.3b plus each vendored part's own evidence (the bundle's ``parts.json``, shown
+                    as the fact sheet's ``subprojects``: the part's Watt-proved requirements, its
+                    promises and, when the validator holds one, its own vote's lines) and the rule
+                    that a function proved inside a part counts as shown at the assembly that
+                    places it as its contract says (its own prompt, ``judge_prompt_1.3c.md``).
+                    The validators' judge since 0.5.17.
+``1.3c-tools``      the same with the instruments.
 ==================  ==========================================================================
 
 **Four modes**, one core; only the end of turn 2 differs:
@@ -99,7 +106,7 @@ PROMPT_FILE = PROMPT_DIR / "judge_prompt.md"
 """1.2b's prompt (and 1.2b-tools'); a later version names its own file (:attr:`Version.prompt`)"""
 
 MODES = ("rate", "nudge", "check", "final")
-VALIDATOR_VERSION = "1.3b"
+VALIDATOR_VERSION = "1.3c"
 """the one version a validator runs"""
 TOOL_BUDGET = 12
 NUDGE_KEEP = 2
@@ -151,6 +158,9 @@ class Version:
     watt_today: bool = False
     """1.3b: the fact sheet's ``assembly`` section, and Watt's refusal today caps the score. Off,
     the section is withheld from the model and nothing caps on the refusal."""
+    parts: bool = False
+    """1.3c: the fact sheet's ``subprojects`` section (each vendored part's own evidence, from the
+    bundle's ``parts.json`` and the validator's own votes on the parts). Off, it is withheld."""
 
     @property
     def label(self) -> str:
@@ -207,11 +217,15 @@ VERSIONS["1.3b"] = replace(
 VERSIONS["1.3b-tools"] = replace(
     VERSIONS["1.3-tools"], name="1.3b-tools", prompt="judge_prompt_1.3b.md", watt_today=True
 )
-RELEASED = ("1.2b", "1.2b-tools", "1.3", "1.3-tools", "1.3b", "1.3b-tools")
+VERSIONS["1.3c"] = replace(VERSIONS["1.3b"], name="1.3c", prompt="judge_prompt_1.3c.md", parts=True)
+VERSIONS["1.3c-tools"] = replace(
+    VERSIONS["1.3b-tools"], name="1.3c-tools", prompt="judge_prompt_1.3c.md", parts=True
+)
+RELEASED = ("1.2b", "1.2b-tools", "1.3", "1.3-tools", "1.3b", "1.3b-tools", "1.3c", "1.3c-tools")
 """The versions the subnet owner approved. Any other is for offline re-judging only: a validator
 refuses it (:func:`for_validator`) until its release adds it here."""
 JUDGE_VERSION = VERSIONS[VALIDATOR_VERSION].label
-"""the validators' judge, ``cadmind-judge/1.3b``"""
+"""the validators' judge, ``cadmind-judge/1.3c``"""
 
 
 class ValidatorJudgeError(ValueError):
@@ -474,11 +488,16 @@ def inputs_from_bundle(
         Picture(photo_name(i, name), raw, "client", "the client's photo")
         for i, (name, raw) in enumerate(sorted(getattr(bundle, "photos", {}).items()), 1)
     ]
+    facts = dict(bundle.facts)
+    parts = getattr(bundle, "parts", None)
+    if parts:
+        # the vendored parts' own evidence (the bundle's parts.json): shown from 1.3c, withheld before
+        facts["subprojects"] = [dict(p) for p in parts]
     return Inputs(
         client=dict(bundle.client),
         photos=photos,
         images=images,
-        facts=dict(bundle.facts),
+        facts=facts,
         nudges=[dict(n) for n in nudges],
     )
 
@@ -629,6 +648,7 @@ class Judge:
                             # 1.2b's digest is unchanged: the switch is named only when on
                             **({"assumptions": True} if spec.assumptions else {}),
                             **({"watt_today": True} if spec.watt_today else {}),
+                            **({"parts": True} if spec.parts else {}),
                         },
                         "sampling": {
                             "samples": spec.samples,
@@ -703,6 +723,7 @@ class Judge:
                 FACTS_WITHHELD
                 + (() if self.spec.assumptions else ("assumptions",))
                 + (() if self.spec.watt_today else ("assembly",))
+                + (() if self.spec.parts else ("subprojects",))
             )
             full = {k: v for k, v in inp.facts.items() if k not in withheld}
             data["facts"] = scrub(full)[0]

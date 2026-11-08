@@ -26,6 +26,19 @@ makes the bundle again with the parts assembled in view, and the device is judge
 :data:`PARTS_WAIT_S` after its delivery, when it is judged as it stands. A platform that says
 nothing of parts gets the vote at once, as before.
 
+**An assembly's parts** (judge 1.3c). The bundle's ``parts.json`` gives each vendored part's own
+evidence; to each, the vote adds this validator's own vote on that part -- the delivered job whose
+digest is the part's, its latest vote: its value, the lines of the sample its score came from with
+their verdicts, and its kept nudges (``judged``) -- so that a function proved inside a part is not
+ruled "cannot tell" at the assembly (:func:`part_votes`).
+
+**A failing main line reaches the client** (:func:`main_failure`). A vote whose deciding sample
+rules a ``main`` useless_if line ``fails`` is sent to the platform as a finding on that job
+(:meth:`.platform.Platform.finding`): the line, its quote of the brief and the nudge raised on it.
+The platform shows it to the client as a notice before Assemble; nothing is refused or gated on it.
+A finding the platform could not take is sent again on later passes
+(:meth:`Reviewer.send_findings`).
+
 **The queue.** The desk tells the reviewer each delivery the platform took and charged
 (:attr:`.desk.Desk.on_delivered`). One review runs at a time (:meth:`Reviewer.pass_once`, called
 by the daemon's review thread): ask the platform for the bundle (it may still be rendering: asked
@@ -68,6 +81,10 @@ from .review import (
     vote_from,
 )
 from .scoring import HOUR_MS, WINDOW_H
+
+FINDING_CHARS = 300
+"""a finding's line, quote and nudge, each at most this long"""
+FINDING_TRIES = 8
 
 MODES = ("off", "shadow")
 ALIASES = {"live": "shadow", "counted": "shadow"}
@@ -205,6 +222,7 @@ class Reviewer:
         if not self.active or not self._busy.acquire(blocking=False):
             return "idle"
         try:
+            self.send_findings()
             now = self.now_ms()
             due = [r for r in self.queue() if r["state"] == "pending" and r["next_ms"] <= now]
             if not due:
@@ -286,10 +304,12 @@ class Reviewer:
         if got.get("image_set") and got["image_set"] != bundle.image_set:
             return self._later(row, "the bundle's image set is not the one the platform named")
         calls: list[dict[str, Any]] = []
+        inputs = inputs_from_bundle(bundle)
+        judged = self.with_part_votes(inputs.facts)
         try:
             got_vote = self.judge_cfg.run(
                 "rate",
-                inputs_from_bundle(bundle),
+                inputs,
                 self.model,
                 samples=self.samples,
                 spend=self.spend,
@@ -345,6 +365,7 @@ class Reviewer:
             unavailable=failed,
             nudge_merge=got_vote.get("nudge_merge"),
             usage=got_vote.get("usage"),
+            part_votes=judged,
         )
         self.kv.put(
             "vote",
@@ -363,6 +384,10 @@ class Reviewer:
         )
         row.update(state="done", why="", done_ms=self.now_ms())
         self.kv.put("review", job, row)
+        finding = main_failure(vote.as_json())
+        if finding is not None:
+            self.kv.put("finding", job, {"job": job, "finding": finding, "tries": 0, "sent": False})
+            self.send_findings()
         self.log(
             job_event(
                 "vote-recorded",
@@ -375,6 +400,58 @@ class Reviewer:
             )
         )
         return "voted"
+
+    def with_part_votes(self, facts: dict[str, Any] | None) -> dict[str, str]:
+        """Add to each vendored part of the fact sheet (``subprojects``, judge 1.3c) this
+        validator's own latest vote on it, as ``judged``. Answers ``{part key: job}`` of the
+        votes added; nothing for a judge that does not show the parts."""
+        if not self.judge_cfg.spec.parts or not isinstance(facts, dict):
+            return {}
+        listed = facts.get("subprojects")
+        if not isinstance(listed, list) or not listed:
+            return {}
+        found = part_votes(
+            [str(p.get("digest") or "") for p in listed if isinstance(p, Mapping)],
+            self.kv.items("job"),
+            self.kv.items("vote"),
+            self.me,
+        )
+        added: dict[str, str] = {}
+        for p in listed:
+            if not isinstance(p, dict):
+                continue
+            got = found.get(str(p.get("digest") or ""))
+            if got is not None:
+                p["judged"] = got[1]
+                added[str(p.get("key") or "")] = got[0]
+        return added
+
+    def send_findings(self) -> int:
+        """Send the findings the platform has not taken yet (:func:`main_failure`). A platform
+        that refuses one for good (4xx other than 429: an older platform, a job it does not hold)
+        or one tried :data:`FINDING_TRIES` times is not tried again. Answers how many it sent."""
+        sent = 0
+        for job, kept in self.kv.items("finding").items():
+            if kept.get("sent") or int(kept.get("tries") or 0) >= FINDING_TRIES:
+                continue
+            send = getattr(self.platform, "finding", None)
+            if send is None:
+                return sent
+            row = dict(kept)
+            row["tries"] = int(row.get("tries") or 0) + 1
+            try:
+                send(job, row["finding"])
+                row["sent"] = True
+                sent += 1
+                self.log(job_event("finding-sent", job, line=row["finding"].get("id")))
+            except PlatformError as e:
+                if 400 <= int(e.status or 0) < 500 and int(e.status or 0) != 429:
+                    row["tries"] = FINDING_TRIES
+                row["why"] = f"{e.status} {e.code}"[:120]
+            except Exception as e:  # noqa: BLE001 -- the platform unreachable: tried again later
+                row["why"] = f"{type(e).__name__}"[:120]
+            self.kv.put("finding", job, row)
+        return sent
 
     def judge_bundle(self, got: Mapping[str, Any]) -> dict[str, Any]:
         """One vote's samples on a ready bundle (``got``: the platform's answer naming it), made
@@ -554,6 +631,117 @@ class Reviewer:
                         },
                     )
                 self.kv.delete("vote", k)
+
+
+def deciding_sample(vote: Mapping[str, Any]) -> Mapping[str, Any] | None:
+    """The sample a vote's score came from: the first whose score is the lower median."""
+    samples = [
+        s
+        for s in vote.get("samples") or []
+        if isinstance(s, Mapping) and isinstance(s.get("score"), int)
+    ]
+    if not samples:
+        return None
+    low = statistics.median_low([int(s["score"]) for s in samples])
+    return next(s for s in samples if int(s["score"]) == low)
+
+
+def _lines(sample: Mapping[str, Any]) -> list[dict[str, Any]]:
+    """A sample's useless_if lines, each with its ruling."""
+    derived = sample.get("derived") if isinstance(sample.get("derived"), Mapping) else {}
+    rulings = {str(r.get("id")): r for r in sample.get("lines") or [] if isinstance(r, Mapping)}
+    out = []
+    for u in derived.get("useless_if") or []:
+        if not isinstance(u, Mapping):
+            continue
+        r = rulings.get(str(u.get("id")), {})
+        out.append(
+            {
+                "id": str(u.get("id") or ""),
+                "line": str(u.get("line") or ""),
+                "main": bool(u.get("main")),
+                "quote": str(u.get("quote") or ""),
+                "verdict": str(r.get("verdict") or ""),
+                "seen": str(r.get("seen") or ""),
+            }
+        )
+    return out
+
+
+def main_failure(vote: Mapping[str, Any]) -> dict[str, Any] | None:
+    """A vote's finding for the client: the first ``main`` useless_if line its deciding sample
+    rules ``fails`` -- ``{id, line, quote, nudge, value, judge_version}``, the nudge being the
+    sample's (else the vote's) nudge raised on that line or quoting the same words; None when no
+    main line fails."""
+    sample = deciding_sample(vote)
+    if sample is None:
+        return None
+    failed = next((u for u in _lines(sample) if u["main"] and u["verdict"] == "fails"), None)
+    if failed is None:
+        return None
+    nudges = [n for n in sample.get("nudges") or [] if isinstance(n, Mapping) and not n.get("void")]
+    nudge = next((n for n in nudges if str(n.get("line") or "") == failed["id"]), None)
+    if nudge is None:
+        kept = [n for n in vote.get("nudges") or [] if isinstance(n, Mapping)]
+        nudge = next(
+            (n for n in nudges + kept if failed["quote"] and n.get("quote") == failed["quote"]),
+            None,
+        )
+    return {
+        "id": failed["id"],
+        "line": failed["line"][:FINDING_CHARS],
+        "quote": failed["quote"][:FINDING_CHARS],
+        "nudge": str((nudge or {}).get("text") or "")[:FINDING_CHARS],
+        "value": vote.get("value"),
+        "judge_version": str(vote.get("judge_version") or ""),
+    }
+
+
+def part_votes(
+    digests: Iterable[str],
+    jobs: Mapping[str, Any],
+    votes: Mapping[str, Any],
+    me: str,
+) -> dict[str, tuple[str, dict[str, Any]]]:
+    """``{digest: (job, judged)}``: for each part digest, this validator's (``me``) vote on the
+    latest delivered job whose result is at that digest, as an assembly's judge reads it --
+    ``{value, lines, nudges}``, the lines those of the vote's deciding sample with their verdicts.
+    A digest no vote of ours is on is left out."""
+    wanted = {d for d in digests if d}
+    best: dict[str, tuple[int, str]] = {}
+    for job, row in jobs.items():
+        if not isinstance(row, Mapping):
+            continue
+        result = row.get("result") if isinstance(row.get("result"), Mapping) else {}
+        digest = str(result.get("digest") or "")
+        if digest not in wanted or f"{job}|{me}" not in votes:
+            continue
+        at = int(row.get("created_ms") or 0)
+        if digest not in best or at > best[digest][0]:
+            best[digest] = (at, str(job))
+    out: dict[str, tuple[str, dict[str, Any]]] = {}
+    for digest, (_, job) in best.items():
+        vote = votes[f"{job}|{me}"]
+        sample = deciding_sample(vote) if isinstance(vote, Mapping) else None
+        if sample is None:
+            continue
+        out[digest] = (
+            job,
+            {
+                "value": vote.get("value"),
+                "judge_version": str(vote.get("judge_version") or ""),
+                "lines": [
+                    {k: u[k] for k in ("id", "line", "main", "verdict", "seen")}
+                    for u in _lines(sample)
+                ],
+                "nudges": [
+                    str(n.get("text") or "")
+                    for n in vote.get("nudges") or []
+                    if isinstance(n, Mapping) and n.get("text")
+                ][:3],
+            },
+        )
+    return out
 
 
 def cost_of(calls: Iterable[Mapping[str, Any]]) -> dict[str, Any]:

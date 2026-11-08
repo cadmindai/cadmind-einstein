@@ -110,6 +110,9 @@ class Bundle:
     photos: dict[str, bytes] = field(default_factory=dict)
     """the client's photos (our validator's bundle only; checked against ``photos.sha256``):
     name -> bytes, sorted by name. They are not part of the image set."""
+    parts: list[dict[str, Any]] = field(default_factory=list)
+    """an assembly's vendored parts, each with its own evidence (``parts.json``, checked against
+    the manifest's ``parts_sha256``; judge 1.3c): empty when the bundle has none"""
 
     def views(self) -> list[str]:
         return list(self.images)
@@ -189,9 +192,27 @@ def read_bundle(data: bytes) -> Bundle:
             raise BundleError("client.json does not match the manifest")
         facts, client = json.loads(facts_raw), json.loads(client_raw)
         photos = _photos(z, names, manifest)
+        parts = _parts(z, names, manifest)
     if not isinstance(facts, dict) or not isinstance(client, dict):
         raise BundleError("facts.json and client.json are JSON objects")
-    return Bundle(manifest, images, facts, client, image_set, _sha(data), photos)
+    return Bundle(manifest, images, facts, client, image_set, _sha(data), photos, parts)
+
+
+def _parts(
+    z: zipfile.ZipFile, names: set[str], manifest: Mapping[str, Any]
+) -> list[dict[str, Any]]:
+    """The bundle's ``parts.json`` (an assembly's vendored parts and their evidence), checked
+    against the manifest's ``parts_sha256``; none when the bundle carries none."""
+    if "parts.json" not in names:
+        return []
+    raw = z.read("parts.json")
+    if manifest.get("parts_sha256") and manifest["parts_sha256"] != _sha(raw):
+        raise BundleError("parts.json does not match the manifest")
+    doc = json.loads(raw)
+    listed = doc.get("parts") if isinstance(doc, dict) else None
+    if not isinstance(listed, list):
+        raise BundleError("parts.json lists no parts")
+    return [dict(p) for p in listed if isinstance(p, dict)]
 
 
 def _photos(z: zipfile.ZipFile, names: set[str], manifest: Mapping[str, Any]) -> dict[str, bytes]:
