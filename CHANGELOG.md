@@ -7,6 +7,8 @@ All notable changes to this project are listed here. The format follows
 
 ## [Unreleased]
 
+## [0.5.16] - 2026-11-08
+
 ### Added
 
 - **The operator can lift a wrong disable.** `POST /v1/operator/unblock {hotkey, reason, readmit?}` and
@@ -16,6 +18,14 @@ All notable changes to this project are listed here. The format follows
   passed its entry test and is still approved; otherwise it takes the test again. It never grants a key: the miner
   mints a new one through its usual key request. Logged and kept in the validator's state. Before, a false disable
   could only be undone by editing the state with the validator stopped.
+
+### Changed
+
+- **Reference miner: fit first.** The prompt and `docs/MINER.md` now ask a builder to walk only the client's own
+  use of the device, to source a fit-critical size from a reference model and then the client's measure before a
+  drawing, to price each question's options in numbers, to test a whole feature rather than one point of it, to keep
+  covered controls workable, to grip a flexible part by a declared interference, and to make the notes state the
+  values the model has.
 
 ### Fixed
 

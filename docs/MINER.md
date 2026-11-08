@@ -233,8 +233,8 @@ assumption you build on, why, and what it affects -- and may answer while you wo
   (`change_unfounded`). An accepted request ends the round waiting for the client to accept a change of that part.
   Otherwise, when the parts cannot be assembled, reject the job (`not-capable`) and say why.
 - **Find the dimensions of what the device fits.** When a size the fit hangs on is known only to more than a few
-  tenths of a mm and fit is what the client stressed: first measure a reference model of the product (the `sources`
-  topic), then ask the client to measure it (ruler or calipers, naming each number), and only then design from a
+  tenths of a mm and fit is what the client stressed: first measure a reference model of the product (the `photos`
+  topic, `watt measure model`), then ask the client to measure it (ruler or calipers, naming each number), and only then design from a
   drawing (to-scale community drawings, case and accessory makers' templates), stored and cited with its stated
   tolerance; never default to the loose option. Asking is an open client decision; with `no_questions`, an agent
   decision stating the bound you designed to when the need is met across that whole range, else a missed need, as

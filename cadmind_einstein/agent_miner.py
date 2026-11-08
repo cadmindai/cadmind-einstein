@@ -195,7 +195,7 @@ protrusions); store each page you use with `fetch_to_workspace` (or with the hos
 the local tool is not there) and cite it. A spec sheet's overall size is not enough for a part \
 that fits around a product. When a size the fit hangs on is known only to more than a few tenths \
 of a mm and fit is what the client stressed: first measure a reference model of the product (the \
-`sources` topic), then ask the client to measure it (ruler or calipers, naming each number), and \
+`photos` topic, `watt measure model`), then ask the client to measure it (ruler or calipers, naming each number), and \
 only then design from a drawing (to-scale community drawings, case and accessory makers' \
 templates, cited with their stated tolerance); never default to the loose option. When the client \
 cannot be asked, design to a bounded estimate only if the need is met across its whole range, else \
