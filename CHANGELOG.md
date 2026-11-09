@@ -7,6 +7,8 @@ All notable changes to this project are listed here. The format follows
 
 ## [Unreleased]
 
+## [0.5.17] - 2026-11-09
+
 ### Added
 
 - **An assembly's judge sees what its parts proved (judge `cadmind-judge/1.3c`).** A review bundle of an assembly
@@ -19,6 +21,11 @@ All notable changes to this project are listed here. The format follows
 - **A failing main line reaches the client.** A vote whose deciding sample rules a `main` line `fails` is sent to the
   platform as a finding (`POST /api/engine/einstein/jobs/{job}/finding`: the line, its quote of the brief, the nudge
   on it), sent again until taken. The platform shows it as a notice; it gates nothing.
+
+### Fixed
+
+- **CI runs the tests again.** The lint step had failed since 0.5.5 on formatting and line length, so the test step
+  never ran there. The code is reformatted with `ruff format` and the long lines are wrapped; no behaviour changes.
 
 ## [0.5.16] - 2026-11-08
 
