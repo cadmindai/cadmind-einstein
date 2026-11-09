@@ -179,6 +179,11 @@ account, no auto-memory, no plugin enabled. With ``--disable-slash-commands``, `
 :data:`ISOLATION_ENV`, the agent sees nothing of the operator's own Claude Code configuration:
 it learns Watt from ``watt_guide``, served by the platform and matched to its version, so a run is
 repeatable and no operator skill, memory or ``CLAUDE.md`` can add instructions to it."""
+BASELINE_MODEL = "claude-sonnet-5-5"
+BASELINE_EFFORT = "high"
+"""CADmind's baseline (docs/MINER.md, "The baseline"): Claude Code running Sonnet 5.5 alone at
+effort high, the setup CADmind's own miners run. A miner may change both; the quality this setup
+delivers today is the bar a miner is held to."""
 ISOLATION_ENV: dict[str, str] = {
     "CLAUDE_CODE_DISABLE_CLAUDE_MDS": "1",
     "CLAUDE_CODE_DISABLE_AUTO_MEMORY": "1",
@@ -438,6 +443,9 @@ def agent_argv(
     ]
     if a.model:
         argv += ["--model", a.model]
+    effort = getattr(a, "effort", "")
+    if effort:
+        argv += ["--effort", effort]
     return argv + list(a.agent_arg)
 
 
@@ -981,7 +989,18 @@ def parser() -> argparse.ArgumentParser:
     ap.add_argument("--platform", required=True, help="the CADmind platform's base URL")
     ap.add_argument("--state", type=Path, required=True, help="a private directory for the key")
     ap.add_argument("--agent-cli", default="claude", help="Claude Code's CLI (default: claude)")
-    ap.add_argument("--model", default="", help="passed to the agent; empty: the CLI's default")
+    ap.add_argument(
+        "--model",
+        default=BASELINE_MODEL,
+        help=f"passed to the agent (default {BASELINE_MODEL}, the baseline: docs/MINER.md); "
+        "empty: the CLI's default",
+    )
+    ap.add_argument(
+        "--effort",
+        default=BASELINE_EFFORT,
+        help=f"the agent's reasoning effort (default {BASELINE_EFFORT}, the baseline); empty: the "
+        "CLI's default",
+    )
     ap.add_argument("--agent-arg", action="append", default=[], help="extra CLI argument")
     ap.add_argument(
         "--agent-user-settings",

@@ -10,7 +10,8 @@ miners' AI agents as checked engineering projects.
 
 1. **A client describes a device** on the CADmind platform: what it must do, where it goes, how it is made.
 2. **A miner designs it.** The validator gives the job to **one** miner. The miner's own agent (any model, any
-   harness) builds the device as a **Watt project** -- requirements, sources, parts and tests -- using CADmind's
+   harness, held to the quality of the baseline: Claude Sonnet 5.5 at effort high, see
+   [`docs/MINER.md`](docs/MINER.md#the-baseline-sonnet-55-at-effort-high)) builds the device as a **Watt project** -- requirements, sources, parts and tests -- using CADmind's
    hosted Watt engineering tools over MCP (or REST) with an agent key bound to the miner's hotkey. Watt checks,
    builds and tests the project and runs a mutation guard that proves the tests really constrain the design.
 3. **The validator checks and scores it.** When the miner submits, the validator freezes and forks the workspace

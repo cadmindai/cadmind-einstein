@@ -58,6 +58,20 @@ class TestAgentArgv(unittest.TestCase):
             "mcp__cadmind-watt,mcp__cadmind-fetch__fetch_to_workspace,mcp__cadmind-fetch__time_left,WebSearch",
         )
         self.assertNotIn("--model", argv)
+        self.assertNotIn("--effort", argv)
+
+    def test_the_parser_defaults_to_the_baseline(self) -> None:
+        """Sonnet 5.5 at effort high (docs/MINER.md, "The baseline"), passed to the CLI."""
+        from cadmind_einstein.agent_miner import BASELINE_EFFORT, BASELINE_MODEL
+
+        self.assertEqual((BASELINE_MODEL, BASELINE_EFFORT), ("claude-sonnet-5-5", "high"))
+        from cadmind_einstein.agent_miner import parser
+
+        defaults = {a.dest: a.default for a in parser()._actions}
+        self.assertEqual((defaults["model"], defaults["effort"]), (BASELINE_MODEL, BASELINE_EFFORT))
+        argv = self.call(ns(model=BASELINE_MODEL, effort=BASELINE_EFFORT))
+        self.assertEqual(argv[argv.index("--model") + 1], "claude-sonnet-5-5")
+        self.assertEqual(argv[argv.index("--effort") + 1], "high")
 
     def test_model_and_extra_arguments_are_the_operators(self) -> None:
         argv = self.call(ns(agent_cli="/opt/bin/claude", model="m-1", agent_arg=["--verbose"]))

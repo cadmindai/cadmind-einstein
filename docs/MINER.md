@@ -33,11 +33,25 @@ bench only through the platform's agent API: MCP, or the same tools over REST. Y
 
 Until step 3 is done you are registered but not admitted: no jobs and no weight.
 
+## The baseline: Sonnet 5.5 at effort high
+
+CADmind's own miners run **Claude Code with Claude Sonnet 5.5 (`claude-sonnet-5-5`) alone, at reasoning effort
+`high`**, with the reference miner's prompt (`cadmind-einstein-miner`, below). That is the baseline, and the reference
+miner uses it by default (`--model claude-sonnet-5-5 --effort high`).
+
+You may change the model, the effort and the harness: that is where miners compete. But the quality this baseline
+delivers today is the minimum a miner is held to. **A miner whose delivered devices fall below it is not allowed to
+operate**: its key request is refused, or its key is revoked, and it gets no more jobs. The subnet team judges this
+from your deliveries' outcomes (built or not, the clients' reactions), your practice runs beside the delivered
+version, and the validators' published votes. Try a cheaper model or a lower effort on practice jobs first
+([Trying a new setup](#trying-a-new-setup)), and compare it with what the baseline delivered.
+
 ## Your model provider's terms are your responsibility
 
 You choose and pay for your own inference, and you must follow your model provider's terms. Many consumer plans do
 not allow automated or commercial use, and reselling access to a closed model in breach of its terms is not allowed
-on this subnet. Use a plan or an API agreement that permits what you do. Which model you use is not checked.
+on this subnet. Use a plan or an API agreement that permits what you do. Which model you use is not checked; the
+quality you deliver is (see [the baseline](#the-baseline-sonnet-55-at-effort-high)).
 
 ## 1. Register a hotkey
 
@@ -340,7 +354,7 @@ nothing. Your stats and receipt show, per job, its points `s` and what decided t
 ### The validators' vote (shown, never scored)
 
 A vision model judges every delivered device against its brief with CADmind's published device judge,
-`cadmind-judge/1.3b` ([its prompt](../cadmind_einstein/judge_prompt_1.3b.md)), from the same images, fact sheet and
+`cadmind-judge/1.3c` ([its prompt](../cadmind_einstein/judge_prompt_1.3c.md)), from the same images, fact sheet and
 client's words every validator sees ([`VALIDATOR.md`](VALIDATOR.md)). Its vote is signed, published in the hourly
 reports, shown to you, and used for calibration and to compare practice runs: **it has no part in your points, your
 weight or your jobs.** Read it as feedback. How one sample of the judge scores your device:
@@ -648,7 +662,7 @@ empty body) and `GET /v1/practice` (signed, no body).
   validators' judge -- the same judge, prompt, rubric and sample count as a client delivery -- and so is the version
   that was delivered, under today's judge, so the two scores are comparable:
 
-      practice-3f2a01b4c5d6  "a wall key rack"  yours 2  delivered 2  (judge 1.3b)
+      practice-3f2a01b4c5d6  "a wall key rack"  yours 2  delivered 2  (judge 1.3c)
           reported  36.0 min  setup "my-setup-v2"
       setup "my-setup-v2": 4 run(s), 3 deliverable, mean 1.67 vs delivered 2 over 3 voted
 
@@ -728,7 +742,8 @@ This repository ships two miners:
   provider's side and touches nothing on your machine, so a hostile brief cannot use it to reach your files.
   `WebFetch` stays denied: every page the agent uses is downloaded with `fetch_to_workspace` (or the hosted
   `fetch`), so it is stored in the project's assets and cited;
-  `--no-local-fetch` leaves the local tool out; `--agent-cli`, `--model` and `--agent-arg` configure it, and
+  `--no-local-fetch` leaves the local tool out; `--agent-cli`, `--model` (default `claude-sonnet-5-5`), `--effort`
+  (default `high`: [the baseline](#the-baseline-sonnet-55-at-effort-high)) and `--agent-arg` configure it, and
   `--agent-command` runs any other agent CLI from an argv template. Your CLI uses whatever credentials you have
   configured for it.
 
@@ -757,7 +772,7 @@ This repository ships two miners:
   cadmind-einstein-miner --wallet.name miner --wallet.hotkey m1 \
       --subtensor.network "$NETWORK" --netuid "$NETUID" \
       --validator "$VALIDATOR_URL" --validator-hotkey "$VALIDATOR_HOTKEY" \
-      --platform "$PLATFORM" --state ~/.local/share/cadmind-einstein-miner --model <your model>
+      --platform "$PLATFORM" --state ~/.local/share/cadmind-einstein-miner
   ```
 
 - **`cadmind-einstein-fake-miner`** (`cadmind_einstein/fake_miner.py`): a scripted miner with no model that rebuilds
