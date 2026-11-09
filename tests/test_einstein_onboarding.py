@@ -660,6 +660,46 @@ class TestAskKey(unittest.TestCase):
         self.assertEqual(code, 202)
 
 
+class TestAskKeyNewcomer(unittest.TestCase):
+    """Onboarding test 2026-11-09: the miner quit on the early 403 and was silent while pending."""
+
+    def test_a_registration_the_validator_has_not_read_yet_is_waited_for_not_fatal(self) -> None:
+        answers = [
+            (403, {"error": "hotkey is not registered on the subnet"}),
+            (403, {"error": "hotkey is not registered on the subnet"}),
+            (202, {"pending": True, "message": "wait", "retry_after_s": 900}),
+            (200, {"key_id": "k", "sealed": {}}),
+        ]
+        slept: list[float] = []
+        said: list[str] = []
+        code, got = ask_key(
+            lambda _p, _b: answers.pop(0), b"\x01" * 32, log=said.append, sleep=slept.append
+        )
+        self.assertEqual((code, got["key_id"]), (200, "k"))
+        self.assertEqual(slept, [60.0, 60.0, 900.0])
+        self.assertEqual(sum("does not see this hotkey registered yet" in m for m in said), 1)
+
+    def test_any_other_refusal_still_ends_the_ask(self) -> None:
+        code, got = ask_key(
+            lambda _p, _b: (403, {"error": "refused by the subnet team"}),
+            b"\x01" * 32,
+            log=lambda _m: None,
+            sleep=lambda _s: None,
+        )
+        self.assertEqual((code, got["error"]), (403, "refused by the subnet team"))
+
+    def test_every_pending_ask_is_logged_so_the_miner_is_seen_alive(self) -> None:
+        answers = [(202, {"pending": True, "message": "write to us", "retry_after_s": 900})] * 3 + [
+            (200, {"key_id": "k", "sealed": {}})
+        ]
+        said: list[str] = []
+        ask_key(lambda _p, _b: answers.pop(0), b"\x01" * 32, log=said.append, sleep=lambda _s: None)
+        self.assertEqual(
+            sum(m.startswith("agent key: pending approval -- write to us") for m in said), 1
+        )
+        self.assertEqual(sum(m.startswith("agent key: still pending at ") for m in said), 3)
+
+
 class TestUnblock(_Case):
     """A wrong disable is lifted by the operator, not by editing the state with the daemon down."""
 

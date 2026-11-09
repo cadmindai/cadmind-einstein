@@ -64,7 +64,8 @@ provider, or a router), and check your provider's terms before you mine with a p
 `btcli` comes with this repository's package (`pip install -e .` installs bittensor 11, which ships it). Do not
 install the separate `bittensor-cli` package: it owns the same command and breaks it. The commands are bittensor
 11's; older Bittensor guides spell them `new_coldkey`, `subnet register`, `--wallet.name`, `--subtensor.network`.
-You need test TAO on the testnet: registering costs the burn `burn-cost` shows.
+You need test TAO on the testnet: registering costs the burn `burn-cost` shows (a fraction of a TAO on the
+testnet; 1 test TAO is plenty).
 
 ```bash
 btcli wallet new-coldkey --wallet miner
@@ -137,6 +138,13 @@ repeat) on copies, a suspension, repeated failed admission tests, or a pattern o
 overturn: its key is revoked, its admission dropped and its open job given to another miner. The subnet team can
 also revoke a key by hand: the same happens, the hotkey is out of the next weight vector, and it gets no key until
 it is approved again; then it takes the entry test again.
+
+**What the reference miner says while you wait.** Right after registering, the validator may not see your hotkey
+yet (it reads the chain every few minutes): the miner says so once and asks again every minute, it does not exit.
+While your request is pending it logs the validator's message once (it says how to reach the subnet team), then one
+`agent key: still pending at HH:MM UTC; asking again in N min` line per ask, so you can see it is alive. After the
+entry test it logs `entry test passed: this miner is ADMITTED` or `entry test NOT passed`; `cadmind-miner-stats`
+shows `registered` and `admitted` on its first line too.
 
 ## 3. Pass admission (once)
 

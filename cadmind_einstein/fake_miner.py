@@ -48,18 +48,46 @@ def ask_key(
     if contact:
         body["contact"] = contact
     start = clock()
+    asks = 0
     said = False
     while True:
         code, got = call("/v1/miners/agent_key", body)
-        if code != 202 or not isinstance(got, dict) or not got.get("pending"):
+        asks += 1
+        if code == 403 and _not_registered_yet(got):
+            # just registered: the validator reads the chain every few minutes; wait, never exit
+            if asks == 1:
+                log(
+                    "agent key: the validator does not see this hotkey registered yet "
+                    "(it reads the "
+                    "chain every few minutes); asking again every minute"
+                )
+            wait = REGISTRATION_RETRY_S
+        elif code != 202 or not isinstance(got, dict) or not got.get("pending"):
             return code, got
-        if not said:
-            log(f"agent key: pending approval -- {got.get('message') or 'ask again later'}")
-            said = True
-        wait = max(60.0, float(got.get("retry_after_s") or 900))
+        else:
+            wait = max(60.0, float(got.get("retry_after_s") or 900))
+            if not said:
+                log(f"agent key: pending approval -- {got.get('message') or 'ask again later'}")
+                said = True
+            log(
+                f"agent key: still pending at {time.strftime('%H:%M', time.gmtime())} UTC; "
+                f"asking again in {wait / 60:.0f} min"
+            )
         if max_wait_s and clock() - start + wait > max_wait_s:
             return code, got
         sleep(wait)
+
+
+REGISTRATION_RETRY_S = 60.0
+"""how often a miner asks again while the validator does not see its registration yet"""
+
+
+def _not_registered_yet(answer: Any) -> bool:
+    """A 403 that only means the validator has not read the miner's registration yet."""
+    text = answer.get("error") if isinstance(answer, dict) else answer
+    return "not registered" in str(text or "").lower()
+
+    return False
 
 
 def signed(

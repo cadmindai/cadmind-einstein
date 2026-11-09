@@ -656,3 +656,46 @@ class TestOneRule(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestEntryTestVerdict(unittest.TestCase):
+    """After its entry test the miner says the verdict (an onboarding test, 2026-11-09)."""
+
+    @staticmethod
+    def stats(*answers: tuple[bool, int]):
+        seq = list(answers)
+
+        def call() -> tuple[int, dict]:
+            admitted, fails = seq.pop(0) if len(seq) > 1 else seq[0]
+            return 200, {"admitted": admitted, "abuse": {"admission_failures": {"count": fails}}}
+
+        return call
+
+    def test_admitted_is_said(self) -> None:
+        said: list[str] = []
+        got = agent_miner.report_entry_test(
+            self.stats((False, 0), (False, 0), (True, 0)), log=said.append, sleep=lambda _s: None
+        )
+        self.assertIs(got, True)
+        self.assertIn("ADMITTED", said[-1])
+
+    def test_a_failed_entry_test_is_said(self) -> None:
+        said: list[str] = []
+        got = agent_miner.report_entry_test(
+            self.stats((False, 1), (False, 1), (False, 2)), log=said.append, sleep=lambda _s: None
+        )
+        self.assertIs(got, False)
+        self.assertIn("NOT passed", said[-1])
+
+    def test_no_verdict_in_time_is_said_too(self) -> None:
+        said: list[str] = []
+        t = iter(range(0, 10_000, 600))
+        got = agent_miner.report_entry_test(
+            self.stats((False, 0)), log=said.append, sleep=lambda _s: None, clock=lambda: next(t)
+        )
+        self.assertIsNone(got)
+        self.assertIn("no verdict yet", said[-1])
+
+    def test_the_stale_tool_names_are_gone(self) -> None:
+        for gone in ("MultiEdit", "LS", "NotebookRead"):
+            self.assertNotIn(gone, agent_miner.BUILTIN_TOOLS)

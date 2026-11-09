@@ -7,7 +7,19 @@ All notable changes to this project are listed here. The format follows
 
 ## [Unreleased]
 
+## [0.5.19] - 2026-11-09
+
 ### Fixed
+
+- **A newcomer's miner no longer quits or goes silent** (an onboarding test, 2026-11-09).
+  - The reference miner waits out the validator's "hotkey is not registered" answer: right after registering, the
+    validator has not read the chain yet. It asks again every minute instead of exiting.
+  - While its key request is pending it logs one line per ask.
+  - After its entry test it watches its own signed stats and logs `ADMITTED` or `NOT passed`.
+  - `cadmind-miner-stats` shows registered, admitted and any block on its first line.
+  - The denied tools no longer name `MultiEdit`, `LS` or `NotebookRead`, which Claude Code no longer has (every run
+    logged a warning for them).
+  - The miner guide says how much test TAO to get and what the miner logs while waiting.
 
 - **The miner docs work for a newcomer** (an onboarding test, 2026-11-09). The `btcli` commands are bittensor 11's
   (`wallet new-coldkey`, `subnets register`, `--wallet`, `--network`). The docs say `btcli` comes with this package

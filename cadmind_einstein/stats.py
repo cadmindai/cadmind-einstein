@@ -510,7 +510,16 @@ def main(argv: list[str] | None = None) -> int:
         print(json.dumps(out, indent=1))  # noqa: T201 -- a CLI
         return 0
     s, w = out["standing"], out["windows"]
+    blocked = int(out.get("blocked_until_ms") or 0)
     print(  # noqa: T201
+        f"{out['hotkey']}  registered {'yes' if out.get('registered') else 'no'}  "
+        f"admitted {'yes' if out.get('admitted') else 'no'}"
+        + (
+            f"  blocked until {time.strftime('%Y-%m-%d %H:%M', time.gmtime(blocked / 1000))} UTC"
+            if blocked
+            else ""
+        )
+        + "\n"
         f"{out['hotkey']}  rank {s['rank']} of {s['miners']}  share {100 * s['share']:.2f}%  "
         f"weight {s['weight']:.4f}  average {s['average']:.3f}\n"
         + "\n".join(

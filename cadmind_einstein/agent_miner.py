@@ -141,13 +141,10 @@ BUILTIN_TOOLS = (
     "Read",
     "Write",
     "Edit",
-    "MultiEdit",
     "Glob",
     "Grep",
-    "LS",
     "WebFetch",
     "NotebookEdit",
-    "NotebookRead",
     "Task",
     "TodoWrite",
     "Skill",
@@ -810,6 +807,46 @@ def keep_admitted(call: Any, mint: Any, works: Any, *, log: Any) -> None:
         )
 
 
+def report_entry_test(
+    stats: Any,
+    *,
+    log: Any,
+    sleep: Any = time.sleep,
+    clock: Any = time.monotonic,
+    max_wait_s: float = 1800.0,
+) -> bool | None:
+    """After the entry test is submitted: read this miner's signed stats (``stats() -> (status,
+    answer)``: the validator's ``/v1/miners/stats``, which requests nothing) every minute until it
+    says admitted or counts one more failed entry test, and say which. True admitted, False failed,
+    None not decided within ``max_wait_s``."""
+
+    def read() -> tuple[bool, int] | None:
+        code, out = stats()
+        if code != 200 or not isinstance(out, dict):
+            return None
+        fails = ((out.get("abuse") or {}).get("admission_failures") or {}).get("count", 0)
+        return bool(out.get("admitted")), int(fails or 0)
+
+    first = read()
+    before = first[1] if first else 0
+    start = clock()
+    while True:
+        now = read()
+        if now and now[0]:
+            log("entry test passed: this miner is ADMITTED -- client jobs and weights from now on")
+            return True
+        if now and now[1] > before:
+            log(
+                "entry test NOT passed: the validator counted a failed entry test; "
+                "see cadmind-miner-stats"
+            )
+            return False
+        if clock() - start >= max_wait_s:
+            log("entry test: no verdict yet after 30 min; check cadmind-miner-stats")
+            return None
+        sleep(60.0)
+
+
 def check_stored_key(mint: Any, works: Any, *, log: Any) -> None:
     """At startup, the agent key loaded from state: one the platform no longer takes (``works()``
     False, a 401: the validator revoked it while the miner was down, or disabled the miner) is
@@ -1427,6 +1464,11 @@ def main(argv: list[str] | None = None) -> int:
                 )
             code, out = send(call, "/v1/jobs/submit", body, log=log)
             log(f"submitted {job} digest={body['digest'][:16] or '(none)'}: {code} {out}")
+            if code == 200 and str(job).startswith("admission-"):
+                report_entry_test(
+                    lambda: signed(kp, a.validator, "/v1/miners/stats", {}, a.validator_hotkey),
+                    log=log,
+                )
         if rnd is not None and rnd.final_pending:
             # no time before the submit: the final check (a record only) runs after it
             rnd.final(after_submit=True)
