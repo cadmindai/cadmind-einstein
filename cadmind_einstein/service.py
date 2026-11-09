@@ -77,6 +77,7 @@ import base64
 import contextlib
 import hashlib
 import hmac
+import inspect
 import json
 import re
 import socket
@@ -337,6 +338,29 @@ def report_index(
     return out
 
 
+SR25519 = 1
+"""``btauth/1``'s crypto-type code for sr25519: every Bittensor hotkey signs with it"""
+
+
+def _sr25519_only(verify: Callable[..., Any]) -> Callable[..., Any]:
+    """``verify`` trusting sr25519 senders, as every Bittensor hotkey is. bittensor 11.3.2 dropped
+    ``verify``'s implicit sr25519 trust: without ``expected_crypto_type`` (or a configured
+    registry) it refuses every request. An older ``verify`` takes no such argument and trusts
+    sr25519 already, so it is passed only where the signature has it."""
+    try:
+        takes = "expected_crypto_type" in inspect.signature(verify).parameters
+    except (TypeError, ValueError):
+        takes = False
+    if not takes:
+        return verify
+
+    def checked(*args: Any, **kwargs: Any) -> Any:
+        kwargs.setdefault("expected_crypto_type", SR25519)
+        return verify(*args, **kwargs)
+
+    return checked
+
+
 def serve(
     desk: Desk,
     host: str,
@@ -362,6 +386,7 @@ def serve(
     """``signer``: the validator's hotkey (a wallet or a keypair), which signs every answer on a
     miner's route; without one, answers are unsigned (tests, a local stack)."""
     proxies = frozenset(trusted_proxies)
+    verify = _sr25519_only(verify)
     sign_with: Any = None
     if signer is not None:
         from bittensor.signing import resolve_signer  # noqa: PLC0415

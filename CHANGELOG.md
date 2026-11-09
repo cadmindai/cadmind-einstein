@@ -7,6 +7,13 @@ All notable changes to this project are listed here. The format follows
 
 ## [Unreleased]
 
+### Fixed
+
+- **A validator on bittensor 11.3.2 refused every signed request.** That release stopped trusting sr25519 senders
+  by default: `http_auth.verify` now refuses unless told the sender's signature scheme. The service passes sr25519,
+  which every Bittensor hotkey uses, whenever the installed `verify` takes the argument; older releases behave as
+  before. CI, which installs the newest bittensor, failed ten signed-route tests on it.
+
 ## [0.5.17] - 2026-11-09
 
 ### Added
