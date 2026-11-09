@@ -502,19 +502,40 @@ from cadmind_einstein.scoring import JobOutcome, score_all, standing, vector
 H, NOW = 3_600_000, 1_000 * 3_600_000
 DL, S = {"kind": "download"}, lambda n: {"kind": "stars", "stars": n}
 
-def passed(job, hotkey, *signals):
-    return JobOutcome(job=job, hotkey=hotkey, ended_ms=NOW - 12 * H, kind="pass", deliverable=True,
-                      signals=list(signals))
 
-jobs = score_all([
-    passed("j1", "you", DL), passed("j2", "you", S(4), DL), passed("j3", "you", S(5), S(1)),
-    passed("j4", "you"), JobOutcome(job="j5", hotkey="you", ended_ms=NOW - H, kind="timeout"),
-    passed("o1", "other", DL), passed("o2", "other"),
-])
+def passed(job, hotkey, *signals):
+    return JobOutcome(
+        job=job,
+        hotkey=hotkey,
+        ended_ms=NOW - 12 * H,
+        kind="pass",
+        deliverable=True,
+        signals=list(signals),
+    )
+
+
+jobs = score_all(
+    [
+        passed("j1", "you", DL),
+        passed("j2", "you", S(4), DL),
+        passed("j3", "you", S(5), S(1)),
+        passed("j4", "you"),
+        JobOutcome(job="j5", hotkey="you", ended_ms=NOW - H, kind="timeout"),
+        passed("o1", "other", DL),
+        passed("o2", "other"),
+    ]
+)
 weight, average = standing(jobs, NOW)
-print(weight, average)                    # you 2.5 and 0.5, other 1.5 and 0.75
-print(vector(weight, {"you": 1, "other": 2}, owner_hotkey="owner",
-             admitted=["you", "other"], reachable=["you", "other"]))  # 65535 and 39321, "history"
+print(weight, average)  # you 2.5 and 0.5, other 1.5 and 0.75
+print(
+    vector(
+        weight,
+        {"you": 1, "other": 2},
+        owner_hotkey="owner",
+        admitted=["you", "other"],
+        reachable=["you", "other"],
+    )
+)  # 65535 and 39321, "history"
 ```
 
 ### Check it yourself

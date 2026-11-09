@@ -690,7 +690,9 @@ def serve(
                         if stats is None:
                             self._send(404, {"error": "no stats here"})
                         else:
-                            self._send(200, {**stats.docs([hk])["miners"][hk], "formula": stats.formula()})
+                            self._send(
+                                200, {**stats.docs([hk])["miners"][hk], "formula": stats.formula()}
+                            )
                     elif self.path == "/v1/miners/receipt":
                         jobs, weight, average = desk.ledger.snapshot(desk.now_ms())
                         mine = [asdict(o) for o in jobs if o.hotkey == hk][-100:]

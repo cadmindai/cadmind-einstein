@@ -27,7 +27,8 @@ the project's own files (the export), trusting nothing the builder says:
   part's decision.
 - a job whose client asked not to be asked questions (``no_questions``) leaves no client decision
   open: each would-be question is the builder's own decision (``by = "agent"``, ``status =
-  "decided"``), a need no option keeps included (``misses``: Watt accepts it on such a job, since the
+  "decided"``), a need no option keeps included (``misses``: Watt accepts it on such a job, since
+  the
   client can always ask for an update).
 
 Pure: the caller hands in the export's bytes, so the reading is tested apart from any platform.

@@ -2,7 +2,8 @@
 configured vision model with CADmind's device judge (:mod:`.judge`, the validators' judge in
 ``rate`` mode), from the platform's review bundle (:mod:`.review`).
 
-**The judge.** A validator votes with the released judge without tools: two-turn samples (one by default), the
+**The judge.** A validator votes with the released judge without tools: two-turn samples (one by
+default), the
 lower median of their 0-3 scores, ``v = V_MAP[median]``. ``--judge 1.2b-tools`` is refused at
 start (:func:`.judge.for_validator`): that version reads the delivered project through Watt tools
 and is for CADmind's own pipeline and the miner-side reviewer.

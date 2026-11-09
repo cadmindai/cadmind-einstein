@@ -191,8 +191,10 @@ class TestDisguisedCopies(unittest.TestCase):
         self.assertIsNone(cc.check("j2", B, "d2", fp(other)))
 
     def test_another_attempt_at_the_same_job_is_no_copy(self) -> None:
-        """Builders of one job start from fresh grants of one seed and never see each other's work: an identical
-        result there is the job's answer (an assembly of fixed parts), not a copy. Another job's still is."""
+        """Builders of one job start from fresh grants of one seed and never see each other's work:
+        an identical
+        result there is the job's answer (an assembly of fixed parts), not a copy. Another job's
+        still is."""
         cc = CopyCheck()
         self.assertIsNone(cc.check("j1", A, "digest-1", fp(VICTIM)))
         self.assertIsNone(cc.check("j1", B, "digest-1", fp(VICTIM)))

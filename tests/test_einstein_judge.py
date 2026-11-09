@@ -351,7 +351,10 @@ def facing(today: dict[str, Any]) -> jm.Inputs:
     inp = inputs()
     assert inp.facts is not None
     inp.facts["function"] = {"today": today}
-    inp.facts["assembly"] = {"steps": [{"step": 4, "adds": {"hw.a": 1}, "how": "loose"}], "cables": []}
+    inp.facts["assembly"] = {
+        "steps": [{"step": 4, "adds": {"hw.a": 1}, "how": "loose"}],
+        "cables": [],
+    }
     return inp
 
 
@@ -397,10 +400,28 @@ class TestJudge13b(unittest.TestCase):
         self.assertIn("Watt's refusal.", jm.Judge("1.3b").system_prompt())
 
     def test_one_sample_keeps_its_valid_nudges_as_it_never_did_before(self) -> None:
-        sample = {"nudges": [
-            {"id": "N1", "text": "a", "part": "p", "view": "v", "quote": "q", "line": "", "void": None},
-            {"id": "N2", "text": "b", "part": "p", "view": "v", "quote": "q", "line": "", "void": "bad"},
-        ]}
+        sample = {
+            "nudges": [
+                {
+                    "id": "N1",
+                    "text": "a",
+                    "part": "p",
+                    "view": "v",
+                    "quote": "q",
+                    "line": "",
+                    "void": None,
+                },
+                {
+                    "id": "N2",
+                    "text": "b",
+                    "part": "p",
+                    "view": "v",
+                    "quote": "q",
+                    "line": "",
+                    "void": "bad",
+                },
+            ]
+        }
         kept, info = jm.Judge("1.3b").merge_nudges([sample], None)
         self.assertEqual([n["text"] for n in kept], ["a"])
         self.assertEqual(info["filed"], 1)
@@ -540,9 +561,7 @@ class TestTheToolsJudge(unittest.TestCase):
             jm.for_validator("2.0")
         with self.assertRaises(ValueError):
             Reviewer(None, None, me="v", judge_version="1.2b-tools")
-        self.assertEqual(
-            Reviewer(None, None, me="v").judge()["judge_version"], jm.JUDGE_VERSION
-        )
+        self.assertEqual(Reviewer(None, None, me="v").judge()["judge_version"], jm.JUDGE_VERSION)
         with self.assertRaises(SystemExit) as stop:
             check_judge("1.2b-tools")
         self.assertIn("never a validator", str(stop.exception))

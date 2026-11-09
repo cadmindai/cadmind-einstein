@@ -209,8 +209,8 @@ PENDING_MESSAGE = (
 
 
 def _mode_unknown(why: str) -> bool:
-    """Whether a `watt check` answer says its Watt does not take ``as_delivered`` at all: a workspace
-    on a release from before the as-delivered check refuses the argument by name."""
+    """Whether a `watt check` answer says its Watt does not take ``as_delivered`` at all: a
+    workspace on a release from before the as-delivered check refuses the argument by name."""
     text = " ".join(str(why).split())
     return "`watt check` takes" in text and "as_delivered" in text and "; not [" in text
 
@@ -3455,7 +3455,9 @@ class Desk:
             # The workspace runs on a Watt release from before the check (a release keeps the
             # workspaces it began, ADR-037): the job is gated as it would have been when it started.
             logging.getLogger("cadmind_einstein.desk").warning(
-                "as-delivered check skipped on %s: its Watt release predates it (%s)", fork, why[:160]
+                "as-delivered check skipped on %s: its Watt release predates it (%s)",
+                fork,
+                why[:160],
             )
             return None
         raise _GateRetryError(f"the as-delivered check did not answer: {why[:200]}")

@@ -157,8 +157,14 @@ class FakePlatform:
             # Watt's check of the tree as a delivery carries it (no .watt/, no build/)
             if w.get("old_watt"):  # a Watt that does not know the mode
                 return {"state": "done", "ok": False, "error": "unrecognized arguments"}
-            if w.get("pinned_old"):  # a workspace on a release from before the check (ADR-037 pinning)
-                return {"state": "done", "ok": False, "error": "`watt check` takes project; not ['as_delivered']"}
+            if w.get(
+                "pinned_old"
+            ):  # a workspace on a release from before the check (ADR-037 pinning)
+                return {
+                    "state": "done",
+                    "ok": False,
+                    "error": "`watt check` takes project; not ['as_delivered']",
+                }
             if w.get("as_delivered"):
                 return {"state": "done", "ok": False, "data": {"diagnostics": w["as_delivered"]}}
             return {"state": "done", "ok": True, "data": {"diagnostics": []}}
@@ -202,7 +208,7 @@ class FakePlatform:
                     "stage": stage,
                     "digest": digest,
                     "guard_draw": draw if w["deliverable"] else None,
-                }
+                },
             },
         }
 
@@ -387,7 +393,11 @@ class TestTheRule(unittest.TestCase):
     def test_genesis_when_nobody_has_points(self) -> None:
         uids = {OWNER: 0, A: 1, B: 2, C: 3}
         vec, rule = vector(
-            {}, uids, owner_hotkey=OWNER, admitted=[A, B, OWNER], reachable=[A, B, OWNER],
+            {},
+            uids,
+            owner_hotkey=OWNER,
+            admitted=[A, B, OWNER],
+            reachable=[A, B, OWNER],
             genesis="hotkey",
         )
         self.assertEqual(vec, [(1, 65_535), (2, 65_535)])
@@ -427,9 +437,18 @@ class TestTheRule(unittest.TestCase):
         """Rows an older release stored (its efficiency facts, trust, vote, remix credit) load and
         score by this rule alone: no miner keeps a mix of old and new points."""
         old = {
-            "job": "j", "hotkey": A, "ended_ms": 1000, "deliverable": True, "kind": "pass",
-            "size": "short", "compute_s": 9.0, "effort": "max", "credit": [B],
-            "vote": {"V": 0.0, "u": 0.4}, "s": 0.123, "parts": {"I": 0.9},
+            "job": "j",
+            "hotkey": A,
+            "ended_ms": 1000,
+            "deliverable": True,
+            "kind": "pass",
+            "size": "short",
+            "compute_s": 9.0,
+            "effort": "max",
+            "credit": [B],
+            "vote": {"V": 0.0, "u": 0.4},
+            "s": 0.123,
+            "parts": {"I": 0.9},
             "signals": [{"kind": "download", "trust": "free", "at_ms": 2000}],
         }
         with tempfile.TemporaryDirectory() as d:
@@ -688,8 +707,16 @@ class TestDesk(unittest.TestCase):
         """Votes are recorded elsewhere (:mod:`.votes`): the ledger has no way to take one, and a
         vote stored on an older row is dropped."""
         self.assertFalse(hasattr(self.ledger, "vote"))
-        o = outcome_of({"job": "v", "hotkey": A, "ended_ms": 0, "deliverable": True, "kind": "pass",
-                        "vote": {"V": 0.0, "u": 0.4}})
+        o = outcome_of(
+            {
+                "job": "v",
+                "hotkey": A,
+                "ended_ms": 0,
+                "deliverable": True,
+                "kind": "pass",
+                "vote": {"V": 0.0, "u": 0.4},
+            }
+        )
         self.assertEqual(score_all([o])[0].s, 0.5)
         self.assertFalse(hasattr(o, "vote"))
 

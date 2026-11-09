@@ -54,7 +54,8 @@ reply is unavailable, never a score.
 **The main-job cap**, in the prompt AND mechanically: a ``main`` line ruled ``fails`` caps the
 sample's score at 1; a ``cannot_tell`` on a ``main`` line caps it at 2.
 
-**Watt's refusal cap** (1.3b), in the prompt AND mechanically: a fact sheet saying today's Watt refuses
+**Watt's refusal cap** (1.3b), in the prompt AND mechanically: a fact sheet saying today's Watt
+refuses
 this version (``function.today``: ``deliverable`` false and a ``blocking.code``) caps the sample's
 score at 1. ``blocking.code`` null is a change of Watt's guard rules, not of the device, and caps
 nothing; ``deliverable`` null means Watt could not be asked and caps nothing.
@@ -74,7 +75,8 @@ it changes every validator's value scale at once.
 validators' path, the existing review key), :class:`.models.AnthropicModel`, or
 :class:`ClaudeCLI` -- ``claude -p`` on a Claude subscription, isolated as the reference miner is.
 A validator picks its backend with ``--judge-backend``: ``openrouter`` (the default: the review
-key, ``openai:<model>`` at OpenRouter) or ``claude-cli`` (a subscription). Either way a validator runs a judge without tools. The
+key, ``openai:<model>`` at OpenRouter) or ``claude-cli`` (a subscription). Either way a validator
+runs a judge without tools. The
 bench, the load-test and this module's CLI use the same transports (:func:`validator_model`).
 
 **Cost.** An API backend's dollars are its tokens priced by the operator (:class:`.models.Spend`).
@@ -491,7 +493,8 @@ def inputs_from_bundle(
     facts = dict(bundle.facts)
     parts = getattr(bundle, "parts", None)
     if parts:
-        # the vendored parts' own evidence (the bundle's parts.json): shown from 1.3c, withheld before
+        # the vendored parts' own evidence (the bundle's parts.json): shown from 1.3c, withheld
+        # before
         facts["subprojects"] = [dict(p) for p in parts]
     return Inputs(
         client=dict(bundle.client),
@@ -931,9 +934,12 @@ class Judge:
         """The nudges raised by ``nudge_keep`` or more samples. 1.2b: one text-only call groups the
         samples' valid nudges by problem; a group from enough distinct samples is kept, worded as
         its earliest member (two failed grouping calls: nothing kept, fail closed). The tools
-        version, and from 1.3b a vote of one sample, keeps that sample's valid nudges as they are."""
+        version, and from 1.3b a vote of one sample, keeps that sample's valid nudges as they
+        are."""
         keep = self.spec.nudge_keep
-        if self.spec.watt_today:  # 1.3b: one sample cannot raise a nudge twice; before it, it kept none
+        if (
+            self.spec.watt_today
+        ):  # 1.3b: one sample cannot raise a nudge twice; before it, it kept none
             keep = min(keep, max(1, len(samples)))
         pool = {
             f"S{si}{n['id']}": (si, n)

@@ -415,9 +415,10 @@ class CopyCheck:
         best = -1.0
         for e in list(self.recent):
             if e.hotkey == hotkey or e.job == job:
-                # another attempt at the same job is no source to copy from: each builder starts from a fresh grant
-                # of the same seed and never sees another's work, and parts that only assemble come out identical
-                # (the tank's assembly, 2026-11-07: three builders, one digest, two flagged as copies)
+                # another attempt at the same job is no source to copy from: each builder
+                # starts from a fresh grant of the same seed and never sees another's work,
+                # and parts that only assemble come out identical (an assembly, 2026-11-07:
+                # three builders, one digest, two flagged as copies)
                 continue
             if began & e.origins:
                 # nor is an attempt at another round started from the same project: with the seed's

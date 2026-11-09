@@ -195,7 +195,8 @@ protrusions); store each page you use with `fetch_to_workspace` (or with the hos
 the local tool is not there) and cite it. A spec sheet's overall size is not enough for a part \
 that fits around a product. When a size the fit hangs on is known only to more than a few tenths \
 of a mm and fit is what the client stressed: first measure a reference model of the product (the \
-`photos` topic, `watt measure model`), then ask the client to measure it (ruler or calipers, naming each number), and \
+`photos` topic, `watt measure model`), then ask the client to measure it (ruler or calipers, naming
+each number), and \
 only then design from a drawing (to-scale community drawings, case and accessory makers' \
 templates, cited with their stated tolerance); never default to the loose option. When the client \
 cannot be asked, design to a bounded estimate only if the need is met across its whole range, else \
@@ -209,7 +210,8 @@ any (the brief names them), are in the workspace's brief/ (brief/photo-*): look 
 `view_image` before you design; they are the client's evidence, as binding as their words. Work \
 fast and carefully:
 1. First write DESIGN-NOTES.md: how the device is made, installed, used and serviced, what can go \
-wrong at each step and the requirement/test proving it does not (walk the use the client asked for: \
+wrong at each step and the requirement/test proving it does not (walk the use the client asked for:
+\
 a step or requirement the brief does not ask for comes only from a need, never at the cost of what \
 they did ask for, such as bulk or a looser fit); every critical number sourced \
 (fetched into the project's assets/), never invented. Prefer the maker's own product page, \
@@ -219,8 +221,10 @@ sites that block the hosted `fetch` answer; its source records add fetched_by = 
 hosted `fetch` remains available. A site that blocks both: move on. Fetch only what the first \
 sketch needs, then build.
 2. Iterate with check / build / test; edit files, never rewrite them whole. Every build, test, \
-inspect, render and report builds the whole design again (minutes on a large one): `check` is cheap, \
-so check while editing, then run ONE `test` (it builds) rather than build, inspect and test in a row, \
+inspect, render and report builds the whole design again (minutes on a large one): `check` is
+cheap, \
+so check while editing, then run ONE `test` (it builds) rather than build, inspect and test in a
+row, \
 and never run a heavy command again on files you have not changed. End with ONE \
 `report` with mutate (the full guard and the delivery's files in one run; `watt_wait` on it), \
 only after a passing scoped guard (mutate with several `only`, one run) covering every must \
@@ -228,7 +232,8 @@ requirement, never as a first check.
 3. Give each bought hardware record a `price` (`"4.87 USD"`; a cable stock `"0.80 USD/m"`; a \
 material `"25 USD/kg"`): DigiKey's qty-1 USD price from `lookup_part`, cited to its saved source, \
 or a listing you fetched; never a guess -- leave it out when unknown. The client sees the bill.
-4. Self-review: load paths, retention, clearances, every clause tested on the whole feature it names \
+4. Self-review: load paths, retention, clearances, every clause tested on the whole feature it
+names \
 (every corner and protrusion, not a convenient section); each control the device covers still \
 worked by a real fingertip, through its opening or a flexible cover; a flexible part grips by \
 interference (a press fit), not by play; fix the weakest points. Write the notes and your final \
@@ -264,10 +269,12 @@ change request on that part's record ([subproject.<id>.change] with `test` = the
 every other part imported, and deliver (DONE); the platform re-runs that check with the part \
 imported and refuses a request it does not reproduce (change_unfounded). Otherwise, when the parts \
 cannot be assembled, REJECT not-capable and say why. When you split a device, every connection \
-between sub-devices (a lead, a hose, a signal) is an interface in each contract (a pin or port with \
+between sub-devices (a lead, a hose, a signal) is an interface in each contract (a pin or port with
+\
 its signal and place) and this project wires them in its own src/wiring.py: an extension lead is \
 this project's own cable, in its BOM and steps; a sub-device never stands in another sub-device's \
-hardware as a world item to wire to, and every brief that says where a shared part sits says the same. A workspace with \
+hardware as a world item to wire to, and every brief that says where a shared part sits says the
+same. A workspace with \
 brief/contract.toml is a sub-device: meet that contract (W0230) and publish spec/contract.toml; \
 brief/parent.md, when there, is the parent's brief, for context. \
 A workspace with brief/references.toml is an accessory of another device, `@<id>` in the brief: \
