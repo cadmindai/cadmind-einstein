@@ -7,6 +7,8 @@ All notable changes to this project are listed here. The format follows
 
 ## [Unreleased]
 
+## [0.5.18] - 2026-11-09
+
 ### Added
 
 - **Burn mode before the first miner (`--burn-when-empty`, off by default).** An hour with no admitted miner to
