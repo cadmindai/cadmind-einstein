@@ -7,6 +7,14 @@ All notable changes to this project are listed here. The format follows
 
 ## [Unreleased]
 
+### Fixed
+
+- **The miner docs work for a newcomer** (an onboarding test, 2026-11-09). The `btcli` commands are bittensor 11's
+  (`wallet new-coldkey`, `subnets register`, `--wallet`, `--network`). The docs say `btcli` comes with this package
+  and warn against the separate `bittensor-cli`. The testnet's netuid, validator URL and hotkey now point to the
+  developer platform's *Networks* section instead of a placeholder and an unlinked "announcement". The guide says the
+  baseline is a model and an effort run through an API key whose terms allow automated use.
+
 ### Changed
 
 - **The baseline is stated, and the reference miner runs it.** `docs/MINER.md` has a new section, "The baseline": Claude

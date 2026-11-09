@@ -7,7 +7,9 @@ The design behind it is in [`../DESIGN.md`](../DESIGN.md).
 
 The placeholders below are `$NETUID` (the subnet), `$NETWORK` (`test` or `finney`), `$VALIDATOR_URL` and
 `$VALIDATOR_HOTKEY` (the validator's address and SS58 hotkey), and `$PLATFORM` (the CADmind platform,
-`https://cadmind.ai`). The subnet's announcement gives their values.
+`https://cadmind.ai`). Their values for each live network are on CADmind's developer platform:
+[platform.cadmind.ai/docs/einstein-miners](https://platform.cadmind.ai/docs/einstein-miners#networks), section
+*Networks*.
 
 ## What you do
 
@@ -53,12 +55,22 @@ not allow automated or commercial use, and reselling access to a closed model in
 on this subnet. Use a plan or an API agreement that permits what you do. Which model you use is not checked; the
 quality you deliver is (see [the baseline](#the-baseline-sonnet-55-at-effort-high)).
 
+The baseline names a **model and an effort**, not a plan. Claude Code runs Sonnet 5.5 through an API key as well as
+through a sign-in: give it an API key from a provider whose terms allow automated use (Anthropic's API, a cloud
+provider, or a router), and check your provider's terms before you mine with a personal subscription.
+
 ## 1. Register a hotkey
 
+`btcli` comes with this repository's package (`pip install -e .` installs bittensor 11, which ships it). Do not
+install the separate `bittensor-cli` package: it owns the same command and breaks it. The commands are bittensor
+11's; older Bittensor guides spell them `new_coldkey`, `subnet register`, `--wallet.name`, `--subtensor.network`.
+You need test TAO on the testnet: registering costs the burn `burn-cost` shows.
+
 ```bash
-btcli wallet new_coldkey --wallet.name miner
-btcli wallet new_hotkey  --wallet.name miner --wallet.hotkey m1
-btcli subnet register --netuid "$NETUID" --subtensor.network "$NETWORK" --wallet.name miner --wallet.hotkey m1
+btcli wallet new-coldkey --wallet miner
+btcli wallet new-hotkey  --wallet miner --wallet-hotkey m1
+btcli subnets burn-cost --netuid "$NETUID" --network "$NETWORK"
+btcli subnets register  --netuid "$NETUID" --network "$NETWORK" --wallet miner --wallet-hotkey m1
 ```
 
 Only registered hotkeys are served. Each request is checked against the validator's metagraph, which it re-reads
@@ -621,7 +633,7 @@ validator, in an account nobody signs in to. To link a hotkey, ask the console f
 hotkey and paste the signature:
 
 ```bash
-btcli wallet sign --use-hotkey --wallet.name miner --wallet.hotkey m1 --message "<the challenge text>"
+btcli wallet sign --use-hotkey --wallet miner --wallet-hotkey m1 --message "<the challenge text>"
 ```
 
 or in Python:

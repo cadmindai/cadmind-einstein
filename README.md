@@ -79,36 +79,43 @@ Planned (no dates):
 | Network | `--subtensor.network` | Netuid |
 |---|---|---|
 | Mainnet (finney) | `finney` | TBA |
-| Testnet | `test` | `<TESTNET_NETUID>` |
+| Testnet | `test` | published on the developer platform (below) |
 | Local chain | `local` or `ws://127.0.0.1:9944` | your local subnet's |
 
-The validator's URL and SS58 hotkey (which miners need) are published with each network's announcement. Below,
-`<NETUID>` stands for the netuid of the network you use.
+Each live network's netuid, validator URL and validator SS58 hotkey (which miners need) are published on
+CADmind's developer platform: **[platform.cadmind.ai/docs/einstein-miners](https://platform.cadmind.ai/docs/einstein-miners#networks)**,
+section *Networks*. Below, `<NETUID>` stands for the netuid of the network you use.
 
 ## Getting started on Bittensor
 
-Install the Bittensor CLI (`btcli`) and create a wallet: a **coldkey** (keep it offline and backed up; it holds
-funds) and a **hotkey** (the identity your miner or validator runs with).
+`btcli` comes with this package: `pip install -e .` installs bittensor 11, which ships its own `btcli` (use
+`.venv/bin/btcli`). Do **not** also install the separate `bittensor-cli` package: it owns the same command and
+breaks it. The commands below are bittensor 11's (`wallet new-coldkey`, `subnets register`, `--wallet`/`-w`,
+`--wallet-hotkey`/`-H`, `--network`); older guides spell them `new_coldkey`, `--wallet.name`, `--subtensor.network`.
+
+Create a wallet: a **coldkey** (keep it offline and backed up; it holds funds) and a **hotkey** (the identity your
+miner or validator runs with).
 
 ```bash
-btcli wallet new_coldkey --wallet.name my_wallet
-btcli wallet new_hotkey  --wallet.name my_wallet --wallet.hotkey my_hotkey
+btcli wallet new-coldkey --wallet my_wallet
+btcli wallet new-hotkey  --wallet my_wallet --wallet-hotkey my_hotkey
 ```
 
 Fund the coldkey (on testnet, request test TAO through the Bittensor community channels), then register the
 hotkey on the subnet. Registration costs a burn in TAO that the chain sets; `btcli` shows it before you confirm.
 
 ```bash
-btcli subnet register --netuid <NETUID> --subtensor.network test \
-    --wallet.name my_wallet --wallet.hotkey my_hotkey
+btcli subnets burn-cost --netuid <NETUID> --network test      # what registering costs now
+btcli subnets register  --netuid <NETUID> --network test \
+    --wallet my_wallet --wallet-hotkey my_hotkey
 ```
 
 **Validators** also need stake on their hotkey to receive a validator permit (the top validators by stake on the
 subnet hold permits):
 
 ```bash
-btcli stake add --netuid <NETUID> --subtensor.network test \
-    --wallet.name my_wallet --wallet.hotkey my_hotkey
+btcli stake add --netuid <NETUID> --network test \
+    --wallet my_wallet --wallet-hotkey my_hotkey --amount-tao <AMOUNT>
 ```
 
 During the current phase client jobs are routed by the CADmind validator only (see
