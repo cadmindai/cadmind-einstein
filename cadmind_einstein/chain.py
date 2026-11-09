@@ -255,6 +255,9 @@ class DryRunWeights:
         self.last = [(int(u), int(w)) for u, w in vector]
         self.log(f"weights (dry run) for hour {hour}: {[list(x) for x in self.last]}")
 
+    def burn(self, *, hour: int) -> None:
+        self.log(f"weights (dry run) for hour {hour}: burn -- all on the subnet owner's uid")
+
     def pump(self) -> str:
         return "dry run"
 
@@ -292,6 +295,7 @@ class ChainWeights:
         self.log = _log_to(stderr)
         self.pending: list[tuple[int, int]] | None = None
         self.pending_hour = -1
+        self.burning = False
         self.last: list[tuple[int, int]] = []
         self.last_set_block = -1
         self._said = ""
@@ -302,11 +306,26 @@ class ChainWeights:
             self.log(line)
 
     def submit(self, vector: Sequence[Sequence[int]], *, hour: int) -> None:
+        self.burning = False
         self.pending = guard(vector, self.chain.state, me=self.me)
         self.pending_hour = hour
         if not self.pending:
             self.pending = None
             self._say(f"hour {hour}: nothing to weight; no weights set")
+
+    def burn(self, *, hour: int) -> None:
+        """Burn mode (``--burn-when-empty``), for an hour with no miner to weight: the whole
+        vector on the subnet owner's uid, which the chain does not pay out (the miners' share of
+        the emission is burned). The only vector the owner's uid -- or our own, when we are the
+        owner's validator -- may carry; the uid is read again when it is sent. A real vector
+        (``submit``) replaces it as soon as an admitted miner exists."""
+        self.burning = True
+        self.pending = []
+        self.pending_hour = hour
+
+    def _burn_vector(self, state: ChainState) -> list[tuple[int, int]]:
+        owner = state.by_hotkey(state.owner_hotkey) if state.owner_hotkey else None
+        return [(owner.uid, 65_535)] if owner is not None else []
 
     def _call(self, netuid: int, uids: list[int], weights: list[int], version: int) -> Any:
         if self.call_factory is not None:
@@ -329,7 +348,10 @@ class ChainWeights:
         wait = state.weights_rate_limit() - (block - last)
         if wait > 0:
             return f"rate limit: {wait} block(s) to wait"
-        vec = guard(self.pending, state, me=self.me)
+        vec = self._burn_vector(state) if self.burning else guard(self.pending, state, me=self.me)
+        if not vec and self.burning:
+            self._say("burn: the subnet owner's hotkey is not registered; no weights set")
+            return "no owner uid"
         uids, weights = [u for u, _ in vec], [w for _, w in vec]
         version = self.version_key
         required = int(state.hyper.get("weights_version") or 0)
@@ -354,7 +376,9 @@ class ChainWeights:
             return "not accepted"
         self.last, self.pending, self.last_set_block = vec, None, block
         self._said = ""
-        self.log(f"weights set ({path}) for hour {self.pending_hour} at block ~{block}: {vec}")
+        what = "burn on the owner's uid" if self.burning else "weights"
+        self.burning = False
+        self.log(f"{what} set ({path}) for hour {self.pending_hour} at block ~{block}: {vec}")
         return "set"
 
 

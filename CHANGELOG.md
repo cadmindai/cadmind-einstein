@@ -7,6 +7,15 @@ All notable changes to this project are listed here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- **Burn mode before the first miner (`--burn-when-empty`, off by default).** An hour with no admitted miner to
+  weight puts all weight on the subnet owner's uid, instead of setting no weights at all, so a new subnet's
+  validator keeps setting weights (and stays active) before anyone mines. The miners' share of the emission is
+  burned meanwhile. When the subnet owner's validator is our own hotkey, the burn goes to that uid. The first
+  hour with an admitted miner sends the normal vector, with no manual step. The owner's uid is never weighted
+  otherwise.
+
 ### Fixed
 
 - **A validator on bittensor 11.3.2 refused every signed request.** That release stopped trusting sr25519 senders

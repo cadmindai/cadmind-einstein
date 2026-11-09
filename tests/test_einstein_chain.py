@@ -294,6 +294,80 @@ class TestWeights(unittest.TestCase):
         self.assertIn("dry run", out.getvalue())
 
 
+class TestBurn(unittest.TestCase):
+    """``--burn-when-empty``: an hour with no miner to weight sends all to the owner's uid."""
+
+    def setUp(self) -> None:
+        self.sub = FakeSubtensor()
+        self.src = Fixed(state(block=20_000, my_last=9_950))
+        self.chain = LiveChain(self.src)
+        self.calls: list[dict[str, Any]] = []
+        self.out = io.StringIO()
+
+        def factory(**kw: Any) -> dict[str, Any]:
+            self.calls.append(kw)
+            return kw
+
+        self.factory = factory
+        self.w = ChainWeights(
+            self.sub, object(), self.chain, me=ME, call_factory=factory, stderr=self.out
+        )
+
+    def test_a_burn_sets_everything_on_the_owner_uid(self) -> None:
+        self.w.burn(hour=1)
+        self.assertEqual(self.w.pump(), "set")
+        self.assertEqual(self.calls[-1]["uids"], [0])
+        self.assertEqual(self.calls[-1]["weights"], [65535])
+        self.assertIn("burn on the owner's uid set", self.out.getvalue())
+
+    def test_the_owners_own_validator_burns_on_its_own_uid(self) -> None:
+        """Our hotkey IS the owner's (the owner validator): the burn still goes to that uid."""
+        st = state(block=20_000, my_last=9_950)
+        st = ChainState(
+            netuid=st.netuid,
+            block=st.block,
+            neurons=st.neurons,
+            owner_hotkey=ME,
+            hyper=st.hyper,
+        )
+        self.src.st = st
+        self.chain.sync()
+        self.w.burn(hour=1)
+        self.assertEqual(self.w.pump(), "set")
+        self.assertEqual(self.calls[-1]["uids"], [1])
+
+    def test_a_real_vector_replaces_a_waiting_burn_and_ends_burning(self) -> None:
+        self.src.st = state(block=10_000, my_last=9_950)
+        self.chain.sync()
+        self.w.burn(hour=1)
+        self.assertTrue(self.w.pump().startswith("rate limit"))
+        self.w.submit([(0, 65535), (2, 65535)], hour=2)  # a miner exists: the owner is dropped
+        self.src.st = state(block=10_060, my_last=9_950)
+        self.chain.sync()
+        self.assertEqual(self.w.pump(), "set")
+        self.assertEqual(self.calls[-1]["uids"], [2])
+        self.assertFalse(self.w.burning)
+
+    def test_no_registered_owner_sets_nothing(self) -> None:
+        st = state(block=20_000, my_last=9_950)
+        self.src.st = ChainState(
+            netuid=st.netuid,
+            block=st.block,
+            neurons=st.neurons[1:],
+            owner_hotkey=OWNER,
+            hyper=st.hyper,
+        )
+        self.chain.sync()
+        self.w.burn(hour=1)
+        self.assertEqual(self.w.pump(), "no owner uid")
+        self.assertEqual(self.calls, [])
+
+    def test_the_dry_run_says_it_would_burn(self) -> None:
+        out = io.StringIO()
+        DryRunWeights(out).burn(hour=3)
+        self.assertIn("burn", out.getvalue())
+
+
 class TestCommitment(unittest.TestCase):
     def test_the_report_hash_is_committed_by_the_hotkey_and_retried(self) -> None:
         sub, got = FakeSubtensor(), []

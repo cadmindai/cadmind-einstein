@@ -42,13 +42,17 @@ it is on, equal weight per hotkey among the admitted, registered, reachable mine
 onboarded by hand -- whatever their history; off, the rules above. Each report records whether it
 was on (``launch_equal``) and recompute follows that record.
 
-**The subnet owner's hotkey is never weighted**: weighting it burns miner emission. **Only admitted
-hotkeys are ever weighted**, by every rule and fallback: a revoked, disabled or deregistered miner
-is out from the next vector on. **The vector is never empty while an admitted miner exists**: an
-hour whose rules weight nobody sends the last non-empty vector again (its still-admitted hotkeys),
-or, before any, equal shares per coldkey among the admitted, reachable miners (under Null consensus
-an empty vector would spread the miners' emission over every registered UID). Nothing is emitted
-only when no miner is admitted at all.
+**The subnet owner's hotkey is never weighted** by these rules: weighting it burns miner
+emission. The one exception is the validator's opt-in burn mode (``--burn-when-empty``, in
+:mod:`.chain`): an hour whose vector is empty -- no admitted miner -- sends all weight to the
+owner's uid instead of nothing, so the validator keeps setting weights before the first miner.
+**Only admitted hotkeys are ever weighted**, by every rule and fallback: a revoked, disabled or
+deregistered miner is out from the next vector on. **The vector is never empty while an
+admitted miner exists**: an hour whose rules weight nobody sends the last non-empty vector again
+(its still-admitted hotkeys), or, before any, equal shares per coldkey among the admitted,
+reachable miners (under Null consensus an empty vector would spread the miners' emission over
+every registered UID). Nothing is emitted only when no miner is admitted at all (or, in burn
+mode, all of it goes to the owner's uid).
 
 Every hour a report holds the window's jobs with their facts and signals, and the vector;
 :func:`recompute` rebuilds the scores and the vector from a report alone (``python -m

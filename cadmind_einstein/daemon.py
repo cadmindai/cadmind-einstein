@@ -225,6 +225,13 @@ def parser() -> argparse.ArgumentParser:
         " approved it (cadmind-einstein-operator); auto: any registered hotkey (self-serve)",
     )
     ap.add_argument(
+        "--burn-when-empty",
+        action="store_true",
+        help="an hour with no admitted miner to weight puts all weight on the subnet owner's uid "
+        "(the miners' emission is burned) instead of setting none; the first admitted miner ends "
+        "it on the next hour, with no manual step",
+    )
+    ap.add_argument(
         "--launch-equal",
         choices=("on", "off"),
         default=None,
@@ -575,6 +582,7 @@ def main(argv: list[str] | None = None) -> int:
         f"onboarding: key approval {a.key_approval}; job deadline {a.job_deadline_min:g} min"
         + (" (brief from file)" if a.admission_brief_file else " (built-in brief)")
         + f"; launch-equal {'ON' if desk.launch_equal else 'off'} (source: {source})"
+        + f"; burn when no miner: {'ON' if a.burn_when_empty else 'off'}"
     )
 
     reviewer = None
@@ -715,6 +723,9 @@ def main(argv: list[str] | None = None) -> int:
         )
         if rep["vector"]:
             weights.submit(rep["vector"], hour=rep["hour"])
+        elif a.burn_when_empty:
+            weights.burn(hour=rep["hour"])
+            _log(f"hour {rep['hour']}: {rep['rule']}; burn mode: all weight on the owner's uid")
         else:
             # never an empty vector (under Null it spreads emission over every UID): none sent
             _log(f"ALERT: hour {rep['hour']}: {rep['rule']}; no weights sent")
