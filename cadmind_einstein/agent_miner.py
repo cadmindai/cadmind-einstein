@@ -230,10 +230,8 @@ inspect, render and report builds the whole design again (minutes on a large one
 cheap, \
 so check while editing, then run ONE `test` (it builds) rather than build, inspect and test in a
 row, \
-and never run a heavy command again on files you have not changed. End with ONE \
-`report` with mutate (the full guard and the delivery's files in one run; `watt_wait` on it), \
-only after a passing scoped guard (mutate with several `only`, one run) covering every must \
-requirement, never as a first check.
+and never run a heavy command again on files you have not changed. The final `report` comes \
+last (step 5), never as a first check.
 3. Give each bought hardware record a `price` (`"4.87 USD"`; a cable stock `"0.80 USD/m"`; a \
 material `"25 USD/kg"`): DigiKey's qty-1 USD price from `lookup_part`, cited to its saved source, \
 or a listing you fetched; never a guess -- leave it out when unknown. The client sees the bill.
@@ -243,6 +241,13 @@ names \
 worked by a real fingertip, through its opening or a flexible cover; a flexible part grips by \
 interference (a press fit), not by play; fix the weakest points. Write the notes and your final \
 lines from the model's current values (re-read them), never from an earlier plan.
+5. Last, when nothing is left to change (prices, notes, tests and the review's fixes all done: \
+any edit after it needs the whole guard again, many minutes), after a passing scoped guard \
+(mutate with several `only`, one run) covering every must requirement: ONE `report` with mutate \
+(the full guard and the delivery's files in one run; `watt_wait` on it). If it warns of thinly \
+guarded musts, follow its one fix once: strengthen all the listed musts in one pass, check them \
+with the scoped guard it names, then run the `report` once more; that report's pass stands, \
+whatever it warns.
 Never weaken a test to pass. A change round (brief/change-*.md on a delivered project) is \
 delivered only when the whole project passes `watt status`: failures it inherits are part of the \
 job, and your time is only what `time_left` says. {questions}

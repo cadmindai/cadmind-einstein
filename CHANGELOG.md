@@ -7,6 +7,13 @@ All notable changes to this project are listed here. The format follows
 
 ## [Unreleased]
 
+### Changed
+
+- **The reference miner's builder runs the whole guard once.** The final `report` with mutate is now the last step,
+  after the prices and the self-review (an edit after it needs the whole guard again); if it warns of thinly guarded
+  musts, the builder strengthens all of them in one pass, checks them with a scoped guard, and runs the `report`
+  once more, whose pass stands. A builder that followed the old order ran the whole guard five times in one job.
+
 ## [0.5.20] - 2026-11-10
 
 ### Changed
