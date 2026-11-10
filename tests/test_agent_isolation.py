@@ -117,7 +117,11 @@ class TestTheEnvironment(unittest.TestCase):
         self.assertEqual((env["PATH"], env["HOME"]), ("/bin", "/h"))  # the rest is the miner's
         self.assertEqual(
             set(ISOLATION_ENV),
-            {"CLAUDE_CODE_DISABLE_CLAUDE_MDS", "CLAUDE_CODE_DISABLE_AUTO_MEMORY", "ENABLE_TOOL_SEARCH"},
+            {
+                "CLAUDE_CODE_DISABLE_CLAUDE_MDS",
+                "CLAUDE_CODE_DISABLE_AUTO_MEMORY",
+                "ENABLE_TOOL_SEARCH",
+            },
         )
         # the Watt tools load with the session, never behind a tool search (2026-11-10)
         self.assertEqual(env["ENABLE_TOOL_SEARCH"], "false")
