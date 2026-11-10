@@ -92,7 +92,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qsl
 
-from .desk import Desk, DeskError
+from .desk import Desk, DeskError, not_registered_message
 from .scoring import report_order
 
 MAX_BODY = 4 * 1024 * 1024
@@ -614,7 +614,7 @@ def serve(
                     return False
                 hk = str(self.headers.get("X-Bittensor-Hotkey") or "").strip()
                 if hk not in set(desk.registered()):
-                    self._refuse(403, "hotkey is not registered on the subnet")
+                    self._refuse(403, not_registered_message(desk.sync_s))
                     return False
                 if self.path == "/v1/miners/agent_key" and not key_by_ip.allow(self._client_ip()):
                     self._refuse(429, "too many agent key requests from this address")

@@ -92,7 +92,8 @@ section *Networks*. Below, `<NETUID>` stands for the netuid of the network you u
 `btcli` comes with this package: `pip install -e .` installs bittensor 11, which ships its own `btcli` (use
 `.venv/bin/btcli`). Do **not** also install the separate `bittensor-cli` package: it owns the same command and
 breaks it. The commands below are bittensor 11's (`wallet new-coldkey`, `subnets register`, `--wallet`/`-w`,
-`--wallet-hotkey`/`-H`, `--network`); older guides spell them `new_coldkey`, `--wallet.name`, `--subtensor.network`.
+`--wallet-hotkey`/`-H`, `--network`); older guides spell them `new_coldkey`, `--wallet.name`, `--subtensor.network`,
+and `subnets burn-cost` and `subnets show` take the netuid as a plain argument, not `--netuid`.
 
 Create a wallet: a **coldkey** (keep it offline and backed up; it holds funds) and a **hotkey** (the identity your
 miner or validator runs with).
@@ -102,11 +103,15 @@ btcli wallet new-coldkey --wallet my_wallet
 btcli wallet new-hotkey  --wallet my_wallet --wallet-hotkey my_hotkey
 ```
 
+Each prints its mnemonic (the key's recovery phrase) on the terminal: store it offline. To keep it off the screen
+and out of logs, add `--json` and send the output to a file only you can read, then copy the mnemonic offline and
+delete the file ([docs/MINER.md](docs/MINER.md), section 1, has the recipe).
+
 Fund the coldkey (on testnet, request test TAO through the Bittensor community channels), then register the
 hotkey on the subnet. Registration costs a burn in TAO that the chain sets; `btcli` shows it before you confirm.
 
 ```bash
-btcli subnets burn-cost --netuid <NETUID> --network test      # what registering costs now
+btcli subnets burn-cost <NETUID> --network test      # what registering costs now
 btcli subnets register  --netuid <NETUID> --network test \
     --wallet my_wallet --wallet-hotkey my_hotkey
 ```
@@ -298,7 +303,10 @@ cadmind-einstein-miner --wallet.name MINER_WALLET --wallet.hotkey MINER_HOTKEY_N
 ```
 
 It runs on your own agent key: create it on the developer platform, on the account your hotkey is linked to,
-naming the hotkey, and save its secret in that file (0600). It asks the validator to take the key (and, until the
+naming the hotkey, and save its secret in that file (0600). Making the account, linking the hotkey and creating
+the key are done once by a person, in a browser (sign-up asks a captcha); an AI agent setting up a miner hands
+those three steps to its operator ([docs/MINER.md](docs/MINER.md), *Joining, step by step*; help:
+contact@cadmind.ai). It asks the validator to take the key (and, until the
 subnet team approves the hotkey, waits and asks again; pass `--contact` with a short note on how to reach you), takes the entry test once, then polls for jobs and runs your agent CLI on each,
 restricted to the Watt MCP server and one local tool, `fetch_to_workspace`, which downloads a source from your own
 connection (many sites refuse the platform's address) and uploads it into the job's workspace

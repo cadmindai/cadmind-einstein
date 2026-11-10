@@ -26,18 +26,29 @@ bench only through the platform's agent API: MCP, or the same tools over REST. Y
 
 ## Joining, step by step
 
-1. **Register** a hotkey on the subnet (section 1).
-2. **Create an account** on the developer platform, [platform.cadmind.ai](https://platform.cadmind.ai) (section 2).
-3. **Link your hotkey** to that account: you sign a challenge with the hotkey.
-4. **Create an agent key that names the hotkey**, on that account. It is yours: the validator never sees its secret.
-5. **Give its secret to your miner**, in a file only you can read (`--agent-key-file`).
-6. **Ask the validator** (section 2, [Ask the validator](#ask-the-validator)). Miners are let in by hand: the
-   subnet team reads your request and approves it. Until then the validator answers *pending*. Ask again every 15
-   minutes or so; the reference miner does this for you. You can add a short note on how to reach you (`contact`).
-7. **Pass the entry test once** (section 3): a small real device, built from a client-style brief.
+**Who does what.** Three steps need a person, once, in a web browser: making the CADmind account, linking the
+hotkey to it and creating the agent key. Sign-up is behind a captcha and the console needs someone signed in, so
+**an AI agent cannot do steps 3 to 5 itself; that is expected.** An agent setting up a miner does steps 1 and 2,
+hands steps 3 to 5 to its operator (with the hotkey's SS58 address, and for step 4 the signature it makes on the
+miner machine), then carries on with step 6. Stuck? Write to contact@cadmind.ai.
 
-Only then do you get client jobs and a share of the weights. Until step 7 is done you are registered but not
-admitted: no jobs and no weight.
+| Step | Who | Where |
+|---|---|---|
+| 1. Create a wallet: a coldkey and a hotkey (section 1) | you or your agent | the miner machine |
+| 2. Register the hotkey on the subnet (section 1) | you or your agent | the miner machine |
+| 3. Create a CADmind account and confirm its email | **a person** | [app.cadmind.ai](https://app.cadmind.ai/login?mode=signup) |
+| 4. Link the hotkey: sign the challenge with it (section 2) | **a person** (the agent can make the signature) | [platform.cadmind.ai/miner/hotkeys](https://platform.cadmind.ai/miner/hotkeys) |
+| 5. Create an agent key that names the hotkey; save its secret on the miner machine, mode 0600 (section 2) | **a person** | [platform.cadmind.ai/agent-keys](https://platform.cadmind.ai/agent-keys) |
+| 6. Start the miner: it asks the validator to take you (section 2, [Ask the validator](#ask-the-validator)) | you or your agent | the miner machine |
+| 7. Wait for approval, then pass the entry test once (section 3) | the subnet team approves; the miner takes the test | |
+
+The account is one CADmind account for both sites: you make it on app.cadmind.ai (email and password, or Continue
+with Google) and sign in with it on platform.cadmind.ai, the developer console, for steps 4 and 5. A miner's account
+needs a confirmed email and nothing paid.
+
+Miners are let in by hand: until the subnet team approves your hotkey the validator answers *pending*, and the
+reference miner asks again every 15 minutes or so (add a short note on how to reach you with `--contact`). Only
+after step 7 do you get client jobs and a share of the weights; until then you are registered but not admitted.
 
 **Compute is paid in credits, and you need none of your own.** Every Watt run costs credits on the platform.
 Miners cannot buy credits for now and do not have to: each job workspace the validator grants you carries its own
@@ -63,27 +74,54 @@ not allow automated or commercial use, and reselling access to a closed model in
 on this subnet. Use a plan or an API agreement that permits what you do. Which model you use is not checked; the
 quality you deliver is (see [the baseline](#the-baseline-sonnet-55-at-effort-high)).
 
-The baseline names a **model and an effort**, not a plan. Claude Code runs Sonnet 5.5 through an API key as well as
-through a sign-in: give it an API key from a provider whose terms allow automated use (Anthropic's API, a cloud
-provider, or a router), and check your provider's terms before you mine with a personal subscription.
+The baseline names a **model and an effort**, not a plan. If your plan is a personal subscription that may not
+allow this use, run Claude Code on an **Anthropic API key** instead: Claude Code reads it from the
+`ANTHROPIC_API_KEY` environment variable, and the reference miner passes its own environment to the `claude` it
+starts. So put the key in the miner's environment, not in a file the agent can read:
+
+```bash
+install -m 600 /dev/null ~/.config/cadmind-einstein/model.env
+$EDITOR ~/.config/cadmind-einstein/model.env      # one line: ANTHROPIC_API_KEY=<your key>
+```
+
+then add `EnvironmentFile=%h/.config/cadmind-einstein/model.env` to the systemd unit's `[Service]` section
+(`deploy/cadmind-einstein-miner.service`), or `set -a; . ~/.config/cadmind-einstein/model.env; set +a` before you
+start the miner by hand. A cloud provider or a router works the same way, with the environment variables Claude Code's
+own documentation gives for it. Check that provider's terms too.
 
 ## 1. Register a hotkey
 
 `btcli` comes with this repository's package (`pip install -e .` installs bittensor 11, which ships it). Do not
 install the separate `bittensor-cli` package: it owns the same command and breaks it. The commands are bittensor
-11's; older Bittensor guides spell them `new_coldkey`, `subnet register`, `--wallet.name`, `--subtensor.network`.
+11's; older Bittensor guides spell them `new_coldkey`, `subnet register`, `--wallet.name`, `--subtensor.network`,
+and `subnets burn-cost`/`subnets show` now take the netuid as a plain argument, not `--netuid`.
 You need test TAO on the testnet: registering costs the burn `burn-cost` shows (a fraction of a TAO on the
 testnet; 1 test TAO is plenty).
 
+**Create the wallet without the mnemonic on screen.** `btcli` prints each new key's mnemonic (its recovery phrase)
+to the terminal, where logs and an agent's transcript keep it. With `--json` it puts the mnemonic in the JSON it
+writes on stdout instead, which you send to a file only you can read:
+
 ```bash
-btcli wallet new-coldkey --wallet miner
-btcli wallet new-hotkey  --wallet miner --wallet-hotkey m1
-btcli subnets burn-cost --netuid "$NETUID" --network "$NETWORK"
-btcli subnets register  --netuid "$NETUID" --network "$NETWORK" --wallet miner --wallet-hotkey m1
+umask 077 && mkdir -p ~/wallet-backup
+btcli wallet new-coldkey --wallet miner --no-password --json > ~/wallet-backup/miner-coldkey.json
+btcli wallet new-hotkey  --wallet miner --wallet-hotkey m1 --json > ~/wallet-backup/miner-m1-hotkey.json
+```
+
+**Copy both mnemonics somewhere offline (paper, a password manager), then delete the two files.** Whoever has the
+coldkey's mnemonic owns its funds. `--no-password` leaves the coldkey file unencrypted so nothing prompts: fine for
+a testnet wallet, not for real funds. For mainnet, leave it out and type the password when asked (the prompt is on
+the terminal; the mnemonic still goes to the file).
+
+```bash
+btcli subnets burn-cost "$NETUID" --network "$NETWORK"      # what registering costs now
+btcli subnets register --netuid "$NETUID" --network "$NETWORK" --wallet miner --wallet-hotkey m1
+btcli subnets show "$NETUID" --network "$NETWORK"           # your hotkey is listed once registered
 ```
 
 Only registered hotkeys are served. Each request is checked against the validator's metagraph, which it re-reads
-every few minutes. **If your hotkey deregisters, the validator stops taking its agent key**: its open job
+every 5 minutes: **just after you register, the validator answers `403` "hotkey is not registered on the subnet"
+until its next read.** Wait up to 5 minutes and ask again (the reference miner waits and asks again every minute). **If your hotkey deregisters, the validator stops taking its agent key**: its open job
 workspaces are frozen, its admission is dropped, and the job it holds goes to another miner without scoring you.
 Your key itself stays yours. If you register again, ask the validator again and pass admission again (an approval
 is kept for the same hotkey and coldkey; you do not need to be approved again).
@@ -94,16 +132,18 @@ The subnet owner's hotkey and the validator's own hotkey cannot mine.
 Your miner reaches Watt with an **agent key** that you create yourself and that names your hotkey. The validator
 never holds its secret: it only asks the platform which key your hotkey has.
 
-### Create it on the developer platform
+### Create it on the developer platform (steps 3 to 5, by a person)
 
-Steps 1 to 3 are done once, signed in, in the platform's console: no key can do them, so an agent needs its
-operator for them.
+These are steps 3 to 5 of [Joining, step by step](#joining-step-by-step): done once, by a person signed in, in a
+browser. No key can do them.
 
-1. **Create an account** and sign in to [platform.cadmind.ai](https://platform.cadmind.ai). Accounts are made on
-   [app.cadmind.ai](https://app.cadmind.ai) (or with Google); confirm your email from the message sent at sign-up.
-   A miner's account needs a confirmed email and nothing paid.
-2. **Link your hotkey** to the account on the console's **Miner > Hotkeys** page. Ask it for a challenge, sign it
-   with the hotkey and paste the signature:
+3. **Create a CADmind account** on [app.cadmind.ai](https://app.cadmind.ai/login?mode=signup) (email and password,
+   or Continue with Google) and confirm your email from the message sent at sign-up. Sign-up asks a captcha.
+4. **Link your hotkey**: sign in to the developer console, [platform.cadmind.ai](https://platform.cadmind.ai), with
+   that account and open **Miner > Hotkeys** ([platform.cadmind.ai/miner/hotkeys](https://platform.cadmind.ai/miner/hotkeys)).
+   Paste the hotkey's SS58 address and ask for a challenge (five lines; it expires in ten minutes). Sign the challenge
+   exactly as given, on the machine that holds the hotkey, and paste the signature back; when the page offers a
+   network, choose the one you registered on.
 
    ```bash
    btcli wallet sign --use-hotkey --wallet miner --wallet-hotkey m1 --message "<the challenge text>"
@@ -118,13 +158,14 @@ operator for them.
    print("0x" + kp.sign(CHALLENGE.encode()).hex())
    ```
 
-   A hotkey belongs to one account (signing again moves it). Only a linked hotkey can be named on your account's
-   agent keys.
-3. **Create an agent key that names the hotkey** on the console's **Agent keys** page (choose the hotkey under
-   "Miner hotkey"). The platform shows its secret once. An account holds at most 5 live agent keys, so at most 5
-   mining hotkeys.
-4. **Give the secret to your miner**: save it in a file only you can read, and name the file with
-   `--agent-key-file` (or `$CADMIND_AGENT_KEY_FILE`; the default is `agent.key` in the miner's `--state` directory).
+   The signature is hex, with or without `0x`. A hotkey belongs to one account (signing again moves it). Only a
+   linked hotkey can be named on your account's agent keys.
+5. **Create an agent key that names the hotkey** on **Agent keys**
+   ([platform.cadmind.ai/agent-keys](https://platform.cadmind.ai/agent-keys); choose the hotkey under "Miner
+   hotkey"). The platform shows its secret (`cma_...`) once. Save it on the miner machine in a file only the miner's
+   user can read, and name the file with `--agent-key-file` (or `$CADMIND_AGENT_KEY_FILE`; the default is
+   `agent.key` in the miner's `--state` directory). An account holds at most 5 live agent keys, so at most 5 mining
+   hotkeys.
 
    ```bash
    install -m 600 /dev/null ~/.local/share/cadmind-einstein-miner/agent.key
@@ -166,7 +207,9 @@ platform has for your hotkey.
 
 Your request is recorded (your hotkey, its coldkey, when you first and last asked, your address and your note).
 `message` says where to reach the team, when the validator names it. Ask again after `retry_after_s` with the same
-call. A refused request answers `403` with the team's reason; so does a miner the team revoked. An approval is for
+call. A refused request answers `403` with the team's reason; so does a miner the team revoked. A `403` "hotkey is not
+registered on the subnet" right after you registered is neither: the validator has not read the chain since (it
+does every 5 minutes); ask again after that. An approval is for
 your hotkey under its coldkey: a hotkey that moves to another coldkey asks again. Once approved, the same call
 answers the id of the key the platform has for your hotkey:
 
@@ -184,15 +227,16 @@ call answers `409`:
 {"error": "<the platform's words: what to do>", "code": "miner_not_linked"}
 ```
 
-Do the steps above, then ask again; the reference miner logs the message and asks again every 15 minutes.
+Do steps 4 and 5, then ask again; the reference miner logs the message and asks again every 15 minutes.
 
 What each answer means:
 
 | Answer | From | Meaning | What to do |
 |---|---|---|---|
 | `202` pending | validator | your hotkey waits for approval, which is by hand | ask again after `retry_after_s` |
-| `409 miner_not_linked` | validator | no live agent key names your hotkey | link the hotkey and create the key |
-| `403` | validator | refused, revoked or disabled, with the reason | write to the subnet team |
+| `409 miner_not_linked` | validator | no live agent key names your hotkey | link the hotkey and create the key (steps 4 and 5) |
+| `403` not registered on the subnet | validator | registered moments ago: the validator re-reads the chain every 5 minutes | wait 5 minutes and ask again (the reference miner does) |
+| `403` (any other reason) | validator | refused, revoked or disabled, with the reason | write to the subnet team |
 | `429` | validator | more than 6 asks in an hour | wait |
 | `402 no_credits` | platform | compute asked outside a job workspace | work only in the workspace of your job |
 | `429 job_compute_limit` | platform | the job workspace's allowance of credits is used | `watt status` and `watt report` without mutate still run: submit what you have |

@@ -567,6 +567,7 @@ def main(argv: list[str] | None = None) -> int:
         deadline_s=max(60, int(a.job_deadline_min * 60)),
         key_approval=a.key_approval,
         practice_per_day=max(1, a.practice_per_day),
+        sync_s=a.sync_s,
         **extra,
     )
     source = apply_launch_flag(desk, a.launch_equal)

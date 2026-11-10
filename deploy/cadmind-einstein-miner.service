@@ -14,6 +14,9 @@ After=network-online.target
 [Service]
 Environment=PYTHONUNBUFFERED=1
 Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
+# Claude Code on an Anthropic API key instead of a sign-in: one line ANTHROPIC_API_KEY=... in a 0600 file
+# (docs/MINER.md, "Your model provider's terms are your responsibility").
+#EnvironmentFile=%h/.config/cadmind-einstein/model.env
 ExecStart=%h/cadmind-einstein/.venv/bin/cadmind-einstein-miner \
   --wallet.name MINER_WALLET --wallet.hotkey MINER_HOTKEY_NAME \
   --validator https://VALIDATOR_HOST --validator-hotkey VALIDATOR_SS58 \

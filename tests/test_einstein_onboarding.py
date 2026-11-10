@@ -32,7 +32,7 @@ from bittensor.sp_core import Keypair
 
 from cadmind_einstein import onboarding
 from cadmind_einstein.desk import ADMISSION_BRIEF, JOB_DEADLINE_S, Desk, DeskError
-from cadmind_einstein.fake_miner import ask_key
+from cadmind_einstein.fake_miner import _not_registered_yet, ask_key
 from cadmind_einstein.scoring import (
     HOUR_MS,
     JobOutcome,
@@ -864,6 +864,22 @@ class TestHttpAndCli(unittest.TestCase):
                 ["--validator", self.base, "--token-file", str(self.token_file), *args]
             )
         return code, out.getvalue(), err.getvalue()
+
+    def test_a_hotkey_registered_just_now_is_told_when_to_retry(self) -> None:
+        """Onboarding test 2026-11-10: a 403 just after registering read as a team refusal."""
+        self.desk.registered = lambda: [B]  # the last metagraph read predates the registration
+        code, got = self.ask()
+        self.assertEqual(code, 403)
+        self.assertIn("not registered on the subnet", got["error"])
+        self.assertIn("every 5 minutes", got["error"])
+        self.assertIn("if you registered just now, retry", got["error"])
+        self.assertTrue(_not_registered_yet(got))  # the reference miner still waits, never quits
+        slow = Desk(self.p, Ledger(), registered=lambda: [B], sync_s=600)
+        with self.assertRaises(DeskError) as said:
+            slow.agent_key(A)
+        self.assertEqual(said.exception.status, 403)
+        self.assertIn("every 10 minutes", str(said.exception))
+        slow.stop()
 
     def test_pending_then_approved_over_http_and_the_cli(self) -> None:
         code, got = self.ask("forum: alice")

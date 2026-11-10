@@ -400,6 +400,22 @@ class Platform(Protocol):
     def grant_practice(self, hotkey: str, *, brief: str, name: str) -> str: ...
 
 
+SYNC_S = 300.0
+"""how often the validator re-reads the metagraph by default (the daemon's ``--sync-s``)"""
+
+
+def not_registered_message(sync_s: float = SYNC_S) -> str:
+    """The refusal of a hotkey the validator's last metagraph read did not hold. A hotkey
+    registered moments ago gets it too, until the next read: the words say when to try again
+    (``not registered`` stays in them, which the reference miners read as "wait and retry")."""
+    minutes = max(1, -(-int(sync_s) // 60))
+    return (
+        "hotkey is not registered on the subnet (the validator re-reads the chain every "
+        f"{minutes} minute{'s' if minutes > 1 else ''}: "
+        "if you registered just now, retry after that)"
+    )
+
+
 class DeskError(Exception):
     def __init__(self, message: str, status: int = 400, code: str = "") -> None:
         super().__init__(message)
@@ -729,10 +745,13 @@ class Desk:
         archive: Any = None,
         judge: Callable[[], Mapping[str, Any]] | None = None,
         practice_per_day: int = 0,
+        sync_s: float = SYNC_S,
     ) -> None:
         from .practice import PRACTICE_PER_DAY, PracticeBook  # noqa: PLC0415 -- it reads votes
 
         self.platform, self.ledger, self.registered = platform, ledger, registered
+        self.sync_s = sync_s
+        """the metagraph re-read interval, said in a not-registered refusal"""
         self.practice_per_day = practice_per_day or PRACTICE_PER_DAY
         """practice jobs a miner may start per UTC day (the platform's own cap, mirrored)"""
         self.practice_book = PracticeBook(platform, store=store, clock=clock, log=log)
@@ -1097,7 +1116,7 @@ class Desk:
 
     def _miner(self, hotkey: str) -> Miner:
         if hotkey not in set(self.registered()):
-            raise DeskError("hotkey is not registered on the subnet", 403)
+            raise DeskError(not_registered_message(self.sync_s), 403)
         if hotkey in self.excluded:
             raise DeskError("the subnet owner's and the validator's hotkeys do not mine", 403)
         m = self.miners.setdefault(hotkey, Miner(hotkey))
@@ -1191,7 +1210,7 @@ class Desk:
         with self._mut():
             if hotkey not in set(self.registered()):  # deregistered while the platform was asked
                 self._queue_revoke(hotkey)
-                raise DeskError("hotkey is not registered on the subnet", 403)
+                raise DeskError(not_registered_message(self.sync_s), 403)
             if not self.approved(hotkey):  # revoked while the platform was asked
                 self._queue_revoke(hotkey)
                 raise DeskError("your agent key was revoked", 403)

@@ -7,6 +7,25 @@ All notable changes to this project are listed here. The format follows
 
 ## [Unreleased]
 
+### Changed
+
+- **Validator: a hotkey registered moments ago is told when to retry.** The `403` for a hotkey missing from the
+  validator's last metagraph read now says how often the chain is re-read and to retry after that ("hotkey is not
+  registered on the subnet (the validator re-reads the chain every 5 minutes: if you registered just now, retry
+  after that)"), from the daemon's `--sync-s`. The words still contain "not registered", which the reference miner
+  reads as "wait and ask again".
+
+### Documentation
+
+- **Miner onboarding (from a newcomer's test run).** `docs/MINER.md` opens with one numbered list of the seven steps
+  to join, used everywhere, saying who does each and where: the account (app.cadmind.ai), the hotkey link and the
+  agent key (platform.cadmind.ai) are done once by a person in a browser, which an AI agent cannot do itself; help
+  at contact@cadmind.ai. `btcli subnets burn-cost` and `subnets show` take the netuid as an argument in bittensor 11
+  (the docs had `--netuid`). A recipe makes the wallet without the mnemonic on screen (`--json` to a 0600 file;
+  `--no-password` for a testnet coldkey only). The answers table reads a `403` "not registered" right after
+  registering as "wait 5 minutes", not a refusal. A personal subscription that may not allow this use: run Claude
+  Code on `ANTHROPIC_API_KEY` in the miner's environment (the systemd unit has a commented `EnvironmentFile=`).
+
 ## [0.6.1] - 2026-11-10
 
 ### Fixed
