@@ -329,7 +329,8 @@ class TestTheRule(unittest.TestCase):
         self.assertEqual(points(stars(2), DOWNLOAD), 0.0)  # rated down, then downloaded by anyone
         self.assertEqual(points(QUALITY_REFUND, DOWNLOAD), 0.0)
         self.assertEqual(points(stars(1), {**DOWNLOAD, "by": "visitor"}), 0.0)
-        self.assertEqual(points({**DOWNLOAD, "by": "visitor"}), 1.0)  # a reader's download counts
+        self.assertEqual(points({**DOWNLOAD, "by": "visitor"}), 0.5)  # only the client scores
+        self.assertEqual(points({**DOWNLOAD, "by": "visitor"}, DOWNLOAD), 1.0)
         self.assertEqual(points(DOWNLOAD, stars(4), DOWNLOAD), 1.0)
 
     def test_only_a_delivery_has_points(self) -> None:

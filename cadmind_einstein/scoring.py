@@ -106,7 +106,7 @@ class JobOutcome:
     signals: list[dict[str, Any]] = field(default_factory=list)
     """the client's, in the order they came: {"kind": download | stars | change | refund,
     "stars": 1-5, "quality": a refund for the delivery's quality, "by": "visitor" on a download
-    by someone other than the job's client, "at_ms"}"""
+    by someone other than the job's client (recorded, never scored), "at_ms"}"""
     s: float = 0.0
     parts: dict[str, Any] = field(default_factory=dict)
     """what decided ``s``: ``{"signal": none | download | stars | refund}`` on a delivered job,
@@ -122,10 +122,14 @@ class JobOutcome:
 def client_points(signals: Iterable[Mapping[str, Any]]) -> tuple[float, str]:
     """A delivered job's points and the signal that decided them: the client's LATEST verdict (a
     star rating or a quality refund) when there is one; else :data:`APPROVED` for a download; else
-    :data:`UNRATED`. A download never outranks a verdict, whenever it came."""
+    :data:`UNRATED`. A download never outranks a verdict, whenever it came. Only the job's own
+    client scores: a signal by anyone else (``by``) is recorded and never read here, or a builder
+    could lift its own delivery from a second account."""
     verdict: tuple[float, str] | None = None
     downloaded = False
     for x in signals:
+        if x.get("by"):
+            continue
         kind = x.get("kind")
         if kind == "download":
             downloaded = True

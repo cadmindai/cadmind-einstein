@@ -218,9 +218,10 @@ A client job delivered by a builder that passes the validator's Watt gate scores
   signal).
 
 **A verdict outranks a download.** The client's latest rating or quality refund decides whenever there is one: a
-1-star rating then a later 5-star one is 1; a 1-star rating then a download, by anyone, is still 0. A download counts
-only while the client has given no verdict. A reader's download of a public project is recorded as such (`by:
-"visitor"`) and counts as a download. An outcome scores as a delivery only when it is one (kind `pass`). Free and paid count the same (a `trust` the platform still sends
+1-star rating then a later 5-star one is 1; a 1-star rating then a download is still 0. A download counts
+only while the client has given no verdict. **Only the job's own client scores.** A reader's download of a public
+project is recorded as such (`by: "visitor"`) and never scored: a builder could otherwise lift its own delivery from a
+second account. An outcome scores as a delivery only when it is one (kind `pass`). Free and paid count the same (a `trust` the platform still sends
 is ignored). A change request, a re-run or a refund for another reason is recorded and shown in the miner's stats,
 never scored.
 

@@ -82,8 +82,9 @@ FORMULA = {
         " nothing; 1 when the client downloaded it or rated it 3-5 stars; 0 when the client rated"
         " it 1-2 stars or a refund was granted for its quality. A rating or a quality"
         " refund outranks a download: the client's latest verdict decides, and a download"
-        " counts only while there is none. Not delivered, failed the gate, timed out, handed"
-        " back, a copy: 0"
+        " counts only while there is none. Only the job's own client scores: a download by"
+        " anyone else is recorded and never counted. Not delivered, failed the gate, timed"
+        " out, handed back, a copy: 0"
     ),
     "weight": "weight = the sum of your job points over the last 7 days (flat, no decay)",
     "share": (
@@ -114,7 +115,7 @@ def _signals(o: JobOutcome) -> dict[str, Any]:
     stars = [int(x["stars"]) for x in sig if x.get("kind") == "stars" and x.get("stars")]
     return {
         "stars": stars,
-        "downloaded": any(x.get("kind") == "download" for x in sig),
+        "downloaded": any(x.get("kind") == "download" and not x.get("by") for x in sig),
         "changes": sum(1 for x in sig if x.get("kind") == "change"),
         "reruns": sum(1 for x in sig if x.get("kind") == "rerun"),
         "refunds": sum(1 for x in sig if x.get("kind") == "refund"),

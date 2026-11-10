@@ -409,7 +409,7 @@ A client job you delivered, that passed the validator's Watt gate, scores:
 - **1** when the client downloaded it (in the app or by API) or rated it 3, 4 or 5 stars;
 - **0** when the client rated it 1 or 2 stars, or a refund was granted for its quality.
 
-A rating or a quality refund outranks a download: the client's latest verdict decides whenever there is one (1 star then 5 stars is 1; 1 star then a download is still 0), and a download counts only while there is none. A change request, a re-run or a refund not for quality is recorded and not scored. Free and paid clients
+A rating or a quality refund outranks a download: the client's latest verdict decides whenever there is one (1 star then 5 stars is 1; 1 star then a download is still 0), and a download counts only while there is none. Only the job's own client scores: a download of a public project by anyone else is recorded and never counted. A change request, a re-run or a refund not for quality is recorded and not scored. Free and paid clients
 count the same.
 
 Not delivered, failed the gate, timed out, handed back (rejected), a copy: **0**, at once.

@@ -483,7 +483,7 @@ from the signed link it answers). See `cadmind_einstein/platform.py`.
 
 A client job delivered by a builder that passes the validator's Watt gate scores **0.5** while the client has done
 nothing, **1** when the client downloaded it or rated it 3, 4 or 5 stars, and **0** when the client rated it 1 or 2
-stars or a refund was granted for its quality. A rating or a quality refund outranks a download: the client's latest verdict decides whenever there is one (1 star then 5 stars is 1; 1 star then a download is still 0), and a download counts only while there is none. Free and paid clients count the same. Not delivered, failed the gate, timed out, handed
+stars or a refund was granted for its quality. A rating or a quality refund outranks a download: the client's latest verdict decides whenever there is one (1 star then 5 stars is 1; 1 star then a download is still 0), and a download counts only while there is none. Only the job's own client scores: a download by anyone else is recorded and never counted. Free and paid clients count the same. Not delivered, failed the gate, timed out, handed
 back, a copy: **0**. The validators' vote is published and never scored.
 
 A miner's weight is the sum of its job points over the last 7 days (flat, no decay); the hourly vector is proportional

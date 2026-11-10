@@ -2177,7 +2177,8 @@ class Desk:
         the job's points, and a download only while there is neither
         (:func:`.scoring.client_points`); a change or another refund is recorded, not scored. A
         download by someone other than the job's client (``by: "visitor"``, a public project's
-        reader) is recorded as that. A ``trust`` the platform may send is ignored: free and paid
+        reader) is recorded as that and never scored: only the job's own client scores. A
+        ``trust`` the platform may send is ignored: free and paid
         clients count the same."""
         kind = str(body.get("kind") or "")
         if kind == "forget":

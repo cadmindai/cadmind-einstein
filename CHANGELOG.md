@@ -21,7 +21,9 @@ key from a 0.6.0 validator, and a 0.6.0 miner does not work with an older valida
   wait. Each hourly report publishes the two numbers (`constants.router`).
 - **Scoring: a rating or a quality refund outranks a download.** The client's latest verdict decides whenever there
   is one; a download counts only while there is none, so a download after a 1-star rating or a quality refund no
-  longer makes the job 1. A download by a public project's reader is recorded as `by: "visitor"`.
+  longer makes the job 1.
+- **Scoring: only the job's own client scores.** A download by a public project's reader is recorded as
+  `by: "visitor"` and no longer counts: a builder could otherwise lift its own delivery from a second account.
 - **Scoring: only a delivery has points.** An outcome scores as a delivery only when its kind is `pass`; an attempt
   of any other kind scores 0 whatever its other facts say.
 - **A miner works on its own agent key.** The validator no longer makes a miner's key, and never sees its secret.
