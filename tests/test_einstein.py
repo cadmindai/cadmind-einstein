@@ -323,8 +323,22 @@ class TestTheRule(unittest.TestCase):
     def test_the_latest_signal_decides(self) -> None:
         self.assertEqual(points(DOWNLOAD, stars(1)), 0.0)  # a download, then 1 star
         self.assertEqual(points(stars(1), stars(5)), 1.0)  # 1 star, then 5
-        self.assertEqual(points(stars(2), DOWNLOAD), 1.0)
         self.assertEqual(points(QUALITY_REFUND, stars(4)), 1.0)
+
+    def test_a_download_never_outranks_the_clients_verdict(self) -> None:
+        self.assertEqual(points(stars(2), DOWNLOAD), 0.0)  # rated down, then downloaded by anyone
+        self.assertEqual(points(QUALITY_REFUND, DOWNLOAD), 0.0)
+        self.assertEqual(points(stars(1), {**DOWNLOAD, "by": "visitor"}), 0.0)
+        self.assertEqual(points({**DOWNLOAD, "by": "visitor"}), 1.0)  # a reader's download counts
+        self.assertEqual(points(DOWNLOAD, stars(4), DOWNLOAD), 1.0)
+
+    def test_only_a_delivery_has_points(self) -> None:
+        for kind in ("ours", "copy", "", "disabled"):  # the facts of a delivery, another kind
+            o = JobOutcome(
+                job="k", hotkey=A, ended_ms=0, deliverable=True, kind=kind, signals=[DOWNLOAD]
+            )
+            self.assertEqual(score_all([o])[0].s, 0.0, kind)
+            self.assertFalse(o.passed)
 
     def test_changes_reruns_and_trust_change_nothing(self) -> None:
         self.assertEqual(points({"kind": "change"}), 0.5)
@@ -660,21 +674,53 @@ class TestDesk(unittest.TestCase):
         for hk, ms in clocks.items():
             self.desk.miners[{"A": A, "B": B, "C": C}[hk]].free_ms = ms
 
-    def test_the_router_gives_the_job_to_the_longest_waiting_miner(self) -> None:
+    def test_the_router_gives_the_job_to_the_best_record_and_every_fifth_to_the_longest_wait(
+        self,
+    ) -> None:
         from cadmind_einstein.desk import Job
+
+        def routed() -> str:
+            return self.desk.route(Job(job="x", brief="b")).hotkey  # type: ignore[union-attr]
 
         self.poll(A, B, C)
         self.free_at(A=3000, B=1000, C=2000)
-        self.assertEqual(self.desk.route(Job(job="x", brief="b")).hotkey, B)  # type: ignore[union-attr]
-        # scores play no part: C with every point still waits its turn behind B
-        for i in range(6):
-            now = self.desk.now_ms()
+        self.assertEqual(routed(), B)  # equal records (none has a job): the longest wait
+        now = self.desk.now_ms()
+        for i in range(6):  # C's clients downloaded; B's rated it down
             self.ledger.add(passing(f"c{i}", C, ended_ms=now, signals=[{"kind": "download"}]))
-        self.assertEqual(self.desk.route(Job(job="y", brief="b")).hotkey, B)  # type: ignore[union-attr]
-        # a miner with no assignment yet has waited longest of all
-        self.free_at(B=5000)
-        self.desk.miners[A].free_ms = 0
-        self.assertEqual(self.desk.route(Job(job="z", brief="b")).hotkey, A)  # type: ignore[union-attr]
+            self.ledger.add(passing(f"b{i}", B, ended_ms=now, signals=[stars(1)]))
+        self.assertEqual(routed(), C)  # the best record, although B waited longer
+        self.desk.miners[C].job = "busy"  # C is at work: the next best
+        self.assertEqual(routed(), A)  # no job yet reads as unrated (0.5), above B's
+        self.desk.miners[C].job = ""
+        # every fifth client assignment goes to the longest wait, whatever the record
+        self.desk.assigned[A] = 4
+        self.assertEqual(routed(), B)
+        self.desk.assigned[A] = 5
+        self.assertEqual(routed(), C)
+
+    def test_one_lucky_job_does_not_put_a_newcomer_first(self) -> None:
+        from cadmind_einstein.scoring import record
+
+        now = self.desk.now_ms()
+        jobs = [passing("n", A, ended_ms=now, signals=[{"kind": "download"}])]
+        jobs += [
+            passing(f"v{i}", B, ended_ms=now, signals=[{"kind": "download"}] if i < 9 else [])
+            for i in range(12)
+        ]
+        got = record(score_all(jobs), now)
+        self.assertEqual(got[A], 0.55)  # (1 + 9 * 0.5) / 10
+        self.assertEqual(got[B], 0.875)  # (9 + 3 * 0.5) / 12: no padding past ten jobs
+        self.assertGreater(got[B], got[A])
+
+    def test_more_hotkeys_of_one_owner_buy_no_more_turns_in_the_trial_lane(self) -> None:
+        from cadmind_einstein.desk import Job
+
+        self.poll(A, B, C)
+        self.desk.coldkeys = lambda: {A: "cold-1", B: "cold-1", C: "cold-2"}
+        self.free_at(A=5000, B=0, C=3000)  # B is cold-1's fresh hotkey; cold-1 was served last
+        self.desk.assigned[A] = 4  # the trial lane
+        self.assertEqual(self.desk.route(Job(job="x", brief="b")).hotkey, C)  # type: ignore[union-attr]
 
     def test_jobs_go_round_the_line_and_a_hand_back_goes_to_the_back(self) -> None:
         self.poll(A, B, C)
@@ -813,7 +859,10 @@ class TestDesk(unittest.TestCase):
         wait_state(self.desk, "s1", ("done",))
         out = self.desk.signal("s1", {"kind": "stars", "stars": 2, "trust": "paid"})
         self.assertEqual(out["score"], 0.0)
-        self.assertEqual(self.desk.signal("s1", {"kind": "download"})["score"], 1.0)  # the latest
+        out = self.desk.signal("s1", {"kind": "download", "by": "visitor"})
+        self.assertEqual(out["score"], 0.0)  # a download never outranks the client's rating
+        self.assertEqual(self.ledger.outcomes[0].signals[-1]["by"], "visitor")
+        self.assertEqual(self.desk.signal("s1", {"kind": "stars", "stars": 4})["score"], 1.0)
         self.enqueue({"job": "s2", "brief": "A wall hook.", "rerun_of": "s1", "trust": "paid"})
         self.assertEqual(self.ledger.outcomes[0].s, 1.0)  # a re-run is recorded, not scored
         self.assertEqual(self.ledger.outcomes[0].signals[-1]["kind"], "rerun")

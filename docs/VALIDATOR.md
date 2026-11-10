@@ -23,12 +23,13 @@ What the einstein validator runs ([`../DESIGN.md`](../DESIGN.md) sections 5 and 
 
 - A client job delivered by a builder that passes the validator's Watt gate scores **0.5** while the client has
   done nothing, **1** when the client downloaded it or rated it 3-5 stars, **0** when the client rated it 1-2 stars
-  or a refund was granted for its quality. The client's latest signal decides. Not delivered, failed the gate, timed
+  or a refund was granted for its quality. A rating or a quality refund outranks a download: the client's latest verdict decides whenever there is one (1 star then 5 stars is 1; 1 star then a download is still 0), and a download counts only while there is none. Not delivered, failed the gate, timed
   out, handed back (rejected), a copy: **0**. The platform's `trust` on a signal is ignored.
 - A miner's weight is the sum of its points over the last 7 days (flat, no decay); the vector is proportional to it
   over the registered, admitted miners seen in 24 hours. Genesis, launch and never-empty rules are unchanged.
-- The next client job goes to the job's `prefer` miner if it is available, else to the available miner that has
-  waited longest since its last client assignment ended; a hand-back restarts that miner's clock. A client's
+- The next client job goes to the job's `prefer` miner if it is available, else to the available miner with the best
+  record (points per job over 7 days, padded to 10 jobs with unrated ones), and every fifth client assignment to the
+  one that has waited longest, by coldkey; a hand-back restarts that miner's clock. A client's
   cancel, a lapsed lease and a host block leave it as it was.
 - **The gate checks the tree as delivered**: after the miner's `watt status` says deliverable, the validator runs
   `watt check --as-delivered` on its fork (no `.watt/`, no `build/`) before its guard run; errors fail the gate at

@@ -409,8 +409,7 @@ A client job you delivered, that passed the validator's Watt gate, scores:
 - **1** when the client downloaded it (in the app or by API) or rated it 3, 4 or 5 stars;
 - **0** when the client rated it 1 or 2 stars, or a refund was granted for its quality.
 
-The client's **latest** signal decides: a download then a 1-star rating is 0; a 1-star rating then a later 5-star
-one is 1. A change request, a re-run or a refund not for quality is recorded and not scored. Free and paid clients
+A rating or a quality refund outranks a download: the client's latest verdict decides whenever there is one (1 star then 5 stars is 1; 1 star then a download is still 0), and a download counts only while there is none. A change request, a re-run or a refund not for quality is recorded and not scored. Free and paid clients
 count the same.
 
 Not delivered, failed the gate, timed out, handed back (rejected), a copy: **0**, at once.
@@ -519,14 +518,18 @@ the sum of entries.
 
 ### How jobs are routed
 
-Scores and votes play no part in routing. A client's job goes:
+Votes play no part in routing. A client's job goes:
 
 1. to the miner who did the project's previous round (the job's `prefer`), if it is free;
-2. otherwise to the free admitted miner that has **waited longest** since its last client job ended -- its submit,
-   its hand-back or the job's end (a miner that never had one first; ties drawn at random).
+2. otherwise to the **best record** among the available miners -- points per job over the last 7 days, a miner with fewer
+   than 10 jobs read as if the missing ones were unrated (0.5) -- and, **every fifth client assignment**, to the one
+   that has **waited longest** whatever its record, so a newcomer gets real jobs to make a record on. Equal records
+   fall to the longest wait; equal waits are drawn at random. The wait is the owner's: a coldkey's clock is the latest
+   of its hotkeys' (`free_ms`: when a miner's last client assignment ended -- its submit, its hand-back or its
+   timeout; 0 before its first), so more hotkeys buy no more turns.
 
-So jobs go round the free miners in turn. **Handing a job back (a rejection) puts you at the back of the line**, like
-finishing one. Only your own submit, hand-back or timeout moves your place: a client's cancel, a job the platform
+So the better your clients are served, the more jobs you get, and a new miner still gets one job in five to show
+what it does. **Handing a job back (a rejection) restarts your wait**, like finishing one. Only your own submit, hand-back or timeout moves your place: a client's cancel, a job the platform
 takes back from the validator and a host block leave it as it was. Free means admitted, holding a live key, polled `work` in the last 60 s, holding no job, not blocked
 and registered. A job does not go back to a hotkey that already tried it. After a rejection it goes first to another
 coldkey (after 30 minutes, to any other miner).

@@ -95,7 +95,7 @@ from . import __version__
 from .answers import answers_only, report_digest
 from .answers import check as answers_check
 from .platform import PlatformError, RoleFrozenError
-from .scoring import JobOutcome, Ledger, outcome_of
+from .scoring import TRIAL_EVERY, JobOutcome, Ledger, outcome_of, record_of
 from .similarity import CopyCheck, CopyPolicy, Entry, fingerprint
 from .store import Store
 from .style import check as style_check
@@ -2173,10 +2173,12 @@ class Desk:
     def signal(self, job_id: str, body: Mapping[str, Any]) -> dict[str, Any]:
         """The client's reaction to a delivered job, from the platform: download, stars (1-5),
         change, or a refund the platform granted (``quality``: true when it was granted for the
-        delivery's quality, false otherwise). The latest download, rating or quality refund decides
-        the job's points (:func:`.scoring.client_points`); a change or another refund is recorded,
-        not scored. A ``trust`` the platform may send is ignored: free and paid clients count the
-        same."""
+        delivery's quality, false otherwise). The client's latest rating or quality refund decides
+        the job's points, and a download only while there is neither
+        (:func:`.scoring.client_points`); a change or another refund is recorded, not scored. A
+        download by someone other than the job's client (``by: "visitor"``, a public project's
+        reader) is recorded as that. A ``trust`` the platform may send is ignored: free and paid
+        clients count the same."""
         kind = str(body.get("kind") or "")
         if kind == "forget":
             return self.forget(job_id)
@@ -2185,6 +2187,8 @@ class Desk:
                 "kind is download, stars, change or refund (a re-run is a new job with rerun_of)"
             )
         sig: dict[str, Any] = {"kind": kind, "at_ms": self.now_ms()}
+        if kind == "download" and body.get("by") == "visitor":
+            sig["by"] = "visitor"
         if kind == "stars":
             stars = int(body.get("stars") or 0)
             if not 1 <= stars <= 5:
@@ -2411,12 +2415,19 @@ class Desk:
     def route(self, job: Job) -> Miner | None:
         """One miner. An admission job: its own miner. A client job: an ADMITTED, available miner
         -- the miner ``job.prefer`` names (a revision's previous builder) if it is available; else
-        the one that has waited longest since its last client assignment ended (its wait clock,
-        ``free_ms``: a miner that never had one first; ties drawn at random). A miner that hands a
-        job back restarts its clock at the hand-back, so it goes to the back of the line. Scores
-        and votes play no part. There is no team miner: with no miner free the job waits in the
-        queue -- never rejected for lack of miners -- until a miner is free or the client
-        cancels."""
+
+        - **the best record**: the available miner whose clients were best served over the window
+          (:func:`.scoring.record`: points per job, a miner with few jobs read as unrated);
+        - **one job in** :data:`.scoring.TRIAL_EVERY` (every fifth client assignment, counted over
+          all miners), **the longest wait** whatever the record, so a newcomer gets real jobs
+          to make a record on. The wait is the owner's: a coldkey's clock is the latest of its
+          hotkeys' (``free_ms``: when a miner's last client assignment ended, 0 before its
+          first), so registering more hotkeys buys no more turns.
+
+        Equal records fall to the longest wait, and equal waits are drawn at random. A miner that
+        hands a job back restarts its clock at the hand-back. Votes play no part. There is no team
+        miner: with no miner free the job waits in the queue -- never rejected for lack of miners
+        -- until a miner is free or the client cancels."""
         free = self._available(job)
         if job.kind == "admission":
             return next((m for m in free if m.hotkey == job.target), None)
@@ -2430,8 +2441,23 @@ class Desk:
         for m in free:
             if m.hotkey == job.prefer:
                 return m
-        oldest = min(m.free_ms for m in free)
-        return self.rng.choice(sorted((m for m in free if m.free_ms == oldest), key=_hotkey))
+        cmap = self._cmap()
+        owner_clock: dict[str, int] = {}
+        for m in self.miners.values():
+            if m.admitted:
+                ck = self.coldkey(m.hotkey, cmap)
+                owner_clock[ck] = max(owner_clock.get(ck, 0), m.free_ms)
+
+        def wait(m: Miner) -> tuple[int, int]:
+            return owner_clock.get(self.coldkey(m.hotkey, cmap), m.free_ms), m.free_ms
+
+        # every TRIAL_EVERY-th client assignment, counted over all miners (kept across restarts)
+        if sum(self.assigned.values()) % TRIAL_EVERY != TRIAL_EVERY - 1:
+            records = self.ledger.records(self.now_ms())
+            best = max(record_of(records, m.hotkey) for m in free)
+            free = [m for m in free if record_of(records, m.hotkey) == best]
+        oldest = min(wait(m) for m in free)
+        return self.rng.choice(sorted((m for m in free if wait(m) == oldest), key=_hotkey))
 
     def tick(self) -> None:
         """Assign queued jobs, enforce the acceptance windows and deadlines, claim new jobs for

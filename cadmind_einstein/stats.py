@@ -80,8 +80,10 @@ FORMULA = {
     "text": (
         "a delivered job that passed the validator's Watt gate: 0.5 while the client has done"
         " nothing; 1 when the client downloaded it or rated it 3-5 stars; 0 when the client rated"
-        " it 1-2 stars or a refund was granted for its quality. The client's latest signal"
-        " decides. Not delivered, failed the gate, timed out, handed back, a copy: 0"
+        " it 1-2 stars or a refund was granted for its quality. A rating or a quality"
+        " refund outranks a download: the client's latest verdict decides, and a download"
+        " counts only while there is none. Not delivered, failed the gate, timed out, handed"
+        " back, a copy: 0"
     ),
     "weight": "weight = the sum of your job points over the last 7 days (flat, no decay)",
     "share": (

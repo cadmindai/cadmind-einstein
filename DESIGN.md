@@ -217,8 +217,10 @@ A client job delivered by a builder that passes the validator's Watt gate scores
 - **0** when the client rated it 1 or 2 stars, or a refund was granted for its quality (the platform's quality-refund
   signal).
 
-The client's **latest** signal decides: a download then a 1-star rating is 0; a 1-star rating then a later 5-star one
-is 1. Only the job's own client's signals exist here. Free and paid count the same (a `trust` the platform still sends
+**A verdict outranks a download.** The client's latest rating or quality refund decides whenever there is one: a
+1-star rating then a later 5-star one is 1; a 1-star rating then a download, by anyone, is still 0. A download counts
+only while the client has given no verdict. A reader's download of a public project is recorded as such (`by:
+"visitor"`) and counts as a download. An outcome scores as a delivery only when it is one (kind `pass`). Free and paid count the same (a `trust` the platform still sends
 is ignored). A change request, a re-run or a refund for another reason is recorded and shown in the miner's stats,
 never scored.
 
@@ -236,8 +238,8 @@ Not delivered, failed the gate, timed out, handed back (rejected), a copy: **0**
 ### Weights
 
 - A job counts for **7 days from its end** (its delivery), flat: no decay. A miner's **weight** is the sum of its job
-  points over the last 7 days; its **average** (points per job in the window) is shown on the stats pages, and
-  nothing routes by it.
+  points over the last 7 days; its **average** (points per job in the window) is shown on the stats pages; the router
+  reads its **record**, that average with a miner of fewer than 10 jobs padded with unrated ones (section 6).
 - A remix (a project started from a copy of a public project) scores its own builder like any job. The platform's
   claim still names the original's miners (`remix_credit`); the validator checks and records it with the job, and
   never scores it.
@@ -325,10 +327,14 @@ scratch, throwing the first builder's work away; after two or four tries the job
   client job the miner could take waits, and at most 3 a UTC day per miner.
 - **Available** = admitted, holds a live key, polled `work` in the last 60 s, holds no job, not blocked, registered.
 - **Router.** A client job goes to the miner its claim prefers (`prefer`: the builder of the version a later round
-  continues) if it is available; else to the available miner that has **waited longest** since its last client
-  assignment ended -- its submit, its hand-back or its timeout (its wait clock, `free_ms`; a miner that never had
-  one first; ties drawn at random). A miner that hands a job back (rejects) restarts its clock at the hand-back, so it
-  goes to the back of the line. A client's cancel, a lapsed lease and a host block leave the clock as it was. Scores and votes play no part. Entry tests and practice jobs do not move the clock.
+  continues) if it is available; else to the **best record** among the available miners -- points per job over the last 7 days, a miner with fewer
+  than 10 jobs read as if the missing ones were unrated (0.5) -- and, **every fifth client assignment**, to the one
+  that has **waited longest** whatever its record, so a newcomer gets real jobs to make a record on. Equal records
+  fall to the longest wait; equal waits are drawn at random. The wait is the owner's: a coldkey's clock is the latest
+  of its hotkeys' (`free_ms`: when a miner's last client assignment ended -- its submit, its hand-back or its
+  timeout; 0 before its first), so more hotkeys buy no more turns. A miner that hands a job back (rejects)
+  restarts its clock at the hand-back. A client's cancel, a lapsed lease and a host block leave the clock as it was.
+  Votes play no part. Entry tests and practice jobs do not move the clock.
 - **No miner free:** nothing is claimed and jobs wait in the platform's queue, which shows the client a position
   and an ETA (from the validator's `GET /v1/capacity`). A job is never refused for lack of miners.
 - **Lease.** The validator renews a lease on every job it holds every 30 s (and soon after a miner accepts, submits
@@ -386,7 +392,7 @@ points and what decided them, each miner's weight and average, the admitted and 
 | Threat | Answer |
 |---|---|
 | A thin or broken output | It fails the gate (0, at once) or passes thin and the client's signal says so |
-| A miner rating its own jobs from a fake client | Miners never learn the client; the router, not the miner, assigns jobs (in turn, by wait) |
+| A miner rating its own jobs from a fake client | Miners never learn the client; the router, not the miner, assigns jobs (by record and by wait) |
 | Rejecting hard work | A rejection scores 0 and sends its miner to the back of the line; rejection telemetry, per hotkey and summed per coldkey, disables repeat offenders |
 | Copying another miner's output | Normalised features compared by containment (below); 0 at once, reassigned |
 | Sybils | Each hotkey holds one job and is scored on its own; registration costs; genesis weight goes per coldkey to miners with a delivered job, never for admission alone |

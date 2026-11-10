@@ -14,6 +14,16 @@ key from a 0.6.0 validator, and a 0.6.0 miner does not work with an older valida
 
 ### Changed
 
+- **Routing: the best record first, and every fifth job to the longest wait.** A client job without a preferred
+  builder goes to the available miner with the best record: points per job over the last 7 days, a miner with fewer
+  than 10 jobs read as if the missing ones were unrated (0.5). Every fifth client assignment goes to the miner that
+  has waited longest whatever its record, and that wait is counted per coldkey. Equal records fall to the longest
+  wait. Each hourly report publishes the two numbers (`constants.router`).
+- **Scoring: a rating or a quality refund outranks a download.** The client's latest verdict decides whenever there
+  is one; a download counts only while there is none, so a download after a 1-star rating or a quality refund no
+  longer makes the job 1. A download by a public project's reader is recorded as `by: "visitor"`.
+- **Scoring: only a delivery has points.** An outcome scores as a delivery only when its kind is `pass`; an attempt
+  of any other kind scores 0 whatever its other facts say.
 - **A miner works on its own agent key.** The validator no longer makes a miner's key, and never sees its secret.
   - A miner creates an account on the developer platform, links its hotkey to it by signature, and creates an agent
     key there that names the hotkey. Its operator gives the secret to the miner program in a 0600 file:

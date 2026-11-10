@@ -5,13 +5,18 @@ decides a score, a weight or a route.
 scores:
 
 - **0.5** while the client has done nothing;
-- **1** when the client downloaded it (in the app or by API) or rated it 3, 4 or 5 stars;
+- **1** when it was downloaded (in the app or by API) or the client rated it 3, 4 or 5 stars;
 - **0** when the client rated it 1 or 2 stars, or a refund was granted for its quality.
 
-The client's **latest** signal decides: a download then a 1-star rating is 0; a 1-star rating then
-a later 5-star one is 1. Any other signal (a change request, a refund not for quality) is recorded,
-not scored. Free and paid clients count the same (a ``trust`` the platform may still send is
-ignored).
+**A verdict outranks a download.** The client's latest rating or quality refund decides, whenever
+there is one: a 1-star rating then a later 5-star one is 1; a 1-star rating then any download is
+still 0. A download counts only while the client has given no verdict, so nobody's download can
+lift a job its client rated down or was refunded for. Any other signal (a change request, a refund
+not for quality) is recorded, not scored. Free and paid clients count the same (a ``trust`` the
+platform may still send is ignored).
+
+**Only a delivery has points.** An outcome scores as a delivery only when it is one (``kind``
+``pass``): whatever its other facts say, any other kind scores 0.
 
 An attempt that does not deliver -- failed the gate, timed out, handed back (rejected), a copy, a
 delivery the platform refused for what the builder did -- scores **0**, at once.
@@ -19,8 +24,11 @@ delivery the platform refused for what the builder did -- scores **0**, at once.
 **Weights, every hour, never burned.** A job counts for 7 days from its end (its delivery), flat:
 no decay. A miner's **weight** is the sum of its job points over the last 7 days; the vector is
 proportional to it over registered, admitted miners seen in the last 24 hours. Its **average**
-(points / jobs in the window) is shown on the stats pages; nothing routes by it. Signals arrive late
-and change the job's points when they do; the next hourly vector reads the current points.
+(points / jobs in the window) is shown on the stats pages. The router reads its **record**
+(:func:`record`): that average, with a miner of fewer than :data:`RECORD_JOBS` jobs counted as if
+the missing ones were unrated deliveries, so one lucky job does not put a newcomer first. Signals
+arrive late and change the job's points when they do; the next hourly vector reads the current
+points.
 
 The validators' votes on deliveries (:mod:`.votes`) are recorded and published for calibration and
 practice comparisons; they never reach a score, a weight or the router.
@@ -97,7 +105,8 @@ class JobOutcome:
     """pass | reject | gate | timeout | copy | refused"""
     signals: list[dict[str, Any]] = field(default_factory=list)
     """the client's, in the order they came: {"kind": download | stars | change | refund,
-    "stars": 1-5, "quality": a refund for the delivery's quality, "at_ms"}"""
+    "stars": 1-5, "quality": a refund for the delivery's quality, "by": "visitor" on a download
+    by someone other than the job's client, "at_ms"}"""
     s: float = 0.0
     parts: dict[str, Any] = field(default_factory=dict)
     """what decided ``s``: ``{"signal": none | download | stars | refund}`` on a delivered job,
@@ -105,22 +114,28 @@ class JobOutcome:
 
     @property
     def passed(self) -> bool:
-        return self.accepted and self.deliverable and not self.copy_of
+        """A delivery: a ``pass`` whose facts agree. Any other kind is not one, whatever its facts
+        say (an attempt the validator could not judge, a copy whose flag was lifted)."""
+        return self.kind == "pass" and self.accepted and self.deliverable and not self.copy_of
 
 
 def client_points(signals: Iterable[Mapping[str, Any]]) -> tuple[float, str]:
-    """A delivered job's points and the signal that decided them: the client's LATEST download,
-    star rating or quality refund; :data:`UNRATED` when there is none."""
-    points, by = UNRATED, "none"
+    """A delivered job's points and the signal that decided them: the client's LATEST verdict (a
+    star rating or a quality refund) when there is one; else :data:`APPROVED` for a download; else
+    :data:`UNRATED`. A download never outranks a verdict, whenever it came."""
+    verdict: tuple[float, str] | None = None
+    downloaded = False
     for x in signals:
         kind = x.get("kind")
         if kind == "download":
-            points, by = APPROVED, "download"
+            downloaded = True
         elif kind == "stars" and 1 <= int(x.get("stars") or 0) <= 5:
-            points, by = (APPROVED if int(x["stars"]) >= 3 else DISAPPROVED), "stars"
+            verdict = (APPROVED if int(x["stars"]) >= 3 else DISAPPROVED), "stars"
         elif kind == "refund" and x.get("quality") is True:
-            points, by = DISAPPROVED, "refund"
-    return points, by
+            verdict = DISAPPROVED, "refund"
+    if verdict is not None:
+        return verdict
+    return (APPROVED, "download") if downloaded else (UNRATED, "none")
 
 
 def score(o: JobOutcome) -> float:
@@ -160,9 +175,36 @@ def standing(jobs: Iterable[JobOutcome], now_ms: int) -> tuple[dict[str, float],
     return {h: round(v, 6) for h, v in total.items()}, average
 
 
+RECORD_JOBS = 10
+"""a miner with fewer jobs in the window is read as if the missing ones were unrated deliveries"""
+TRIAL_EVERY = 5
+"""one client job in this many goes to the miner that waited longest, whatever its record"""
+
+
+def record(jobs: Iterable[JobOutcome], now_ms: int) -> dict[str, float]:
+    """What the router ranks miners by: points per job over the window, each miner padded to
+    :data:`RECORD_JOBS` jobs with :data:`UNRATED` ones. A miner with no job in the window is not in
+    the answer: its record is :data:`UNRATED` (:func:`record_of`)."""
+    total: dict[str, float] = defaultdict(float)
+    count: dict[str, int] = defaultdict(int)
+    for o in jobs:
+        if in_window(o, now_ms):
+            total[o.hotkey] += o.s
+            count[o.hotkey] += 1
+    return {
+        h: round((total[h] + UNRATED * max(0, RECORD_JOBS - n)) / max(n, RECORD_JOBS), 6)
+        for h, n in count.items()
+    }
+
+
+def record_of(records: Mapping[str, float], hotkey: str) -> float:
+    return float(records.get(hotkey, UNRATED))
+
+
 CONSTANTS = {
     "window_h": WINDOW_H,
     "points": {"unrated": UNRATED, "approved": APPROVED, "disapproved": DISAPPROVED},
+    "router": {"record_jobs": RECORD_JOBS, "trial_every": TRIAL_EVERY},
 }
 """the rule's numbers, published in every report"""
 
@@ -374,6 +416,11 @@ class Ledger:
                     self.store.delete("outcome", key)
             weight, average = standing(window, now_ms)
             return window, weight, average
+
+    def records(self, now_ms: int) -> dict[str, float]:
+        """Each miner's record now (:func:`record`): what the router ranks by."""
+        with self._lock:
+            return record(score_all(self._window(now_ms)), now_ms)
 
     def last_vector(self) -> dict[str, float]:
         """The last non-empty vector, hotkey -> weight ({} before the first): what an hour that
