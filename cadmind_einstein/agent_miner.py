@@ -105,6 +105,14 @@ aliases). With ``--netuid`` (and ``--subtensor.network``/``--subtensor.chain_end
 reads the metagraph once at startup and warns when its hotkey is not registered there; without
 ``--netuid`` it makes no chain call. A newer GitHub release is logged as a WARNING at startup
 (``--no-version-check`` turns that off).
+
+**Auto-update** (:mod:`.auto_update`, on by default from a git checkout): every 30 minutes the
+miner reads the remote's release tags; a newer release is applied only between jobs -- at the top
+of the job loop, when the validator's ``work`` names no accepted job of ours -- then the process
+re-executes itself on the same command line. A job already accepted is always built and submitted
+first; a job offered while an update is pending is accepted after the restart. A failed update
+returns to the previous commit and the miner keeps running. ``--no-auto-update`` or
+``CADMIND_MINER_AUTO_UPDATE=0`` turns it off.
 """
 
 from __future__ import annotations
@@ -130,6 +138,7 @@ from pathlib import Path
 from typing import Any
 
 from . import __spec_version__, __version__
+from . import auto_update as au
 from . import self_review as sr
 from .answers import check as answers_check
 from .cli import (
@@ -1252,6 +1261,7 @@ def parser() -> argparse.ArgumentParser:
         action="store_false",
         help="no local fetch_to_workspace tool: the agent fetches through the platform only",
     )
+    au.add_args(ap)
     return ap
 
 
@@ -1383,6 +1393,7 @@ def main(argv: list[str] | None = None) -> int:
         log(f"setup label: {setup!r} (sent with each submit; practice results are grouped by it)")
     if not a.no_version_check:
         check_latest(say=log)
+    updater = au.from_args(a, log=log)
     if a.netuid and not a.dev_uri:
         try:
             if not registered_on(network_of(a), a.netuid, me):
@@ -1454,9 +1465,23 @@ def main(argv: list[str] | None = None) -> int:
             stop.wait(15)
 
     threading.Thread(target=heartbeat, daemon=True).start()
+    if updater is not None:
+        updater.watch(busy.is_set, stop)  # checks during a job; applied only once it has ended
     done = 0
     while not a.max_jobs or done < a.max_jobs:
         code, work = call("/v1/jobs/work", {})
+        # the idle point: no job of ours is accepted (a job ended above, before this poll). A
+        # pending update is applied here and the miner restarts, before it accepts a job offered
+        # meanwhile; an accepted job (one resumed after a restart) is always built first
+        if (
+            updater is not None
+            and code == 200
+            and isinstance(work, dict)
+            and not (work.get("job") and work.get("accepted"))
+            and updater.between_jobs(job_waiting=bool(work.get("job")))
+        ):
+            stop.set()
+            return 0  # only an injected restart returns: the real one replaces this process
         if code != 200 or not work.get("job"):
             if code not in (0, 200):
                 log(f"work: {code} {work}")
