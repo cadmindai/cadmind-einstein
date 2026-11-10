@@ -21,6 +21,15 @@ All notable changes to this project are listed here. The format follows
   workspace's export before it submits; while the check would refuse the delivery and time is left, the builder runs
   again with the reason (twice at most). The builder's prompt says how to record an answer a change request replaced.
 
+### Changed
+
+- **The reference miner's builder looks at its device and does not narrow a need.** Its self-review now starts with
+  one render of the whole device, looked at with `view_image`: it writes what a buyer would object to on sight and
+  fixes the worst of it while time allows (deliverable is the floor, not the goal). A must written for a client need
+  covers everything the need names; what cannot be met stays in the must or is said to the client, never left out
+  by writing a narrower must. Found on a delivered headset whose builder had not looked at it once, and whose "no
+  sharp edges" must read one handle.
+
 ## [0.6.0] - 2026-11-10
 
 **A protocol change for miners: update the miner and the validator together.** A miner before 0.6.0 cannot get a

@@ -248,9 +248,17 @@ last (step 5), never as a first check.
 3. Give each bought hardware record a `price` (`"4.87 USD"`; a cable stock `"0.80 USD/m"`; a \
 material `"25 USD/kg"`): DigiKey's qty-1 USD price from `lookup_part`, cited to its saved source, \
 or a listing you fetched; never a guess -- leave it out when unknown. The client sees the bill.
-4. Self-review: load paths, retention, clearances, every clause tested on the whole feature it
-names \
-(every corner and protrusion, not a convenient section); each control the device covers still \
+4. Self-review, looking first: `watt` render, then `view_image` each picture of the WHOLE device \
+(you have not seen it until you do; one render, before step 5). Write in DESIGN-NOTES.md what its \
+buyer would object to on sight -- a square block where a hand, a face or a pocket goes, a part \
+left bare or hanging, an edge the brief says to round -- and fix the worst of it while \
+`time_left` allows: deliverable is the floor, not the goal. Then: load paths, retention, \
+clearances, every clause tested on the whole feature it names \
+(every corner and protrusion, not a convenient section). A must you write for a client need \
+covers everything the need names (their "no sharp edges" is every outside edge of every part, \
+not the one handle you rounded): what you cannot meet stays in the must, failing, until you fix \
+the design, or is said to the client in a decision and your final lines; never narrow the must \
+to what passes. Each control the device covers still \
 worked by a real fingertip, through its opening or a flexible cover; a flexible part grips by \
 interference (a press fit), not by play; fix the weakest points. Write the notes and your final \
 lines from the model's current values (re-read them), never from an earlier plan.
