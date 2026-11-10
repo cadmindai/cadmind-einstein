@@ -7,12 +7,51 @@ All notable changes to this project are listed here. The format follows
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-11-10
+
+**A protocol change for miners: update the miner and the validator together.** A miner before 0.6.0 cannot get a
+key from a 0.6.0 validator, and a 0.6.0 miner does not work with an older validator.
+
 ### Changed
 
+- **A miner works on its own agent key.** The validator no longer makes a miner's key, and never sees its secret.
+  - A miner creates an account on the developer platform, links its hotkey to it by signature, and creates an agent
+    key there that names the hotkey. Its operator gives the secret to the miner program in a 0600 file:
+    `--agent-key-file`, else `$CADMIND_AGENT_KEY_FILE`, else `agent.key` in the miner's `--state` directory. The
+    miner stops at startup, saying how to get one, when the file holds no key.
+  - `POST /v1/miners/agent_key` keeps its route and its whole approval flow (pending, refused, revoked, a coldkey
+    change). Once approved it asks the platform which agent key names the hotkey and answers `{key_id}`: no secret,
+    no `sealed`. The `x25519_public` field older miners send is accepted and ignored.
+  - A hotkey the platform has no key for (linked to no account, or named by no live agent key) is answered
+    `409 {error, code: "miner_not_linked"}` with the platform's own instruction. The reference miner logs it and
+    asks again every 15 minutes.
+  - The reference miner checks that the key the validator names is the key it runs on (the platform's
+    `GET /api/agent/usage` names the calling key) and stops with a message when it is not: the newest live agent
+    key naming the hotkey is the one used. While idle it asks the validator again every hour, so a validator that
+    dropped it (a block since lifted, a deregistration) takes it back.
+  - `cadmind-einstein-fake-miner` takes `--agent-key-file` too (required).
+- **Watt compute is paid in credits, and a miner needs none of its own.** Each job workspace the validator grants
+  carries its allowance from the platform, and a job workspace is the only place a miner's key runs compute. The
+  grant call is unchanged.
+- **Disabling, revoking or deregistering a miner freezes its open job workspaces** on the platform (the same
+  operator route as before, queued and retried). No key is deleted: the miner's key is its own. At the validator
+  the hotkey is no longer keyed, loses its admission, and its job goes to another miner unscored, as before.
+- A grant the platform refuses because the miner's key is gone (`miner_not_linked`) frees the job for another
+  miner, and that miner gets no job until it asks the validator again.
+- The validator's **keys** role key is named `--keys-key-file`; `--mint-key-file` stays as its older name. The
+  deployment examples use the new name and give the miner its `--agent-key-file`.
+- A refusal a miner's program acts on carries a `code` beside `error`.
 - **The reference miner's builder runs the whole guard once.** The final `report` with mutate is now the last step,
   after the prices and the self-review (an edit after it needs the whole guard again); if it warns of thinly guarded
   musts, the builder strengthens all of them in one pass, checks them with a scoped guard, and runs the `report`
   once more, whose pass stands. A builder that followed the old order ran the whole guard five times in one job.
+
+### Removed
+
+- The sealed agent key: `cadmind_einstein/sealing.py` and the `pycryptodome` dependency.
+- The validator's key-mint budgets. `--mint-per-hour` and `--mint-per-coldkey-hour` are accepted and ignored (one
+  log line); the 429 answers "your key was just minted" and "no more keys this hour" are gone. The route's own
+  rate limits (6 per hotkey and 60 per address an hour) stay.
 
 ## [0.5.20] - 2026-11-10
 
