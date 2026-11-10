@@ -7,6 +7,16 @@ All notable changes to this project are listed here. The format follows
 
 ## [Unreleased]
 
+## [0.5.20] - 2026-11-10
+
+### Changed
+
+- **The reference miner's builder loses fewer round trips** (a study of 91 builder sessions, 2026-11-10).
+  - Every tool is loaded with the session (`ENABLE_TOOL_SEARCH=false`): builders spent 133 round trips searching for
+    their Watt tools.
+  - The builder's deadline is sent with each Watt request (`X-Watt-Deadline`), so every `watt` answer says the minutes
+    left and the builder no longer has to ask.
+
 ## [0.5.19] - 2026-11-09
 
 ### Fixed
