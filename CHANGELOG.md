@@ -7,6 +7,8 @@ All notable changes to this project are listed here. The format follows
 
 ## [Unreleased]
 
+## [0.6.1] - 2026-11-10
+
 ### Fixed
 
 - **Answers gate: a later change request replaces an earlier answer.** A client who answered a question and then
