@@ -7,6 +7,8 @@ All notable changes to this project are listed here. The format follows
 
 ## [Unreleased]
 
+## [0.6.2] - 2026-11-10
+
 ### Changed
 
 - **Validator: a hotkey registered moments ago is told when to retry.** The `403` for a hotkey missing from the
