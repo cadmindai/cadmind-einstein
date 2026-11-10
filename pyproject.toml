@@ -17,8 +17,6 @@ classifiers = [
 ]
 dependencies = [
     "bittensor>=11.0.1,<12",
-    # X25519 + HKDF + AES-GCM for the sealed agent key
-    "pycryptodome>=3.21",
 ]
 
 [project.optional-dependencies]

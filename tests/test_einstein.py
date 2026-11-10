@@ -1,4 +1,4 @@
-"""Einstein (one miner per job): the miner's own agent key, the per-job points (the owner's rule),
+"""Einstein (one miner per job): the miner's own agent key, the per-job points,
 7-day weights with no owner weight, the recompute auditor, and the desk -- routing by wait,
 acceptance, the Watt gate, reassignment from scratch up to the cap, "didn't finish" not charged,
 copies -- against an in-memory platform."""
