@@ -385,6 +385,9 @@ class TestMinerWiring(unittest.TestCase):
         self.assertIn(str(Path("state/agent.key").resolve()), rel["cadmind-fetch"]["args"])
         off = agent_miner.mcp_config(self.ns(local_fetch=False), "k", Path("/k"))["mcpServers"]
         self.assertEqual(set(off), {"cadmind-watt"})
+        self.assertNotIn("X-Watt-Deadline", off["cadmind-watt"]["headers"])
+        told = agent_miner.mcp_config(self.ns(), "k", Path("/k"), 1_800_000_000_000)["mcpServers"]
+        self.assertEqual(told["cadmind-watt"]["headers"]["X-Watt-Deadline"], "1800000000000")
 
     def test_claude_is_allowed_the_watt_tools_and_the_one_local_tool_only(self) -> None:
         argv = agent_miner.agent_argv(

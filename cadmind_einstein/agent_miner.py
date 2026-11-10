@@ -184,9 +184,12 @@ delivers today is the bar a miner is held to."""
 ISOLATION_ENV: dict[str, str] = {
     "CLAUDE_CODE_DISABLE_CLAUDE_MDS": "1",
     "CLAUDE_CODE_DISABLE_AUTO_MEMORY": "1",
+    "ENABLE_TOOL_SEARCH": "false",
 }
 """Set in the agent's environment for Claude Code's CLI: no ``CLAUDE.md`` is read (the user's, or
-one in any parent directory) and auto-memory is neither read nor written."""
+one in any parent directory), auto-memory is neither read nor written, and every tool is loaded
+with the session instead of behind a tool search (a builder spent 133 round trips over 91 jobs
+searching for its Watt tools, 2026-11-10)."""
 KILL_GRACE_S = 10.0
 
 PROMPT = """You are a CADmind einstein miner. Build this client's device in the Watt workspace \
@@ -873,14 +876,21 @@ def deadline_file(a: argparse.Namespace) -> Path | None:
     return Path(state) / "deadline" if state else None
 
 
-def mcp_config(a: argparse.Namespace, key: str, key_file: Path) -> dict[str, Any]:
+def mcp_config(
+    a: argparse.Namespace, key: str, key_file: Path, deadline_ms: int = 0
+) -> dict[str, Any]:
     """The agent's ``mcpServers``: the platform's Watt server, and the local fetch server (unless
-    ``--no-local-fetch``), which reads the agent key from ``key_file``."""
+    ``--no-local-fetch``), which reads the agent key from ``key_file``. ``deadline_ms``, the
+    deadline the builder is told: sent with each request (``X-Watt-Deadline``), so every ``watt``
+    answer says the minutes left."""
+    headers = {"Authorization": f"Bearer {key}"}
+    if deadline_ms:
+        headers["X-Watt-Deadline"] = str(int(deadline_ms))
     servers: dict[str, Any] = {
         MCP_SERVER: {
             "type": "http",
             "url": a.platform.rstrip("/") + "/mcp",
-            "headers": {"Authorization": f"Bearer {key}"},
+            "headers": headers,
         }
     }
     if getattr(a, "local_fetch", True):
@@ -1354,6 +1364,11 @@ def main(argv: list[str] | None = None) -> int:
         deadline = deadline_file(a)
         if deadline is not None:
             _write_private(deadline, str(told_ms) if deadline_ms else "")
+        # and on each Watt request, so every `watt` answer says the minutes left
+        _write_private(
+            mcp_file,
+            json.dumps(mcp_config(a, key_file.read_text().strip(), key_file, told_ms)),
+        )
         deadline_utc = (
             time.strftime("%H:%M", time.gmtime(told_ms / 1000))
             if deadline_ms
