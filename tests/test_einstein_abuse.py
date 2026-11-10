@@ -7,7 +7,6 @@ the validator's answers are signed."""
 from __future__ import annotations
 
 import ast
-import base64
 import json
 import random
 import tempfile
@@ -24,7 +23,6 @@ from bittensor.sp_core import Keypair
 from cadmind_einstein.desk import AbusePolicy, Desk, SecondOpinion
 from cadmind_einstein.fake_miner import signed
 from cadmind_einstein.scoring import Ledger, recompute, vector
-from cadmind_einstein.sealing import new_keypair
 from cadmind_einstein.service import serve, verify_response
 from cadmind_einstein.similarity import (
     CopyCheck,
@@ -237,7 +235,7 @@ class TestDisguisedCopies(unittest.TestCase):
         )
         try:
             for hk in (A, B):
-                desk.agent_key(hk, new_keypair()[1])
+                desk.agent_key(hk)
                 desk.miners[hk].admitted = True
             for job, files in (("j1", VICTIM), ("j2", _py(VICTIM, _Rename, _Junk))):
                 p.queue.append({"job": job, "brief": "A plug."})
@@ -440,7 +438,7 @@ class TestGenesisSybils(unittest.TestCase):
         p = FakePlatform()
         desk = Desk(p, Ledger(), registered=lambda: [A], clock=Clock())
         try:
-            desk.agent_key(A, new_keypair()[1])
+            desk.agent_key(A)
             desk.miners[A].admitted = True
             self.assertEqual(desk.proven(), [])
             p.queue.append({"job": "j1", "brief": "A hook."})
@@ -478,7 +476,7 @@ class TestSecondOpinions(unittest.TestCase):
         )
         self.addCleanup(desk.stop)
         for hk in (A, B, C, D):
-            desk.agent_key(hk, new_keypair()[1])
+            desk.agent_key(hk)
             desk.miners[hk].admitted = True
         return desk
 
@@ -667,10 +665,7 @@ class TestSignedAnswers(unittest.TestCase):
         self.assertTrue(self.check(code, body, headers, auth, "/v1/jobs/work"))
 
     def test_the_reference_miner_checks_and_refuses_an_unsigned_answer(self) -> None:
-        pub = base64.b64encode(new_keypair()[1]).decode()
-        code, out = signed(
-            ALICE, self.base, "/v1/miners/agent_key", {"x25519_public": pub}, VALIDATOR.ss58_address
-        )
+        code, out = signed(ALICE, self.base, "/v1/miners/agent_key", {}, VALIDATOR.ss58_address)
         self.assertEqual(code, 200, out)
         plain = serve(
             self.desk,

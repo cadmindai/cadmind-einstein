@@ -6,7 +6,9 @@ from __future__ import annotations
 import contextlib
 import io
 import logging
+import tempfile
 import unittest
+from pathlib import Path
 from unittest import mock
 
 from cadmind_einstein import __spec_version__, __version__, _spec, agent_miner, daemon, scoring
@@ -48,6 +50,14 @@ class TestDaemonFlags(unittest.TestCase):
         )
         self.assertEqual(network_of(a), "test")
         self.assertEqual(wallet_kwargs(a), {"name": "vw", "hotkey": "vh"})
+
+    def test_the_flags_of_the_time_the_validator_made_the_keys_are_still_accepted(self) -> None:
+        a = self.parse(
+            "--mint-key-file", "M", "--mint-per-hour", "40", "--mint-per-coldkey-hour", "9"
+        )
+        self.assertEqual(a.keys_key_file, Path("M"))  # the keys role's key, by its older name
+        self.assertEqual(self.parse("--keys-key-file", "M").keys_key_file, Path("M"))
+        self.assertIsNone(self.parse().mint_per_hour)  # read only to say it is ignored
 
     def test_bittensor_style_flags_mean_the_same(self) -> None:
         dotted = self.parse(
@@ -127,6 +137,51 @@ class TestMinerFlags(unittest.TestCase):
         with mock.patch("sys.stderr", io.StringIO()) as err, self.assertRaises(SystemExit):
             agent_miner.main([*MINER_BASE])
         self.assertIn("--wallet.name and --wallet.hotkey", err.getvalue())
+
+
+class TestMinerAgentKey(unittest.TestCase):
+    """The miner runs on its own agent key, from a file its operator gives it."""
+
+    def run_miner(self, state: str, *extra: str) -> tuple[int | None, str]:
+        out = io.StringIO()
+        argv = [*MINER_BASE[:-1], state, "--dev-uri", "//Alice", "--no-version-check", *extra]
+        code: int | None
+        with mock.patch("sys.stdout", out):
+            try:
+                code = agent_miner.main(argv)
+            except SystemExit as e:
+                code = e.code if isinstance(e.code, int) else None
+        return code, out.getvalue()
+
+    def test_without_a_key_file_it_stops_and_says_how_to_get_one(self) -> None:
+        with tempfile.TemporaryDirectory() as d, mock.patch.dict("os.environ"):
+            agent_miner.os.environ.pop(agent_miner.AGENT_KEY_ENV, None)
+            code, said = self.run_miner(d)
+        self.assertEqual(code, 1)
+        self.assertIn("no agent key in", said)
+        self.assertIn("link this hotkey", said)
+        self.assertIn("create an agent key naming the hotkey", said)
+
+    def test_it_stops_when_the_platform_has_another_key_for_its_hotkey(self) -> None:
+        asked: list[tuple[str, dict]] = []
+
+        def signed(_kp: object, _base: str, path: str, body: dict, _to: str) -> tuple[int, dict]:
+            asked.append((path, dict(body)))
+            return 200, {"key_id": "k-newer"}
+
+        with (
+            tempfile.TemporaryDirectory() as d,
+            mock.patch.object(agent_miner, "signed", signed),
+            mock.patch.object(agent_miner, "own_key_id", lambda _p, _k: "k-mine"),
+        ):
+            key = Path(d) / "mine.key"
+            key.write_text("cma_mine\n")
+            code, said = self.run_miner(d, "--agent-key-file", str(key))
+        self.assertEqual(code, 1)
+        self.assertEqual(asked, [("/v1/miners/agent_key", {})])  # no key material is sent
+        self.assertIn("the platform has agent key k-newer for this hotkey", said)
+        self.assertIn("is key k-mine", said)
+        self.assertNotIn("cma_mine", said)
 
 
 class TestRecomputeFlags(unittest.TestCase):

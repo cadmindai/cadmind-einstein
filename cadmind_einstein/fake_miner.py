@@ -1,20 +1,21 @@
 """A scripted miner for local end-to-end runs (DESIGN.md): no model, the miner's side of the
 protocol for real.
 
-It asks the validator for its agent key (signed; the secret sealed to an ephemeral X25519 key),
-polls ``work``, accepts, and builds a reference Watt project in the job workspace **through the
-platform's MCP server** -- each file written with ``write_file``, its assets fetched with ``fetch``,
-then ``watt check``, ``build``, ``test`` and ``test --mutate`` -- reads the digest with ``watt
-status`` and submits.
+It runs on its own agent key (``--agent-key-file``: made on the developer platform, naming its
+hotkey), asks the validator to take that key (signed; the validator answers the key's id), polls
+``work``, accepts, and builds a reference Watt project in the job workspace **through the platform's
+MCP server** -- each file written with ``write_file``, its assets fetched with ``fetch``, then
+``watt check``, ``build``, ``test`` and ``test --mutate`` -- reads the digest with ``watt status``
+and submits.
 
     python -m cadmind_einstein.fake_miner --uri //Alice --validator http://127.0.0.1:8793 \
-        --validator-hotkey 5V... --platform http://127.0.0.1:PORT --project wall-hook [--jobs 1]
+        --validator-hotkey 5V... --platform http://127.0.0.1:PORT --agent-key-file K \
+        --project wall-hook [--jobs 1]
 """
 
 from __future__ import annotations
 
 import argparse
-import base64
 import json
 import re
 import sys
@@ -27,12 +28,10 @@ from pathlib import Path
 from typing import Any
 
 from .desk import host_refusal
-from .sealing import new_keypair, open_sealed
 
 
 def ask_key(
     call: Any,
-    x25519_public: bytes,
     *,
     contact: str = "",
     log: Any = print,
@@ -40,13 +39,14 @@ def ask_key(
     max_wait_s: float = 0.0,
     clock: Any = time.monotonic,
 ) -> tuple[int, Any]:
-    """Ask the validator for the agent key (``call(path, body) -> (status, answer)``) and wait
-    while the request is pending the operator's approval (202 ``{"pending": true}``): asked again
-    every ``retry_after_s`` the validator names, at most ``max_wait_s`` in all (0: no limit).
-    Answers the last (status, answer): 200 with the sealed key once approved."""
-    body: dict[str, Any] = {"x25519_public": base64.b64encode(x25519_public).decode()}
-    if contact:
-        body["contact"] = contact
+    """Ask the validator to take this miner's agent key (``call(path, body) -> (status,
+    answer)``) and wait while the request is pending the operator's approval (202 ``{"pending":
+    true}``, asked again every ``retry_after_s`` the validator names) or while the platform knows
+    no key for the hotkey (409 ``miner_not_linked``: the platform's instruction is logged, and the
+    miner asks again every :data:`NOT_LINKED_RETRY_S`); at most ``max_wait_s`` in all (0: no
+    limit). Answers the last (status, answer): 200 with ``key_id``, the id of the key the
+    platform has for the hotkey, once approved."""
+    body: dict[str, Any] = {"contact": contact} if contact else {}
     start = clock()
     asks = 0
     said = False
@@ -62,6 +62,12 @@ def ask_key(
                     "chain every few minutes); asking again every minute"
                 )
             wait = REGISTRATION_RETRY_S
+        elif code == 409 and isinstance(got, dict) and got.get("code") == NOT_LINKED:
+            wait = NOT_LINKED_RETRY_S
+            log(
+                f"agent key: the platform has no agent key for this hotkey -- {got.get('error')}; "
+                f"asking again in {wait / 60:.0f} min"
+            )
         elif code != 202 or not isinstance(got, dict) or not got.get("pending"):
             return code, got
         else:
@@ -78,6 +84,9 @@ def ask_key(
         sleep(wait)
 
 
+NOT_LINKED = "miner_not_linked"
+NOT_LINKED_RETRY_S = 900.0
+"""how often a miner asks again while the platform has no agent key for its hotkey"""
 REGISTRATION_RETRY_S = 60.0
 """how often a miner asks again while the validator does not see its registration yet"""
 
@@ -283,6 +292,12 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--validator", required=True)
     ap.add_argument("--validator-hotkey", required=True)
     ap.add_argument("--platform", required=True)
+    ap.add_argument(
+        "--agent-key-file",
+        type=Path,
+        required=True,
+        help="this miner's own agent key (made on the developer platform, naming its hotkey)",
+    )
     ap.add_argument("--project", type=Path, required=True, help="the reference project to rebuild")
     ap.add_argument("--jobs", type=int, default=1)
     ap.add_argument("--contact", default="", help="a note for the operator with the key request")
@@ -296,10 +311,9 @@ def main(argv: list[str] | None = None) -> int:
     def log(msg: str) -> None:
         print(f"[fake-miner {me[:8]}] {msg}", file=sys.stderr, flush=True)  # noqa: T201
 
-    priv, pub = new_keypair()
+    key = a.agent_key_file.read_text(encoding="utf-8").strip()
     code, got = ask_key(
         lambda path, body: signed(kp, a.validator, path, body, a.validator_hotkey),
-        pub,
         contact=a.contact,
         log=log,
         max_wait_s=a.idle_s,
@@ -307,8 +321,7 @@ def main(argv: list[str] | None = None) -> int:
     if code != 200:
         log(f"agent_key refused: {code} {got}")
         return 1
-    key = open_sealed(got["sealed"], priv, me)
-    log(f"agent key {got['key_id']} opened ({key[:6]}...)")
+    log(f"agent key {got['key_id']} taken by the validator")
     mcp = Mcp(a.platform, key)
     mcp.init()
     code, adm = signed(kp, a.validator, "/v1/miners/admission", {}, a.validator_hotkey)

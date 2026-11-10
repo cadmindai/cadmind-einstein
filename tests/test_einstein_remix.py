@@ -10,7 +10,6 @@ from typing import Any
 
 from cadmind_einstein.desk import CREDIT_MAX, Desk, _credit_of
 from cadmind_einstein.scoring import HOUR_MS, Ledger
-from cadmind_einstein.sealing import new_keypair
 from tests.test_einstein import GOOD, A, B, C, Clock, FakePlatform, wait_state
 
 ORIGINAL = {"job": "original-1", "hotkey": A}
@@ -42,7 +41,7 @@ class DeskRig(unittest.TestCase):
             rng=random.Random(7),  # noqa: S311 -- a test's seed
         )
         for hk in (A, B, C):
-            self.desk.agent_key(hk, new_keypair()[1])
+            self.desk.agent_key(hk)
             self.desk.miners[hk].admitted = True
 
     def tearDown(self) -> None:

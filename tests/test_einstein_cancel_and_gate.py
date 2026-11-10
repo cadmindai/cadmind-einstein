@@ -1,11 +1,10 @@
 """A cancel reaches the miner and the gate; the gate is bounded; the validator's own errors are
 retried with a back-off and never blamed on a miner, and a judgement that cannot be made ends the
-job uncharged; a delivery the platform did not charge withdraws its scores; key mints are checked
-and budgeted before the platform is asked."""
+job uncharged; a delivery the platform did not charge withdraws its scores; a miner's key is looked
+up on the platform, never made."""
 
 from __future__ import annotations
 
-import base64
 import json
 import tempfile
 import threading
@@ -15,8 +14,7 @@ from typing import Any
 
 from cadmind_einstein.desk import DeskError
 from cadmind_einstein.platform import PlatformError
-from cadmind_einstein.sealing import new_keypair, valid_public
-from tests.test_einstein import GOOD, A, B, C, D, wait_state
+from tests.test_einstein import GOOD, NOT_LINKED_WORDS, A, B, C, D, wait_state
 from tests.test_einstein_operator_roles import _Case
 from tests.test_einstein_security import ALICE, _DeskCase, _Svc
 
@@ -322,56 +320,61 @@ class TestUncharged(_Cases):
         self.assertEqual(len(self.desk.ledger.outcomes), 1)
 
 
-class TestMints(_Cases):
-    def test_a_bad_public_key_mints_nothing(self) -> None:
-        minted = dict(self.p.keys)
-        for bad in (b"", b"x" * 31, bytes(32)):
-            with self.assertRaises(DeskError) as e:
-                self.desk.agent_key(B, bad)
-            self.assertEqual(e.exception.status, 400)
-        self.assertEqual(self.p.keys, minted)
-        self.assertFalse(valid_public(bytes(32)))
-        self.assertTrue(valid_public(new_keypair()[1]))
+class TestKeyLookup(_Cases):
+    """The validator makes no key: it asks the platform which key names the hotkey."""
 
-    def test_a_fresh_key_is_not_minted_again(self) -> None:
+    def test_every_ask_looks_the_key_up_and_answers_its_id_only(self) -> None:
+        before = len(self.p.looked_up)
+        for _ in range(3):  # no budget of the validator's own: a lookup makes nothing
+            self.assertEqual(self.desk.agent_key(B), {"key_id": f"k-{B[:6]}"})
+        self.assertEqual(self.p.looked_up[before:], [B] * 3)
+        self.assertEqual(self.desk.miners[B].key_id, f"k-{B[:6]}")
+
+    def test_a_hotkey_the_platform_has_no_key_for_reads_the_platforms_words(self) -> None:
+        self.p.unlinked.add(B)
         with self.assertRaises(DeskError) as e:
-            self.desk.agent_key(A, new_keypair()[1])
-        self.assertEqual(e.exception.status, 429)
-        self.clock.t += 601
-        self.desk.agent_key(A, new_keypair()[1])
+            self.desk.agent_key(B)
+        self.assertEqual((e.exception.status, e.exception.code), (409, "miner_not_linked"))
+        self.assertEqual(str(e.exception), NOT_LINKED_WORDS)
+        self.assertEqual(self.desk.miners[B].key_id, "")  # no longer keyed here
+        self.p.unlinked.discard(B)
+        self.assertIn("key_id", self.desk.agent_key(B))
 
-    def test_the_validators_budgets_stop_before_the_platform(self) -> None:
-        self.desk.mint_fresh_s = 0
-        self.desk.mint_per_coldkey_hour = 0
-        self.desk.mint_per_hour = len(self.desk._mints) + 1
-        self.desk.agent_key(A, new_keypair()[1])
-        calls = []
-        real = self.p.mint_key
-        self.p.mint_key = lambda hk: calls.append(hk) or real(hk)  # type: ignore[method-assign]
-        with self.assertRaises(DeskError) as e:
-            self.desk.agent_key(B, new_keypair()[1])
-        self.assertEqual((e.exception.status, calls), (429, []))
-        self.desk.disable(B)  # a revocation is never counted, never refused
-        self.clock.t += 3601
-        self.desk.mint_per_coldkey_hour = 1
-        self.desk.mint_per_hour = 100
-        self.desk.coldkeys = lambda: {A: "same", C: "same"}
-        self.desk.agent_key(A, new_keypair()[1])
-        with self.assertRaises(DeskError) as e:
-            self.desk.agent_key(C, new_keypair()[1])
-        self.assertEqual(e.exception.status, 429)
+    def test_a_grant_refused_for_a_key_gone_since_frees_the_job_for_another_miner(self) -> None:
+        self.p.unlinked.add(A)  # A deleted its key after the validator looked it up
+        for hk in (B, C):  # held off: the job goes to A first
+            self.desk.miners[hk].blocked_until_ms = self.desk.now_ms() + 10**9
+        self.p.queue.append({"job": "n1", "brief": "A wall hook."})
+        for hk in (A, B, C):
+            self.desk.work(hk)
+        self.tick()
+        self.assertEqual(self.desk.status("n1")["state"], "queued")  # the grant was refused
+        self.assertEqual(self.desk.miners[A].key_id, "")  # not available until it asks again
+        for hk in (B, C):
+            self.desk.miners[hk].blocked_until_ms = 0
+        self.tick()
+        st = self.desk.status("n1")
+        self.assertEqual(st["state"], "assigned")
+        self.assertEqual([a["hotkey"] == A for a in st["attempts"]], [False])
 
 
-class TestServiceChecksTheKeyFirst(_DeskCase):
-    def test_a_malformed_key_is_400_and_takes_no_place_in_the_rate(self) -> None:
-        svc = _Svc(agent_key_per_hotkey=(1, 3600.0))
+class TestServiceAgentKey(_DeskCase):
+    def test_the_older_x25519_field_is_ignored(self) -> None:
+        svc = _Svc()
         try:
-            for bad in ("", "not base64!", base64.b64encode(b"x" * 31).decode()):
-                code, _ = svc.signed(ALICE, "/v1/miners/agent_key", {"x25519_public": bad})
-                self.assertEqual(code, 400)
-            good = base64.b64encode(new_keypair()[1]).decode()
-            code, _ = svc.signed(ALICE, "/v1/miners/agent_key", {"x25519_public": good})
-            self.assertEqual(code, 200)
+            for body in ({}, {"x25519_public": "not base64!"}, {"contact": "forum: alice"}):
+                code, out = svc.signed(ALICE, "/v1/miners/agent_key", body)
+                self.assertEqual((code, list(out)), (200, ["key_id"]))
+        finally:
+            svc.close()
+
+    def test_miner_not_linked_is_a_409_with_its_code_and_the_platforms_words(self) -> None:
+        svc = _Svc()
+        try:
+            svc.p.unlinked.add(A)
+            code, out = svc.signed(ALICE, "/v1/miners/agent_key", {})
+            self.assertEqual(code, 409)
+            self.assertEqual(out, {"error": NOT_LINKED_WORDS, "code": "miner_not_linked"})
         finally:
             svc.close()
 

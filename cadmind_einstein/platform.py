@@ -6,7 +6,8 @@ role            key            calls
 ==============  =============  ===================================================================
 ``workspaces``  ``key``        grant, state, freeze, fork, and ``watt`` runs, run polls, export
                                and delete on the validator's own forks
-``keys``        ``mint_key``   mint and disable miners' keys
+``keys``        ``keys_key``   which agent key a miner's hotkey has on the platform, and closing
+                               a hotkey's open job workspaces
 ``queue``       ``queue_key``  claim, lease, claimed and complete (a delivered result charges the
                                client), review bundles, and the practice routes (a brief, a
                                bundle, a report), at ``queue_url``
@@ -109,7 +110,7 @@ class OperatorClient:
         base_url: str,
         key: str,
         *,
-        mint_key: str = "",
+        keys_key: str = "",
         queue_key: str = "",
         queue_url: str = "",
         timeout: float = 160.0,
@@ -121,7 +122,7 @@ class OperatorClient:
     ) -> None:
         self.base, self.timeout = base_url.rstrip("/"), timeout
         self.queue = (queue_url or base_url).rstrip("/")
-        self.keys = {WORKSPACES: key, KEYS: mint_key or key, QUEUE: queue_key or key}
+        self.keys = {WORKSPACES: key, KEYS: keys_key or key, QUEUE: queue_key or key}
         self.log = log or (lambda _line: None)
         self.clock, self.recheck_s = clock, recheck_s
         self.poll_retries, self.poll_backoff_s = max(0, poll_retries), poll_backoff_s
@@ -270,9 +271,9 @@ class OperatorClient:
     def probe(self) -> dict[str, str]:
         """At startup: each role's key that can be checked without acting -- the workspaces key
         reads a workspace that does not exist (404), the queue key reads its claimed jobs. Answers
-        role -> ``ok``, ``frozen``, ``unreachable`` or ``unchecked`` (the mint key: it has no read;
-        its first mint says). Raises :class:`RoleRefusedError` (or a 401 :class:`PlatformError`)
-        on a wrong key: the daemon refuses to start."""
+        role -> ``ok``, ``frozen``, ``unreachable`` or ``unchecked`` (the keys key: it has no call
+        that is not about a miner; its first use says). Raises :class:`RoleRefusedError` (or a 401
+        :class:`PlatformError`) on a wrong key: the daemon refuses to start."""
         out = {KEYS: "unchecked"}
         for role, call in (
             (WORKSPACES, lambda: self.state("einstein-startup-probe")),
@@ -301,10 +302,16 @@ class OperatorClient:
 
     # -- operator routes ---------------------------------------------------------------------------
 
-    def mint_key(self, hotkey: str) -> dict[str, Any]:
+    def miner_key(self, hotkey: str) -> dict[str, Any]:
+        """``{"hotkey", "key_id"}``: the live agent key that names ``hotkey``, on the account that
+        linked it. The miner made that key itself and holds its secret; the validator never sees
+        it. 404 ``miner_not_linked`` when the hotkey is linked to no account or no live key names
+        it (the message says what the miner does); 403 ``agent_suspended``."""
         return dict(self._call("POST", "/api/agent/subnet/keys", {"hotkey": hotkey}, role=KEYS))
 
-    def disable_key(self, hotkey: str) -> dict[str, Any]:
+    def close_grants(self, hotkey: str) -> dict[str, Any]:
+        """Freeze every open job workspace of ``hotkey`` (``{"hotkey", "frozen": [ws, ...]}``): the
+        only place its key runs compute. The miner's key itself is its own and stays."""
         return dict(
             self._call("POST", "/api/agent/subnet/keys/disable", {"hotkey": hotkey}, role=KEYS)
         )

@@ -1,9 +1,10 @@
 """A reference miner: the signed validator protocol around an agent CLI that builds over MCP.
 
-The protocol side is the same as :mod:`.fake_miner` (agent key sealed to an ephemeral X25519 key,
-admission, ``work`` / ``accept`` / ``submit`` / ``reject``); the build is an agent CLI run in an
-empty directory, restricted to the hosted CADmind Watt MCP tools. One job at a time; a heartbeat
-thread keeps polling ``work`` while the agent runs, so the validator keeps seeing the miner alive.
+The protocol side is the same as :mod:`.fake_miner` (the miner's own agent key, taken by the
+validator; admission, ``work`` / ``accept`` / ``submit`` / ``reject``); the build is an agent CLI
+run in an empty directory, restricted to the hosted CADmind Watt MCP tools. One job at a time; a
+heartbeat thread keeps polling ``work`` while the agent runs, so the validator keeps seeing the
+miner alive.
 
 The default agent is Claude Code's CLI (``claude -p``), because its flags restrict an agent to one
 MCP server; any other agent CLI works through ``--agent-command`` (see below). The miner chooses,
@@ -14,6 +15,7 @@ allow automated or commercial use.
     cadmind-einstein-miner --wallet.name miner --wallet.hotkey m1 \\
         --validator https://VALIDATOR --validator-hotkey 5... \\
         --platform https://cadmind.ai --state ~/.local/share/cadmind-einstein-miner \\
+        [--agent-key-file ~/.local/share/cadmind-einstein-miner/agent.key] \\
         [--agent-cli claude] [--model MODEL] [--agent-arg ARG ...]
 
     # any other agent CLI: an argv template; the prompt also arrives on stdin
@@ -55,13 +57,23 @@ by which the validator groups practice results. ``cadmind-einstein-miner practic
 brief -- this running miner builds it like any job, never scored -- or prints the results.
 
 A submit or a reject the validator did not take (no answer, 429 or 5xx) is sent again with a
-backoff (:func:`send`). At startup a key loaded from state is checked with the platform, and one it
-no longer takes is minted again at once (:func:`check_stored_key`). While idle, the miner checks
-every hour that its agent key still works and that it is admitted: a key the validator revoked
-(abuse, deregistration) is minted again, and a dropped admission is requested again
-(:func:`keep_admitted`). A key request the subnet team has
-not approved yet is answered "pending" (202): the miner waits and asks again
-(:func:`.fake_miner.ask_key`), with ``--contact`` sent as a note for the team.
+backoff (:func:`send`).
+
+**The agent key is the miner's own.** Its operator creates it on the developer platform, on the
+account the hotkey is linked to, naming that hotkey, and gives its secret to this program in a
+0600 file: ``--agent-key-file``, else ``$CADMIND_AGENT_KEY_FILE``, else ``STATE/agent.key``
+(:func:`agent_key_file`). The validator never has the secret. At startup the miner asks the
+validator to take the key (``agent_key``): the validator answers the id of the key the platform has
+for the hotkey, and the miner checks that it is the key it runs on (:func:`key_mismatch`; the
+platform's ``GET /api/agent/usage`` names the calling key) -- it stops when it is not. A request
+the subnet team has not approved yet is answered "pending" (202), and a hotkey the platform has no
+key for 409 ``miner_not_linked`` with what to do: the miner waits and asks again
+(:func:`.fake_miner.ask_key`), with ``--contact`` sent as a note for the team. While idle, the
+miner asks again every hour, and for its admission (:func:`keep_admitted`): a validator that
+dropped the miner (a block that has since lifted, a deregistration) takes it back that way.
+
+Watt compute is paid in credits. A miner needs none of its own: each job workspace the validator
+grants carries its allowance, and that workspace is where the miner's key runs compute.
 
 The agent also gets one local tool, ``fetch_to_workspace`` (:mod:`.fetch_mcp`, a stdio MCP server
 named ``cadmind-fetch``): it downloads a public document from the miner's own connection (many sites
@@ -132,7 +144,6 @@ from .fetch_mcp import SERVER_NAME as FETCH_SERVER
 from .fetch_mcp import TIME_TOOL
 from .fetch_mcp import TOOL as FETCH_TOOL
 from .fetch_mcp import server_config as fetch_server_config
-from .sealing import new_keypair, open_sealed
 from .version import check_latest
 
 MCP_SERVER = "cadmind-watt"
@@ -776,37 +787,75 @@ def send(
 
 
 KEY_CHECK_S = 3600.0
-"""How often an idle miner checks its agent key and its admission (:func:`keep_admitted`)."""
+"""How often an idle miner asks the validator again for its key and its admission
+(:func:`keep_admitted`)."""
+AGENT_KEY_ENV = "CADMIND_AGENT_KEY_FILE"
+"""The environment variable naming the file that holds the miner's agent key
+(``--agent-key-file`` overrides it)."""
+NO_AGENT_KEY = (
+    "no agent key in {path}. Create a developer platform account, link this hotkey to it "
+    "(a signature), create an agent key naming the hotkey, and save its secret in that file "
+    "(mode 0600), or name another file with --agent-key-file (docs/MINER.md, section 2)"
+)
 
 
-def key_works(platform: str, key: str, *, timeout: float = 20.0) -> bool | None:
-    """Whether the platform still takes the agent key (``GET /api/platform/key``): True on 200,
-    False on 401 (disabled or deleted: the validator revoked it), None when it cannot tell."""
+def agent_key_file(a: argparse.Namespace) -> Path:
+    """Where the miner's own agent key is: ``--agent-key-file``, else :data:`AGENT_KEY_ENV`,
+    else ``agent.key`` in the state directory."""
+    named = getattr(a, "agent_key_file", None) or os.environ.get(AGENT_KEY_ENV, "")
+    return Path(named).expanduser() if named else Path(a.state) / "agent.key"
+
+
+def read_agent_key(path: Path) -> str:
+    """The agent key in ``path``; '' when the file is missing, unreadable or empty."""
+    try:
+        return path.read_text(encoding="utf-8").strip()
+    except OSError:
+        return ""
+
+
+def own_key_id(platform: str, key: str, *, timeout: float = 20.0) -> str | None:
+    """The id of the agent key ``key``, as the platform names the calling key (``GET
+    /api/agent/usage`` -> ``key_id``): '' when the platform does not take the key (401: wrong,
+    disabled or deleted), None when it cannot tell."""
     req = urllib.request.Request(  # noqa: S310 -- the operator's own platform URL
-        platform.rstrip("/") + "/api/platform/key",
+        platform.rstrip("/") + "/api/agent/usage",
         headers={
             "Authorization": f"Bearer {key}",
             "User-Agent": f"cadmind-einstein-miner/{__version__}",
         },
     )
     try:
-        with urllib.request.urlopen(req, timeout=timeout):  # noqa: S310
-            return True
+        with urllib.request.urlopen(req, timeout=timeout) as r:  # noqa: S310
+            got = json.loads(r.read(1 << 20) or b"{}")
+        return str(got["key_id"]) if isinstance(got, dict) and got.get("key_id") else None
     except urllib.error.HTTPError as e:
-        return False if e.code == 401 else None
+        return "" if e.code == 401 else None
     except (OSError, ValueError):
         return None
 
 
-def keep_admitted(call: Any, mint: Any, works: Any, *, log: Any) -> None:
-    """An idle miner's hourly check: a key the platform no longer takes (``works()`` False: the
-    validator revoked it for abuse or deregistration) is minted again (``mint()``), and the
-    admission is asked for again (one admission test a day at most; an admitted miner is told so).
-    Before 0.4.5 both happened only at startup, so a disabled miner never came back."""
-    if works() is False:
-        log("the agent key is no longer taken by the platform: minting a new one")
-        if not mint():
-            return
+def key_mismatch(named: str, mine: str | None) -> str:
+    """Why this miner cannot work on its key: the validator answered ``named``, the id of the key
+    the platform has for the hotkey, and ``mine`` is the id of the key this miner runs on
+    (:func:`own_key_id`). '' when they are the same key, or when the platform could not tell."""
+    if mine is None or mine == named:
+        return ""
+    have = f"is key {mine}" if mine else "is not taken by the platform (wrong, disabled or deleted)"
+    return (
+        f"the platform has agent key {named} for this hotkey, but the key this miner was given "
+        f"{have}. The newest live agent key naming the hotkey is the one used: give this miner "
+        "that key's secret, or create a new agent key naming the hotkey and give it that one"
+    )
+
+
+def keep_admitted(call: Any, take: Any, *, log: Any) -> None:
+    """An idle miner's hourly check: the validator is asked again to take the miner's key
+    (``take()``: a validator that dropped it -- a block since lifted, a deregistration -- looks it
+    up again), and the admission is asked for again (one admission test a day at most; an admitted
+    miner is told so)."""
+    if not take():
+        return
     code, adm = call("/v1/miners/admission", {})
     if not (code == 200 and isinstance(adm, dict) and adm.get("admitted")):
         log(
@@ -853,18 +902,6 @@ def report_entry_test(
             log("entry test: no verdict yet after 30 min; check cadmind-miner-stats")
             return None
         sleep(60.0)
-
-
-def check_stored_key(mint: Any, works: Any, *, log: Any) -> None:
-    """At startup, the agent key loaded from state: one the platform no longer takes (``works()``
-    False, a 401: the validator revoked it while the miner was down, or disabled the miner) is
-    minted again (``mint()``) the way :func:`keep_admitted` does, instead of an hour later; when
-    the platform cannot tell (None) the stored key is kept. A mint refused now (a block still
-    standing) is tried again by the hourly check."""
-    if works() is False:
-        log("the stored agent key is no longer taken by the platform: minting a new one")
-        if not mint():
-            log("no new agent key yet: the hourly check asks again")
 
 
 def setup_label(a: argparse.Namespace) -> str:
@@ -1039,7 +1076,14 @@ def parser() -> argparse.ArgumentParser:
     ap.add_argument("--validator", required=True, help="the validator's base URL")
     ap.add_argument("--validator-hotkey", required=True, help="the validator's SS58 hotkey")
     ap.add_argument("--platform", required=True, help="the CADmind platform's base URL")
-    ap.add_argument("--state", type=Path, required=True, help="a private directory for the key")
+    ap.add_argument("--state", type=Path, required=True, help="this miner's private directory")
+    ap.add_argument(
+        "--agent-key-file",
+        type=Path,
+        help="this miner's own agent key (0600): made on the developer platform, on the account "
+        f"its hotkey is linked to, naming the hotkey (default: ${AGENT_KEY_ENV}, else "
+        "STATE/agent.key)",
+    )
     ap.add_argument("--agent-cli", default="claude", help="Claude Code's CLI (default: claude)")
     ap.add_argument(
         "--model",
@@ -1280,27 +1324,30 @@ def main(argv: list[str] | None = None) -> int:
     elif a.self_review == "on":
         log(f"self-review: skipped on every job: {review_off}")
 
-    key_file, mcp_file = a.state / "agent.key", a.state / "watt-mcp.json"
+    key_file, mcp_file = agent_key_file(a), a.state / "watt-mcp.json"
+    if not read_agent_key(key_file):
+        log(NO_AGENT_KEY.format(path=key_file))
+        return 1
+    _write_private(mcp_file, json.dumps(mcp_config(a, read_agent_key(key_file), key_file)))
+    log(f"agent key read from {key_file}")
 
-    def mint() -> bool:
-        """A new agent key from the validator, stored with the MCP config that carries it."""
-        priv, pub = new_keypair()
-        # waits while the request is pending the subnet team's approval
-        code, got = ask_key(call, pub, contact=a.contact, log=log)
+    def take() -> bool:
+        """Ask the validator to take this miner's key; True once it names the key in the file.
+        Stops the miner when the platform has another key for the hotkey."""
+        # waits while the request is pending the subnet team's approval, or the hotkey unlinked
+        code, got = ask_key(call, contact=a.contact, log=log)
         if code != 200:
             log(f"agent_key refused: {code} {got}")
             return False
-        key = open_sealed(got["sealed"], priv, me)
-        _write_private(key_file, key + "\n")
-        _write_private(mcp_file, json.dumps(mcp_config(a, key, key_file)))
-        log(f"agent key {got['key_id']} opened and stored")
+        named = str(got.get("key_id") or "")
+        why = key_mismatch(named, own_key_id(a.platform, read_agent_key(key_file)))
+        if why:
+            log(why)
+            raise SystemExit(1)
+        log(f"agent key {named} taken by the validator")
         return True
 
-    if key_file.exists():
-        _write_private(mcp_file, json.dumps(mcp_config(a, key_file.read_text().strip(), key_file)))
-        log("agent key loaded from state")
-        check_stored_key(mint, lambda: key_works(a.platform, key_file.read_text().strip()), log=log)
-    elif not mint():
+    if not take():
         return 1
 
     code, adm = call("/v1/miners/admission", {})
@@ -1333,14 +1380,9 @@ def main(argv: list[str] | None = None) -> int:
                 log(f"work: {code} {work}")
             if (
                 time.monotonic() - checked > KEY_CHECK_S
-            ):  # idle: is the key still ours, are we admitted?
+            ):  # idle: does the validator still take our key, are we admitted?
                 checked = time.monotonic()
-                keep_admitted(
-                    call,
-                    mint,
-                    lambda: key_works(a.platform, key_file.read_text().strip()),
-                    log=log,
-                )
+                keep_admitted(call, take, log=log)
             time.sleep(5)
             continue
         job, ws, brief = work["job"], work["workspace"], work.get("brief") or ""

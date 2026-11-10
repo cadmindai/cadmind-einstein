@@ -52,7 +52,6 @@ from cadmind_einstein.scoring import (
     recompute,
     score_all,
 )
-from cadmind_einstein.sealing import new_keypair
 from cadmind_einstein.service import serve
 from cadmind_einstein.stats import MinerStats, day_of
 from cadmind_einstein.store import Store
@@ -508,7 +507,7 @@ class ReviewRig(unittest.TestCase):
         )
         self.desk.on_delivered = self.reviewer.enqueue
         for hk in (A, B, C):
-            self.desk.agent_key(hk, new_keypair()[1])
+            self.desk.agent_key(hk)
             self.desk.miners[hk].admitted = True
 
     def tearDown(self) -> None:

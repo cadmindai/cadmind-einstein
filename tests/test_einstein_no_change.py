@@ -15,7 +15,6 @@ from bittensor.sp_core import Keypair
 from cadmind_einstein.answers import answers_only, report_digest
 from cadmind_einstein.desk import NO_CHANGE, Desk, Job
 from cadmind_einstein.scoring import Ledger
-from cadmind_einstein.sealing import new_keypair
 from tests.test_einstein import Clock, FakePlatform, project_zip, wait_state
 
 A, B, C, D = (
@@ -77,7 +76,7 @@ class Case(unittest.TestCase):
             rng=random.Random(7),  # noqa: S311 -- a test's seed
         )
         for hk in self.reg:
-            self.desk.agent_key(hk, new_keypair()[1])
+            self.desk.agent_key(hk)
             self.desk.miners[hk].admitted = True
 
     def tearDown(self) -> None:

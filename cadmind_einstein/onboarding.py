@@ -9,12 +9,13 @@
     cadmind-einstein-operator ... launch-equal on|off|status
 
 ``pending`` lists the key requests (hotkey, coldkey, first and last ask, client address, the
-miner's note); ``approve`` lets the hotkey's next ``agent_key`` call mint its key; ``refuse``
-answers its asks with the reason; ``revoke`` deletes its key, drops its admission and sends the job
-it holds to another miner unscored; ``unblock`` lifts a wrong disable (the block ends, the last
+miner's note); ``approve`` lets the hotkey's next ``agent_key`` call take its own agent key
+(looked up on the platform); ``refuse`` answers its asks with the reason; ``revoke`` stops taking
+its key, freezes its open job workspaces, drops its admission and sends the job it holds to another
+miner unscored; ``unblock`` lifts a wrong disable (the block ends, the last
 strike is taken back, the abuse counts so far are marked acted on so they do not disable it again;
 ``--readmit`` gives back the admission of a hotkey that had passed its entry test, else it takes
-the test again; it never grants a key: the miner mints a new one as usual); ``launch-equal``
+the test again; it is not keyed again: the miner asks as usual); ``launch-equal``
 turns the launch rule (equal weight per admitted hotkey) on or off at runtime, saved across
 restarts (unless ``--launch-equal`` sets it). An approved miner still passes the entry test once
 before any job or weight. The token file (the validator's ``--token-file``, mode 0600) is read,
@@ -74,7 +75,7 @@ def call(
 def parser() -> argparse.ArgumentParser:
     ap = argparse.ArgumentParser(
         prog="cadmind-einstein-operator",
-        description="manual miner onboarding: list, approve, refuse and revoke agent keys; lift"
+        description="manual miner onboarding: list, approve, refuse and revoke miners; lift"
         " a disable; the launch rule",
     )
     ap.add_argument("--validator", default="http://127.0.0.1:8793", help="the validator's URL")

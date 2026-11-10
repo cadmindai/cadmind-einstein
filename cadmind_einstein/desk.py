@@ -45,9 +45,9 @@ one owner cannot end a hard job between them. The rejection telemetry is also su
 
 **Concurrency.** The desk serves up to ``max_inflight`` jobs at once, one miner each. Every slow
 platform call -- granting a job workspace, judging (freeze, fork, ``watt status``, export),
-returning results, revoking keys -- runs in a bounded worker pool, so ``tick`` never waits on one.
-The lease is renewed by its own heartbeat thread (:meth:`Desk.start`), so a slow claim or a slow
-grant never lets a lease lapse.
+returning results, freezing a revoked miner's workspaces -- runs in a bounded worker pool, so
+``tick`` never waits on one. The lease is renewed by its own heartbeat thread (:meth:`Desk.start`),
+so a slow claim or a slow grant never lets a lease lapse.
 
 **Durability.** With a :class:`~.store.Store` every mutation is one SQLite transaction (the ledger's
 writes included). A restart reloads jobs, attempts, held failures, miners, admission, telemetry,
@@ -55,25 +55,25 @@ the copy window and the results still to send, then recovers what was in flight:
 mid-call goes back to the queue, an attempt being worked keeps its workspace and its absolute
 deadline, and an attempt being judged is judged again (its workspace is frozen; judging reads it).
 
-**Abuse.** :meth:`enforce` (the daemon calls it every tick) disables a miner -- its key revoked
-the platform's way, its admission dropped, its job sent to another miner unscored, no job until the
-block lifts -- on what :class:`AbusePolicy` counts: copies, Watt suspensions (the platform's
-``agent_suspended``), failed entry tests, and the rejection pattern :meth:`telemetry` flags. Each
-count acts once (a strike); a later strike doubles the block. The subnet owner's and the
+**Abuse.** :meth:`enforce` (the daemon calls it every tick) disables a miner -- its open job
+workspaces frozen on the platform, its admission dropped, its job sent to another miner unscored, no
+job until the block lifts -- on what :class:`AbusePolicy` counts: copies, Watt suspensions (the
+platform's ``agent_suspended``), failed entry tests, and the rejection pattern :meth:`telemetry`
+flags. Each count acts once (a strike); a later strike doubles the block. The subnet owner's and the
 validator's hotkeys are never disabled.
 
-**Registration.** Only hotkeys registered on the subnet get a key or a job
-(:meth:`sync_registered`, after each metagraph read). A hotkey that deregisters loses its key (the
-platform's operator route; retried until the platform takes it), its admission, and its job, which
-goes to another miner without scoring anyone. The subnet owner's and the validator's own
-hotkeys never mine.
+**Registration.** Only hotkeys registered on the subnet are keyed here or get a job
+(:meth:`sync_registered`, after each metagraph read). A hotkey that deregisters is no longer keyed
+here, its open job workspaces are frozen (the platform's operator route; retried until the platform
+takes it), and it loses its admission and its job, which goes to another miner without scoring
+anyone. The subnet owner's and the validator's own hotkeys never mine.
 
-**Onboarding** (``key_approval="manual"``, the validator's default). A registered hotkey gets its
-agent key only once the operator approved it (:meth:`approve`); until then its asks are recorded as
-pending (:class:`KeyRequest`, store namespace ``approval``). The operator may refuse a request or
-revoke a key (:meth:`revoke`: key deleted, admission dropped, its job reassigned unscored). An
-approved key holder passes the entry test once (:meth:`admission`) before any job or weight.
-"""
+**Onboarding** (``key_approval="manual"``, the validator's default). A registered hotkey's own agent
+key is taken here only once the operator approved it (:meth:`approve`); until then its asks are
+recorded as pending (:class:`KeyRequest`, store namespace ``approval``). The operator may refuse a
+request or revoke a miner (:meth:`revoke`: no longer keyed here, its open job workspaces frozen,
+admission dropped, its job reassigned unscored). An approved key holder passes the entry test once
+(:meth:`admission`) before any job or weight."""
 
 from __future__ import annotations
 
@@ -96,13 +96,15 @@ from .answers import answers_only, report_digest
 from .answers import check as answers_check
 from .platform import PlatformError, RoleFrozenError
 from .scoring import JobOutcome, Ledger, outcome_of
-from .sealing import seal, valid_public
 from .similarity import CopyCheck, CopyPolicy, Entry, fingerprint
 from .store import Store
 from .style import check as style_check
 
 SUSPENDED = "agent_suspended"
-"""The platform's code for a miner Watt's telemetry suspended (its key deleted, none minted)."""
+"""The platform's code for a miner Watt's telemetry suspended (no key lookup, no grant)."""
+NOT_LINKED = "miner_not_linked"
+"""The platform's code for a hotkey linked to no account there, or that no live agent key names:
+the miner links it on the developer platform and creates an agent key naming it."""
 JOB_DEADLINE_S = 240 * 60
 """the one deadline of every job, from its acceptance (the daemon's ``--job-deadline-min``);
 there are no effort levels. A builder may submit sooner"""
@@ -184,15 +186,10 @@ OUTBOX_ALERT_EVERY_S = 1800.0
 """a result refused for this long is logged as an ALERT (its job and the platform's words), at most
 this often per job"""
 """how long a miner whose job was cancelled gets no new job (time to stop its agent)"""
-MINT_PER_HOUR = 40
-"""agent keys the validator mints per hour in all: below the platform's own ceiling, past which the
-platform freezes the validator's key role"""
-MINT_PER_COLDKEY_HOUR = 12
-MINT_FRESH_S = 600.0
 KEY_APPROVAL = ("manual", "auto")
-"""How a registered hotkey gets its agent key (:meth:`Desk.agent_key`): ``manual`` -- only once the
-operator approved it (:meth:`Desk.approve`), its asks recorded as pending until then -- or ``auto``,
-any registered hotkey (the self-serve rule before 0.4.8)."""
+"""How a registered hotkey's agent key is taken here (:meth:`Desk.agent_key`): ``manual`` -- only
+once the operator approved it (:meth:`Desk.approve`), its asks recorded as pending until then -- or
+``auto``, any registered hotkey (the self-serve rule before 0.4.8)."""
 PENDING_RETRY_S = 900
 """how long a miner whose key request is pending is told to wait before asking again"""
 NOTE_MAX = 300
@@ -200,12 +197,11 @@ NOTE_MAX = 300
 REASON_MAX = 500
 """an operator's reason for a refusal or a revocation, at most (characters)"""
 PENDING_MESSAGE = (
-    "Your request for an agent key is recorded and waits for the subnet team's approval. Ask "
-    "again later with the same call: once approved, it answers your key. Then pass the entry "
+    "Your request to mine with your agent key is recorded and waits for the subnet team's "
+    "approval. Ask again later with the same call: once approved, it answers. Then pass the entry "
     "test once (POST /v1/miners/admission) before any job or weight."
 )
 """what a miner whose key request is pending reads (the validator's ``--pending-message-file``)"""
-"""a hotkey whose live key was minted less than this ago gets no new one"""
 
 
 def _mode_unknown(why: str) -> bool:
@@ -371,8 +367,8 @@ class AbusePolicy:
 class Platform(Protocol):
     """What the desk uses of :class:`~.platform.OperatorClient` (the contract lives there)."""
 
-    def mint_key(self, hotkey: str) -> dict[str, Any]: ...
-    def disable_key(self, hotkey: str) -> dict[str, Any]: ...
+    def miner_key(self, hotkey: str) -> dict[str, Any]: ...
+    def close_grants(self, hotkey: str) -> dict[str, Any]: ...
     def grant(self, hotkey: str, *, brief: str = "", seed: str = "", name: str = "job") -> str: ...
     def grant_continuation(
         self, hotkey: str, *, seed: str, base: str = "", name: str = "job"
@@ -405,9 +401,10 @@ class Platform(Protocol):
 
 
 class DeskError(Exception):
-    def __init__(self, message: str, status: int = 400) -> None:
+    def __init__(self, message: str, status: int = 400, code: str = "") -> None:
         super().__init__(message)
-        self.status = status
+        self.status, self.code = status, code
+        """``code``: a refusal a miner's program acts on, named in the answer beside ``error``"""
 
 
 @dataclass
@@ -628,6 +625,9 @@ def _job_from(row: Mapping[str, Any]) -> Job:
 class Miner:
     hotkey: str
     key_id: str = ""
+    """the id of the agent key the platform had for this hotkey when the validator last looked it
+    up (:meth:`Desk.agent_key`); '' until then, and again once the miner is disabled, revoked or
+    deregistered. The key and its secret are the miner's own"""
     last_seen_ms: int = 0
     job: str = ""
     blocked_until_ms: int = 0
@@ -638,7 +638,6 @@ class Miner:
     cancelled_ms: int = 0
     after_cancel: bool = False
     """its next assignment is the first since a cancel: not accepting it in time scores nothing"""
-    minted_ms: int = 0
     free_ms: int = 0
     """its wait clock: when its last client job's assignment ended (its submit, its hand-back, or
     the job's end); 0 before its first. The router gives the next job to the available miner whose
@@ -726,9 +725,6 @@ class Desk:
         gate_run_s: float = GATE_RUN_S,
         judge_max_retries: int = JUDGE_MAX_RETRIES,
         judge_give_up_s: float = JUDGE_GIVE_UP_S,
-        mint_per_hour: int = MINT_PER_HOUR,
-        mint_per_coldkey_hour: int = MINT_PER_COLDKEY_HOUR,
-        mint_fresh_s: float = MINT_FRESH_S,
         on_delivered: Callable[[str, str], None] | None = None,
         archive: Any = None,
         judge: Callable[[], Mapping[str, Any]] | None = None,
@@ -754,10 +750,6 @@ class Desk:
         reviewer's queue (:mod:`.votes`)"""
         self.cancel_cooloff_s, self.gate_run_s = cancel_cooloff_s, gate_run_s
         self.judge_max_retries, self.judge_give_up_s = judge_max_retries, judge_give_up_s
-        self.mint_per_hour, self.mint_per_coldkey_hour = mint_per_hour, mint_per_coldkey_hour
-        self.mint_fresh_s = mint_fresh_s
-        self._mints: list[tuple[int, str]] = []
-        """(at_ms, coldkey) of the mints of the last hour (the validator's own budget)"""
         self._gate_stop: dict[str, threading.Event] = {}
         """per job being judged: set to stop its guard run (a cancel)"""
         self.abuse = abuse or AbusePolicy()
@@ -790,7 +782,8 @@ class Desk:
         """per job in the outbox the platform has refused: ``{tries, first_ms, next_ms, said_ms,
         status, code, error}`` -- when it is sent again (persisted with the outbox)"""
         self._revoke: list[str] = []
-        """deregistered or disabled hotkeys whose key the platform has not yet deleted"""
+        """deregistered, disabled or revoked hotkeys whose open job workspaces the platform has
+        not yet been told to freeze"""
         self.rng = rng or random.Random()  # noqa: S311 -- routing, not a secret
         self.clock = clock
         self.excluded = {h for h in excluded if h}
@@ -918,7 +911,8 @@ class Desk:
             if row.get("state") == "done" and not held:  # a row with held failures is rewritten
                 self._final.add(k)
         for k, row in self.store.items("miner").items():
-            self.miners[k] = Miner(**row)
+            # ``minted_ms``: older records carry it (the validator made the miners' keys then)
+            self.miners[k] = Miner(**{f: v for f, v in row.items() if f != "minted_ms"})
             self._saved[("miner", k)] = json.dumps(row, sort_keys=True)
         for k, row in self.store.items("approval").items():
             self.approvals[k] = KeyRequest(**row)
@@ -986,16 +980,16 @@ class Desk:
                 self._unapproved_out()
 
     def _unapproved_out(self) -> None:
-        """Inside a mutation, under manual approval: every hotkey holding a key or an admission
-        it was never approved for (one keyed under the self-serve rule) loses both -- its key
-        deleted on the platform, its job reassigned unscored, as a revocation -- and goes back to
-        pending: it asks, is approved and passes the entry test like anyone else."""
+        """Inside a mutation, under manual approval: every hotkey keyed or admitted here that
+        was never approved (one keyed under the self-serve rule) loses both -- its open job
+        workspaces frozen on the platform, its job reassigned unscored, as a revocation -- and
+        goes back to pending: it asks, is approved and passes the entry test like anyone else."""
         out = []
         for m in self.miners.values():
             if not (m.key_id or m.admitted) or self.approved(m.hotkey):
                 continue
             out.append(m.hotkey)
-            m.key_id, m.admitted, m.admission_ms, m.minted_ms = "", False, 0, 0
+            m.key_id, m.admitted, m.admission_ms = "", False, 0
             self._free_job(m, "manual approval: the key was never approved", "revoked")
             self._queue_revoke(m.hotkey)
             r = self.approvals.get(m.hotkey)
@@ -1005,7 +999,7 @@ class Desk:
                 r.state, r.decided_ms, r.reason, r.by = "pending", 0, "", ""
         if out:
             self.log(
-                f"manual approval: {len(out)} hotkey(s) held a key never approved: revoked, back "
+                f"manual approval: {len(out)} hotkey(s) keyed without an approval: revoked, back "
                 "to pending"
             )
 
@@ -1124,7 +1118,7 @@ class Desk:
 
     def _ask(self, hotkey: str, *, ip: str, note: str) -> dict[str, Any] | None:
         """Inside the lock, under manual approval: record this ask. None when the hotkey is
-        approved (its key is minted); a pending answer while it waits; a refusal (403, with the
+        approved (its key is looked up); a pending answer while it waits; a refusal (403, with the
         operator's reason) when it was refused or revoked."""
         now, cold = self.now_ms(), self._real_coldkey(hotkey)
         r = self.approvals.get(hotkey)
@@ -1155,78 +1149,67 @@ class Desk:
             "first_ms": r.first_ms,
         }
 
-    def agent_key(
-        self, hotkey: str, x25519_public: bytes, *, ip: str = "", note: str = ""
-    ) -> dict[str, Any]:
-        """Mint (or rotate) the miner's hotkey-bound agent key and answer it sealed to the
-        miner's ephemeral key.
+    def agent_key(self, hotkey: str, *, ip: str = "", note: str = "") -> dict[str, Any]:
+        """Take the miner's own agent key: look up on the platform which key names its hotkey
+        and answer ``{"key_id"}``. The miner made that key on its developer platform account
+        and holds its secret; the validator never sees it. A keyed miner is one this call
+        answered: only then may it take the entry test, practise or get a job.
 
         **Manual approval** (``key_approval="manual"``): a hotkey the operator has not approved
-        gets no key; its ask is recorded (hotkey, coldkey, first and last ask, client address
+        is not looked up; its ask is recorded (hotkey, coldkey, first and last ask, client address
         ``ip`` and the miner's ``note``) and answered ``{"pending": true, ...}``; a refused or
         revoked hotkey is refused (403) with the operator's reason. Once approved, the same call
-        mints as below.
+        looks the key up.
 
-        Checked before the platform is asked: the public key must be a valid X25519 key; a hotkey
-        whose live key was minted less than ``mint_fresh_s`` ago gets none (it uses that one); and
-        the validator's own budgets -- ``mint_per_hour`` in all and ``mint_per_coldkey_hour`` per
-        owner, below the platform's ceiling -- are never passed (429), so a crowd of hotkeys
-        cannot run the platform's mint role into its freeze. Revocations are never counted."""
-        if not valid_public(x25519_public):
-            raise DeskError("x25519_public is a 32-byte X25519 public key")
+        A hotkey the platform knows no key for (``miner_not_linked``: linked to no account
+        there, or named by no live agent key) is answered 409 with the platform's own words,
+        which say what the miner does, and that ``code``."""
         with self._lock:
             m = self._miner(hotkey)
-            now = self.now_ms()
-            if m.blocked_until_ms > now:
-                raise DeskError("this hotkey's key is disabled for now", 403)
+            if m.blocked_until_ms > self.now_ms():
+                raise DeskError("this hotkey is disabled for now", 403)
             if self.key_approval == "manual":
                 with self._mut():
                     pending = self._ask(hotkey, ip=ip, note=note)
                 if pending is not None:
                     return pending
-            if m.key_id and m.minted_ms and now - m.minted_ms < self.mint_fresh_s * 1000:
-                raise DeskError("your key was just minted; use it", 429)
-            cold = self.coldkey(hotkey)
-            self._mints = [(t, c) for t, c in self._mints if now - t < 3_600_000]
-            if self.mint_per_hour and len(self._mints) >= self.mint_per_hour:
-                raise DeskError("the validator mints no more keys this hour; retry later", 429)
-            if self.mint_per_coldkey_hour and (
-                sum(1 for _, c in self._mints if c == cold) >= self.mint_per_coldkey_hour
-            ):
-                raise DeskError("this owner's hotkeys had their keys for this hour", 429)
-            self._mints.append((now, cold))
         try:
-            made = self.platform.mint_key(hotkey)
+            found = self.platform.miner_key(hotkey)
         except PlatformError as e:
             if e.code == SUSPENDED:
                 self._suspended(hotkey)
                 raise DeskError("this hotkey is suspended from the Watt agent API", 403) from None
-            # The platform cannot mint now (our key frozen or refused, busy, unreachable): the
+            if e.code == NOT_LINKED:
+                with self._mut():
+                    m.key_id = ""
+                raise DeskError(str(e), 409, NOT_LINKED) from None
+            # The platform cannot say now (our key frozen or refused, busy, unreachable): the
             # miner asks again later.
-            raise DeskError("the validator cannot mint a key now; retry later", 503) from None
+            raise DeskError(
+                "the validator cannot look your agent key up now; retry later", 503
+            ) from None
         with self._mut():
-            if hotkey not in set(self.registered()):  # deregistered while the key was minted
+            if hotkey not in set(self.registered()):  # deregistered while the platform was asked
                 self._queue_revoke(hotkey)
                 raise DeskError("hotkey is not registered on the subnet", 403)
-            if not self.approved(hotkey):  # revoked while the key was minted
+            if not self.approved(hotkey):  # revoked while the platform was asked
                 self._queue_revoke(hotkey)
                 raise DeskError("your agent key was revoked", 403)
-            m.key_id = str(made["key_id"])
-            m.minted_ms = self.now_ms()
+            m.key_id = str(found["key_id"])
             if hotkey in self._revoke:
                 self._revoke.remove(hotkey)
-        return {"key_id": m.key_id, "sealed": seal(str(made["secret"]), x25519_public, hotkey)}
+        return {"key_id": m.key_id}
 
     def disable(self, hotkey: str, *, for_s: float = 86_400.0, reason: str = "") -> None:
-        """Abuse: the key goes (the platform's operator route), the admission with it, the job it
-        holds goes to another miner without scoring anyone, and the hotkey gets no job and no key
-        until the block lifts (then it takes the entry test again). Never the subnet owner's or
-        the validator's hotkey."""
+        """Abuse: the hotkey is no longer keyed here, its open job workspaces are frozen (the
+        platform's operator route), its admission goes, the job it holds goes to another miner
+        without scoring anyone, and it gets no job and no key lookup until the block lifts (then it
+        takes the entry test again). Never the subnet owner's or the validator's hotkey."""
         if hotkey in self.excluded:
             return
         with self._mut():
             self._disable(hotkey, for_s, reason)
-        self._revoke_keys()
+        self._close_grants()
 
     def _disable(self, hotkey: str, for_s: float, reason: str) -> None:
         """Inside a mutation."""
@@ -1255,7 +1238,7 @@ class Desk:
         ``readmit`` gives back the admission the block took, only to a hotkey that had passed its
         entry test (``admission_ms`` set and admitted when blocked, or an entry test of it that
         ended admitted) and is approved for its key; otherwise it takes the entry test again.
-        Never a key: the miner mints a new one through ``agent_key`` as usual. Logged and
+        It is not keyed again here: the miner asks through ``agent_key`` as usual. Logged and
         persisted; answers what changed."""
         why = _clean(reason, REASON_MAX)
         if not why:
@@ -1373,7 +1356,7 @@ class Desk:
                 f"{a['reason']}"
             )
         if acted:
-            self._spawn(self._revoke_keys)
+            self._spawn(self._close_grants)
         return acted
 
     def _strike(self, hk: str, reason: str) -> dict[str, Any]:
@@ -1427,9 +1410,9 @@ class Desk:
         return out
 
     def _suspended(self, hotkey: str) -> None:
-        """The platform says Watt suspended this miner (``agent_suspended``): it deleted the key
-        itself, so the miner is no longer free for a job here until the block lifts (it gets no
-        new key from the platform while the suspension stands)."""
+        """The platform says Watt suspended this miner (``agent_suspended``): it answers no key
+        lookup and no grant for the hotkey while the suspension stands, so the miner is no longer
+        keyed here, nor free for a job, until the block lifts."""
         with self._mut():
             m = self.miners.setdefault(hotkey, Miner(hotkey))
             m.key_id = ""
@@ -1440,25 +1423,27 @@ class Desk:
         if hotkey not in self._revoke:
             self._revoke.append(hotkey)
 
-    def _revoke_keys(self) -> None:
-        """Ask the platform to delete each queued hotkey's key; what it did not take is kept and
-        asked again on the next tick."""
+    def _close_grants(self) -> None:
+        """Ask the platform to freeze each queued hotkey's open job workspaces (the only place its
+        key runs compute; the key itself is the miner's own and stays); what the platform did not
+        take is kept and asked again on the next tick."""
         with self._lock:
             todo = list(self._revoke)
         for hk in todo:
             try:
-                self.platform.disable_key(hk)
+                self.platform.close_grants(hk)
             except PlatformError as e:
-                if e.status != 404:  # no key there is what we wanted
+                if e.status != 404:  # nothing of that hotkey there is what we wanted
                     continue
             with self._mut():
                 if hk in self._revoke:
                     self._revoke.remove(hk)
 
     def sync_registered(self, hotkeys: Iterable[str]) -> list[str]:
-        """After a metagraph read: every known miner no longer registered is deregistered here --
-        its key revoked on the platform, its admission dropped, its job's attempt ended without a
-        score and the job sent to another miner. Answers the hotkeys deregistered now."""
+        """After a metagraph read: every known miner no longer registered is deregistered here -- no
+        longer keyed here, its open job workspaces frozen on the platform, its admission dropped,
+        its job's attempt ended without a score and the job sent to another miner. Answers the
+        hotkeys deregistered now."""
         reg = set(hotkeys)
         gone: list[str] = []
         with self._mut():
@@ -1481,14 +1466,14 @@ class Desk:
                 if hk not in reg:
                     del self.approvals[hk]
         if gone:
-            self._spawn(self._revoke_keys)
+            self._spawn(self._close_grants)
         return gone
 
     # -- manual key approval (the operator) --------------------------------------------------------
 
     def key_requests(self, state: str = "pending") -> list[dict[str, Any]]:
         """The key requests in ``state`` (pending | approved | refused | revoked | all), oldest ask
-        first, each with whether the hotkey holds a key now, is admitted and is registered."""
+        first, each with whether the hotkey is keyed here now, is admitted and is registered."""
         if state not in ("pending", "approved", "refused", "revoked", "all"):
             raise DeskError("state is pending, approved, refused, revoked or all")
         reg = set(self.registered())
@@ -1533,8 +1518,8 @@ class Desk:
         return r
 
     def approve(self, hotkey: str) -> dict[str, Any]:
-        """The operator approves ``hotkey``: its next ``agent_key`` call mints its key. The
-        approval is bound to its coldkey now (or at its first mint, when unknown yet). It still
+        """The operator approves ``hotkey``: its next ``agent_key`` call looks its key up. The
+        approval is bound to its coldkey now (or at its next ask, when unknown yet). It still
         passes the entry test before any job or weight."""
         with self._mut():
             r = self._request(hotkey)
@@ -1545,7 +1530,7 @@ class Desk:
 
     def refuse(self, hotkey: str, reason: str) -> dict[str, Any]:
         """The operator refuses ``hotkey``'s request; the miner reads ``reason`` on its next ask.
-        A hotkey that holds a key or an admission is revoked instead (:meth:`revoke`)."""
+        A hotkey that is keyed or admitted here is revoked instead (:meth:`revoke`)."""
         why = _clean(reason, REASON_MAX)
         if not why:
             raise DeskError("a refusal says why, for the miner")
@@ -1553,18 +1538,19 @@ class Desk:
             r = self._request(hotkey)
             m = self.miners.get(r.hotkey)
             if m is not None and (m.key_id or m.admitted):
-                raise DeskError("this hotkey holds a key or an admission: revoke it", 409)
+                raise DeskError("this hotkey is keyed or admitted: revoke it", 409)
             r.state, r.reason, r.decided_ms, r.by = "refused", why, self.now_ms(), "operator"
             self.log(f"key request: {r.hotkey} refused by the operator: {why}")
             return asdict(r)
 
     def revoke(self, hotkey: str, reason: str) -> dict[str, Any]:
-        """The operator revokes ``hotkey``: its key is deleted on the platform (queued and retried,
-        as for a deregistration), its admission dropped, and the job it holds ends for it without
-        scoring anyone (``revoked``, uncounted) and goes to another miner; an entry test it holds
-        or waits for ends "not admitted" (not counted as a failed test). It is out of the weight
-        vector from the next one on. It gets no key until approved again, and then takes the entry
-        test again (at once: the daily limit restarts)."""
+        """The operator revokes ``hotkey``: it is no longer keyed here, its open job workspaces
+        are frozen on the platform (queued and retried, as for a deregistration), its admission
+        dropped, and the job it holds ends for it without scoring anyone (``revoked``, uncounted)
+        and goes to another miner; an entry test it holds or waits for ends "not admitted" (not
+        counted as a failed test). It is out of the weight vector from the next one on. Its key is
+        not taken here until it is approved again, and then it takes the entry test again (at
+        once: the daily limit restarts)."""
         why = _clean(reason, REASON_MAX)
         if not why:
             raise DeskError("a revocation says why, for the miner")
@@ -1574,7 +1560,7 @@ class Desk:
             m = self.miners.get(r.hotkey)
             freed = ""
             if m is not None:
-                m.key_id, m.admitted, m.admission_ms, m.minted_ms = "", False, 0, 0
+                m.key_id, m.admitted, m.admission_ms = "", False, 0
                 freed = self._free_job(m, "the operator revoked the miner's key", "revoked")
             self._queue_revoke(r.hotkey)
             for job in self.jobs.values():
@@ -1586,7 +1572,7 @@ class Desk:
             self.log(f"key revoked by the operator: {r.hotkey}: {why}")
             out = asdict(r)
             out["freed_job"] = freed
-        self._spawn(self._revoke_keys)
+        self._spawn(self._close_grants)
         return out
 
     def _free_job(self, m: Miner, why: str, kind: str) -> str:
@@ -2553,7 +2539,7 @@ class Desk:
         with self._lock:
             revoke = bool(self._revoke)
         if revoke:
-            self._spawn(self._revoke_keys)
+            self._spawn(self._close_grants)
 
     def _want(self, now: int) -> int:
         """How many jobs to claim now: one per free admitted miner, after the held jobs, within
@@ -2912,6 +2898,8 @@ class Desk:
             if e.code == SUSPENDED:
                 self._suspended(m.hotkey)
             with self._mut():
+                if e.code == NOT_LINKED:  # its key is gone there: not available until it asks
+                    m.key_id = ""
                 if m.job == job.job:
                     m.job = ""
                 if job.state == "assigning":

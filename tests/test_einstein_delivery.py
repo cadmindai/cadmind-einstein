@@ -16,7 +16,6 @@ from typing import Any
 from cadmind_einstein.desk import Desk, Job
 from cadmind_einstein.platform import OperatorClient, PlatformError
 from cadmind_einstein.scoring import Ledger
-from cadmind_einstein.sealing import new_keypair
 from cadmind_einstein.store import Store
 from tests.test_einstein import GOOD, A, B, Clock, FakePlatform
 from tests.test_einstein_operator_roles import _Stub
@@ -54,7 +53,7 @@ class _Case(unittest.TestCase):
         )
         self.addCleanup(self.desk.stop)
         for hk in (A, B):
-            self.desk.agent_key(hk, new_keypair()[1])
+            self.desk.agent_key(hk)
             self.desk.miners[hk].admitted = True
 
     def tick(self) -> None:

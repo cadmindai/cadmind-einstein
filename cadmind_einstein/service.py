@@ -3,8 +3,10 @@
 Miners (``btauth/1``, signed by the miner's hotkey and addressed to the validator's; registered on
 the metagraph):
 
-- ``POST /v1/miners/agent_key {x25519_public, contact?}`` -- the hotkey-bound agent key, sealed to
-  that key; under manual approval (the default) a hotkey the operator has not approved gets ``202
+- ``POST /v1/miners/agent_key {contact?}`` -- ``{key_id}``: the id of the miner's own agent key,
+  as the platform has it for the hotkey (the miner made it there and holds its secret; 409 with
+  ``code: miner_not_linked`` and the platform's instruction when the platform has none); under
+  manual approval (the default) a hotkey the operator has not approved gets ``202
   {"pending": true, "message", "retry_after_s"}`` instead (its ask recorded, with ``contact``, an
   optional note for the operator), and a refused or revoked one 403 with the operator's reason;
 - ``POST /v1/jobs/work`` -- the miner's assignment, if any (poll every few seconds: it is also how
@@ -30,20 +32,20 @@ the metagraph):
 The platform and the operator (Bearer): ``GET /v1/capacity`` (active and free admitted miners, the
 median job time: the platform's single queue computes positions and ETAs), ``POST /v1/cancel {job}``
 (a claimed job: not charged), ``POST /v1/signals {job, kind, stars?, quality?}`` (the client's
-download, stars, change request or refund; a ``trust`` is ignored; ``kind: forget`` when the
-client deleted the job: its calibration archive goes), ``GET /v1/jobs/{job}``, ``GET /v1/scores``,
-``POST /v1/weights/close`` (the hour's report now: dry runs), ``GET /v1/chain`` (our stake
-share, kappa, the weights path), ``GET /v1/stats/miners?hotkeys=a,b`` (the stats of up to 20
-hotkeys: the platform's miner dashboard). Onboarding (the operator; ``cadmind-einstein-operator``):
-``GET /v1/operator/key_requests?state=pending|approved|refused|revoked|all``, ``POST
-/v1/operator/approve {hotkey}``, ``POST /v1/operator/refuse {hotkey, reason}`` and ``POST
-/v1/operator/revoke {hotkey, reason}`` (the key deleted, the admission dropped, its job sent to
-another miner unscored); ``POST /v1/operator/unblock {hotkey, reason, readmit?}`` (a wrong
-disable lifted: the block ends, the last strike is taken back, the abuse counts so far are marked
-acted on; ``readmit: true`` gives back the admission of a hotkey that had passed its entry test;
-never a key: the miner mints a new one as usual); ``GET /v1/operator/launch_equal`` and ``POST
-/v1/operator/launch_equal {on}`` (the launch rule, on or off at runtime). Jobs are not posted
-here: the validator CLAIMS them from the platform's queue when it has a free admitted miner
+download, stars, change request or refund; a ``trust`` is ignored; ``kind: forget`` when the client
+deleted the job: its calibration archive goes), ``GET /v1/jobs/{job}``, ``GET /v1/scores``, ``POST
+/v1/weights/close`` (the hour's report now: dry runs), ``GET /v1/chain`` (our stake share, kappa,
+the weights path), ``GET /v1/stats/miners?hotkeys=a,b`` (the stats of up to 20 hotkeys: the
+platform's miner dashboard). Onboarding (the operator; ``cadmind-einstein-operator``): ``GET
+/v1/operator/key_requests?state=pending|approved|refused|revoked|all``, ``POST /v1/operator/approve
+{hotkey}``, ``POST /v1/operator/refuse {hotkey, reason}`` and ``POST /v1/operator/revoke {hotkey,
+reason}`` (no longer keyed, its open job workspaces frozen, the admission dropped, its job sent to
+another miner unscored); ``POST /v1/operator/unblock {hotkey, reason, readmit?}`` (a wrong disable
+lifted: the block ends, the last strike is taken back, the abuse counts so far are marked acted on;
+``readmit: true`` gives back the admission of a hotkey that had passed its entry test; it is not
+keyed again: the miner asks as usual); ``GET /v1/operator/launch_equal`` and ``POST
+/v1/operator/launch_equal {on}`` (the launch rule, on or off at runtime). Jobs are not posted here:
+the validator CLAIMS them from the platform's queue when it has a free admitted miner
 (``platform.claim``).
 
 Public (no auth): ``GET /v1/reports`` (every hourly report's name and SHA-256, and the block its
@@ -55,7 +57,7 @@ duplicated or oversized ``Content-Length`` (and any ``Transfer-Encoding``), an u
 a signed route, a request from an unregistered hotkey, and a Bearer route without the token. It
 reads at most ``MAX_BODY`` bytes, gives a connection ``timeout_s`` per read and ``deadline_s`` per
 request, and holds at most ``max_connections`` connections (``max_per_ip`` from one address); past
-either it answers 503 and closes. ``/v1/miners/agent_key`` (a key minted on the platform each time)
+either it answers 503 and closes. ``/v1/miners/agent_key`` (a call to the platform each time)
 is rate-limited per hotkey and per address. In production a reverse proxy (nginx) stands in front
 anyway, with TLS, ``client_max_body_size``, ``client_body_timeout``/``client_header_timeout``,
 ``limit_conn`` and ``limit_req``; it is named in ``trusted_proxies`` so its ``X-Real-IP`` is the
@@ -73,7 +75,6 @@ request named.)
 
 from __future__ import annotations
 
-import base64
 import contextlib
 import hashlib
 import hmac
@@ -93,7 +94,6 @@ from urllib.parse import parse_qsl
 
 from .desk import Desk, DeskError
 from .scoring import report_order
-from .sealing import valid_public
 
 MAX_BODY = 4 * 1024 * 1024
 REPORT = re.compile(r"^hour-(\d{1,12})(?:-\d{1,6})?\.(json|sha256)$")
@@ -119,7 +119,7 @@ DEADLINE_S = 60.0
 MAX_CONNECTIONS = 64
 MAX_PER_IP = 16
 AGENT_KEY_PER_HOTKEY = (6, 3600.0)
-"""agent keys minted per hotkey per hour"""
+"""agent key requests per hotkey per hour"""
 AGENT_KEY_PER_IP = (60, 3600.0)
 """agent key requests per client address per hour"""
 RESPONSE_PROTOCOL = "cadmind-einstein-response/1"
@@ -361,6 +361,11 @@ def _sr25519_only(verify: Callable[..., Any]) -> Callable[..., Any]:
     return checked
 
 
+def _refusal(e: DeskError) -> dict[str, str]:
+    """A refusal's body: its words, and its ``code`` when it has one."""
+    return {"error": str(e), "code": e.code} if e.code else {"error": str(e)}
+
+
 def serve(
     desk: Desk,
     host: str,
@@ -546,7 +551,7 @@ def serve(
             try:
                 self._send(200, desk.practice_status(str(caller.hotkey_ss58)))
             except DeskError as e:
-                self._send(e.status, {"error": str(e)})
+                self._send(e.status, _refusal(e))
 
         def do_GET(self) -> None:
             if self._public():
@@ -597,7 +602,7 @@ def serve(
                 else:
                     self._send(404, {"error": "no such route"})
             except DeskError as e:
-                self._send(e.status, {"error": str(e)})
+                self._send(e.status, _refusal(e))
 
         def _gate(self, signed: bool) -> bool:
             """Everything decided from the request line and the headers, before a byte of the body
@@ -658,27 +663,16 @@ def serve(
                         return
                     hk = str(caller.hotkey_ss58)
                     if self.path == "/v1/miners/agent_key":
-                        # the key is checked first: a malformed request costs no mint and no
-                        # place in the hotkey's rate
-                        try:
-                            pub = base64.b64decode(
-                                str(body.get("x25519_public") or ""), validate=True
-                            )
-                        except ValueError:
-                            pub = b""
-                        if not valid_public(pub):
-                            self._send(400, {"error": "x25519_public is a 32-byte X25519 key"})
-                            return
+                        # ``x25519_public``, which miners before 0.6.0 send, is ignored
                         if not key_by_hotkey.allow(hk):
                             self._send(429, {"error": "too many agent key requests: retry later"})
                             return
                         got = desk.agent_key(
                             hk,
-                            pub,
                             ip=self._client_ip(),
                             note=str(body.get("contact") or body.get("note") or ""),
                         )
-                        # pending the operator's approval: recorded, no key yet
+                        # pending the operator's approval: recorded, not looked up yet
                         self._send(202 if got.get("pending") else 200, got)
                     elif self.path == "/v1/jobs/work":
                         self._send(200, desk.work(hk))
@@ -766,7 +760,7 @@ def serve(
                 else:
                     self._send(404, {"error": "no such route"})
             except DeskError as e:
-                self._send(e.status, {"error": str(e)})
+                self._send(e.status, _refusal(e))
             except ValueError as e:
                 self._send(400, {"error": str(e)[:300]})
 

@@ -6,7 +6,6 @@ Every test runs against the service or the desk in process, loopback only."""
 
 from __future__ import annotations
 
-import base64
 import json
 import random
 import socket
@@ -23,7 +22,6 @@ from bittensor.sp_core import Keypair
 from cadmind_einstein.chain import ChainState, FileReader, Neuron
 from cadmind_einstein.desk import AbusePolicy, Desk, DeskError
 from cadmind_einstein.scoring import Ledger
-from cadmind_einstein.sealing import new_keypair
 from cadmind_einstein.service import MAX_BODY, serve
 from cadmind_einstein.similarity import CopyCheck
 from tests.test_einstein import GOOD, A, B, C, Clock, FakePlatform
@@ -193,10 +191,7 @@ class TestBodyGate(unittest.TestCase):
         self.assertEqual(status(out), 400, out)
 
     def test_the_signed_route_still_works(self) -> None:
-        _priv, pub = new_keypair()
-        code, out = self.svc.signed(
-            ALICE, "/v1/miners/agent_key", {"x25519_public": base64.b64encode(pub).decode()}
-        )
+        code, out = self.svc.signed(ALICE, "/v1/miners/agent_key", {})
         self.assertEqual(code, 200, out)
         self.assertEqual(self.svc.signed(ALICE, "/v1/jobs/work", {}), (200, {"job": None}))
 
@@ -280,23 +275,16 @@ class TestConnectionLimits(unittest.TestCase):
 
 
 class TestAgentKeyRate(unittest.TestCase):
-    """Each agent key request mints on the platform; it is rate-limited."""
+    """Each agent key request asks the platform; it is rate-limited."""
 
     def test_per_hotkey(self) -> None:
         t = [0.0]
         svc = _Svc(agent_key_per_hotkey=(2, 60.0), clock=lambda: t[0])
-        svc.desk.mint_fresh_s = 0  # this test is the service's rate, not the desk's freshness rule
         try:
-            pub = base64.b64encode(new_keypair()[1]).decode()
-            codes = [
-                svc.signed(ALICE, "/v1/miners/agent_key", {"x25519_public": pub})[0]
-                for _ in range(3)
-            ]
+            codes = [svc.signed(ALICE, "/v1/miners/agent_key", {})[0] for _ in range(3)]
             self.assertEqual(codes, [200, 200, 429])
             t[0] = 61.0
-            self.assertEqual(
-                svc.signed(ALICE, "/v1/miners/agent_key", {"x25519_public": pub})[0], 200
-            )
+            self.assertEqual(svc.signed(ALICE, "/v1/miners/agent_key", {})[0], 200)
         finally:
             svc.close()
 
@@ -308,12 +296,11 @@ class TestAgentKeyRate(unittest.TestCase):
             trusted_proxies=["127.0.0.1"],
         )
         try:
-            pub = base64.b64encode(new_keypair()[1]).decode()
-            ok = svc.signed(ALICE, "/v1/miners/agent_key", {"x25519_public": pub}, ip="10.0.0.1")
+            ok = svc.signed(ALICE, "/v1/miners/agent_key", {}, ip="10.0.0.1")
             self.assertEqual(ok[0], 200)
-            again = svc.signed(bob, "/v1/miners/agent_key", {"x25519_public": pub}, ip="10.0.0.1")
+            again = svc.signed(bob, "/v1/miners/agent_key", {}, ip="10.0.0.1")
             self.assertEqual(again[0], 429)  # another hotkey, the same address
-            other = svc.signed(bob, "/v1/miners/agent_key", {"x25519_public": pub}, ip="10.0.0.2")
+            other = svc.signed(bob, "/v1/miners/agent_key", {}, ip="10.0.0.2")
             self.assertEqual(other[0], 200)
         finally:
             svc.close()
@@ -345,7 +332,7 @@ class _DeskCase(unittest.TestCase):
             abuse=self.policy or AbusePolicy(),
         )
         for hk in (A, B, C):
-            self.desk.agent_key(hk, new_keypair()[1])
+            self.desk.agent_key(hk)
             self.desk.miners[hk].admitted = True
 
     def tearDown(self) -> None:
@@ -399,14 +386,14 @@ class TestAbuseDisables(_DeskCase):
         self.assertTrue(self.desk.miners[copier].blocked_until_ms > self.desk.now_ms())
         self.assertEqual(self.desk.miners[copier].key_id, "")
         self.assertFalse(self.desk.miners[copier].admitted)
-        self.assertNotIn(copier, self.p.keys)  # revoked the platform's way
+        self.assertIn(copier, self.p.closed)  # its open job workspaces frozen on the platform
         self.p.queue.append({"job": "j3", "brief": "A wall hook."})
         for hk in (A, B, C):
             self.desk.work(hk)
         self.tick()
         self.assertNotEqual(self.holder("j3")[0], copier)
         with self.assertRaises(DeskError):
-            self.desk.agent_key(copier, new_keypair()[1])
+            self.desk.agent_key(copier)
 
     def test_rejection_abuse_and_suspension_and_admission_failures_disable(self) -> None:
         self.desk.rejected[A], self.desk.overturned[A], self.desk.assigned[A] = 3, 3, 3

@@ -3,7 +3,7 @@ from the clients' signals, hourly weights and hourly reports.
 
     python -m cadmind_einstein.daemon --state-dir DIR --token-file T \\
         --platform https://cadmind.ai --operator-key-file K \\
-        [--mint-key-file M --queue-key-file Q] \\
+        [--keys-key-file M --queue-key-file Q] \\
         --wallet.name v --wallet.hotkey h --subtensor.network test --netuid N [--dry-run-weights]
     # a local stack: a development key and a fixed metagraph (always a dry run)
     python -m cadmind_einstein.daemon --state-dir DIR --token-file T \\
@@ -54,11 +54,11 @@ for it (:func:`.agent_miner.practice_main`).
 Every answer on a miner's route is signed with the validator's hotkey.
 
 The platform's operator credential is split by role (:mod:`.platform`): ``--operator-key-file``
-(workspaces), ``--mint-key-file`` (miners' keys) and ``--queue-key-file`` (the job queue, which
-charges clients); each 0600, the last two falling back to the first. At startup the workspaces and
-queue keys are probed: a key that does not hold its role stops the daemon. A role the platform froze
-at its ceiling is stopped (ALERT in the log, re-checked every 5 minutes); results to return wait in
-the store meanwhile.
+(workspaces), ``--keys-key-file`` (which agent key a miner's hotkey has; ``--mint-key-file`` before
+0.6.0) and ``--queue-key-file`` (the job queue, which charges clients); each 0600, the last two
+falling back to the first. At startup the workspaces and queue keys are probed: a key that does not
+hold its role stops the daemon. A role the platform froze at its ceiling is stopped (ALERT in the
+log, re-checked every 5 minutes); results to return wait in the store meanwhile.
 
 Flags follow Bittensor's names (``--wallet.name``, ``--wallet.hotkey``, ``--wallet.path``,
 ``--subtensor.network``, ``--subtensor.chain_endpoint``, ``--netuid``, ``--logging.debug``,
@@ -111,8 +111,6 @@ from .desk import (
     JUDGE_GIVE_UP_S,
     JUDGE_MAX_RETRIES,
     KEY_APPROVAL,
-    MINT_PER_COLDKEY_HOUR,
-    MINT_PER_HOUR,
     AbusePolicy,
     Desk,
     SecondOpinion,
@@ -172,7 +170,11 @@ def parser() -> argparse.ArgumentParser:
         help="the validator's operator (workspaces) agent key",
     )
     ap.add_argument(
-        "--mint-key-file", type=Path, help="the mint role's key (default: the operator key)"
+        "--keys-key-file",
+        "--mint-key-file",
+        dest="keys_key_file",
+        type=Path,
+        help="the keys role's key (default: the operator key); --mint-key-file is its older name",
     )
     ap.add_argument(
         "--queue-key-file", type=Path, help="the queue role's key (default: the operator key)"
@@ -336,12 +338,8 @@ def parser() -> argparse.ArgumentParser:
         default=JUDGE_GIVE_UP_S,
         help="how long a judgement is retried on our side before the job ends didn't finish",
     )
-    ap.add_argument(
-        "--mint-per-hour",
-        type=int,
-        default=MINT_PER_HOUR,
-        help="agent keys minted per hour in all (keep it below the platform's ceiling); 0: off",
-    )
+    ap.add_argument("--mint-per-hour", type=int, help=argparse.SUPPRESS)
+    ap.add_argument("--mint-per-coldkey-hour", type=int, help=argparse.SUPPRESS)
     ap.add_argument(
         "--votes",
         choices=("off", "shadow", "counted", "live"),
@@ -402,12 +400,6 @@ def parser() -> argparse.ArgumentParser:
     )
     ap.add_argument("--review-usd-per-mtok-out", type=float, default=0.0)
     ap.add_argument("--review-usd-per-mtok-cached", type=float, default=0.0)
-    ap.add_argument(
-        "--mint-per-coldkey-hour",
-        type=int,
-        default=MINT_PER_COLDKEY_HOUR,
-        help="agent keys minted per hour for one owner's hotkeys; 0: off",
-    )
     return ap
 
 
@@ -469,6 +461,8 @@ def main(argv: list[str] | None = None) -> int:
     check_review_cost(a)
     setup_logging(a, prefix="[cadmind-einstein]")
     _log(f"cadmind-einstein {__version__} (spec {__spec_version__})")
+    if a.mint_per_hour is not None or a.mint_per_coldkey_hour is not None:
+        _log("--mint-per-hour and --mint-per-coldkey-hour are ignored: the validator makes no key")
     if not a.no_version_check:
         version_watch(_log)
 
@@ -501,7 +495,7 @@ def main(argv: list[str] | None = None) -> int:
     platform = OperatorClient(
         a.platform,
         read_key(a.operator_key_file, strict=False),
-        mint_key=read_key(a.mint_key_file) if a.mint_key_file else "",
+        keys_key=read_key(a.keys_key_file) if a.keys_key_file else "",
         queue_key=read_key(a.queue_key_file) if a.queue_key_file else "",
         queue_url=a.queue_url,
         log=_log,
@@ -510,7 +504,7 @@ def main(argv: list[str] | None = None) -> int:
         "operator keys: "
         + ", ".join(
             f"{role} {'own' if f else 'the operator key'}"
-            for role, f in (("mint", a.mint_key_file), ("queue", a.queue_key_file))
+            for role, f in (("keys", a.keys_key_file), ("queue", a.queue_key_file))
         )
     )
     try:
@@ -570,8 +564,6 @@ def main(argv: list[str] | None = None) -> int:
         cancel_cooloff_s=a.cancel_cooloff_s,
         judge_max_retries=a.judge_max_retries,
         judge_give_up_s=a.judge_give_up_s,
-        mint_per_hour=a.mint_per_hour,
-        mint_per_coldkey_hour=a.mint_per_coldkey_hour,
         deadline_s=max(60, int(a.job_deadline_min * 60)),
         key_approval=a.key_approval,
         practice_per_day=max(1, a.practice_per_day),

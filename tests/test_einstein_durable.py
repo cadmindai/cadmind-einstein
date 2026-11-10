@@ -16,7 +16,6 @@ from typing import Any
 from cadmind_einstein.desk import Desk, DeskError
 from cadmind_einstein.platform import PlatformError
 from cadmind_einstein.scoring import HOUR_MS, Ledger
-from cadmind_einstein.sealing import new_keypair
 from cadmind_einstein.store import Store
 from tests.test_einstein import GOOD, OWNER, A, B, C, Clock, D, FakePlatform, wait_state
 
@@ -66,7 +65,7 @@ class Rig:
     def admit(self, *hks: str) -> None:
         assert self.desk is not None
         for hk in hks:
-            self.desk.agent_key(hk, new_keypair()[1])
+            self.desk.agent_key(hk)
             with self.desk._mut():
                 self.desk.miners[hk].admitted = True
 
@@ -334,7 +333,7 @@ class TestConcurrency(unittest.TestCase):
         desk = Desk(p, Ledger(), registered=lambda: reg, max_inflight=6, lease_every_s=0.1)
         try:
             for hk in reg:
-                desk.agent_key(hk, new_keypair()[1])
+                desk.agent_key(hk)
                 desk.miners[hk].admitted = True
                 desk.work(hk)
             for i in range(6):
@@ -365,7 +364,7 @@ class TestDeregistration(unittest.TestCase):
             self.r.desk.stop()
         self.tmp.cleanup()
 
-    def test_a_deregistered_miner_loses_its_key_and_its_job_goes_to_another(self) -> None:
+    def test_a_deregistered_miner_is_closed_and_its_job_goes_to_another(self) -> None:
         self.r.p.queue.append({"job": "g1", "brief": "A wall hook."})
         self.r.tick()
         gone, _ = self.r.holder("g1")
@@ -374,7 +373,7 @@ class TestDeregistration(unittest.TestCase):
         self.r.reg = [h for h in self.r.reg if h != gone]
         self.assertEqual(desk.sync_registered(self.r.reg), [gone])
         desk.wait_idle()
-        self.assertNotIn(gone, self.r.p.keys)  # revoked on the platform
+        self.assertIn(gone, self.r.p.closed)  # its open job workspaces frozen on the platform
         self.assertFalse(desk.miners[gone].admitted)
         self.assertEqual(desk.status("g1")["attempts"][0]["kind"], "dereg")
         self.r.poll(*self.r.reg)
@@ -385,36 +384,47 @@ class TestDeregistration(unittest.TestCase):
         with self.assertRaises(DeskError):
             desk.work(gone)
         with self.assertRaises(DeskError):
-            desk.agent_key(gone, new_keypair()[1])
+            desk.agent_key(gone)
 
     def test_a_revocation_the_platform_refused_is_retried_and_survives_a_restart(self) -> None:
-        disable = self.r.p.disable_key
+        close = self.r.p.close_grants
         down = {"on": True}
 
         def flaky(hk: str) -> dict[str, Any]:
             if down["on"]:
                 raise PlatformError("platform unreachable")
-            return disable(hk)
+            return close(hk)
 
-        self.r.p.disable_key = flaky  # type: ignore[method-assign,assignment]
+        self.r.p.close_grants = flaky  # type: ignore[method-assign,assignment]
         self.r.reg = [A, B]
         assert self.r.desk is not None
         self.r.desk.sync_registered(self.r.reg)
         self.r.desk.wait_idle()
-        self.assertIn(C, self.r.p.keys)
+        self.assertNotIn(C, self.r.p.closed)
         desk = self.r.restart()
         down["on"] = False
         self.r.tick()
-        self.assertNotIn(C, self.r.p.keys)
+        self.assertIn(C, self.r.p.closed)
         self.assertEqual(desk._revoke, [])
+
+    def test_a_miner_row_of_an_older_release_still_loads(self) -> None:
+        assert self.r.desk is not None and self.r.store is not None
+        self.r.desk.wait_idle()
+        self.r.desk.stop()
+        row = self.r.store.get("miner", A)
+        self.r.store.put("miner", A, {**row, "minted_ms": 1_700_000_000_000})
+        self.r.store.close()
+        desk = self.r.boot()
+        self.assertEqual((desk.miners[A].key_id, desk.miners[A].admitted), (row["key_id"], True))
+        self.assertFalse(hasattr(desk.miners[A], "minted_ms"))
 
     def test_only_registered_hotkeys_and_never_the_owner(self) -> None:
         assert self.r.desk is not None
         with self.assertRaises(DeskError):
-            self.r.desk.agent_key(D, new_keypair()[1])  # not registered
+            self.r.desk.agent_key(D)  # not registered
         self.r.reg.append(OWNER)
         with self.assertRaises(DeskError):
-            self.r.desk.agent_key(OWNER, new_keypair()[1])  # the owner never mines
+            self.r.desk.agent_key(OWNER)  # the owner never mines
 
 
 if __name__ == "__main__":

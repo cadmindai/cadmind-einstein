@@ -22,7 +22,6 @@ from typing import Any
 from cadmind_einstein.desk import AbusePolicy, Desk, SecondOpinion, job_event
 from cadmind_einstein.platform import OperatorClient, PlatformError
 from cadmind_einstein.scoring import Ledger
-from cadmind_einstein.sealing import new_keypair
 from tests.test_einstein import GOOD, A, B, C, Clock, FakePlatform, wait_state
 from tests.test_einstein_durable import Rig
 from tests.test_einstein_votes_stats import ReviewRig
@@ -80,7 +79,7 @@ def _desk(p: FakePlatform, clock: Clock, hks: tuple[str, ...], **kw: Any) -> Des
         **kw,
     )
     for hk in hks:
-        desk.agent_key(hk, new_keypair()[1])
+        desk.agent_key(hk)
         desk.miners[hk].admitted = True
     return desk
 

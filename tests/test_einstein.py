@@ -1,11 +1,10 @@
-"""Einstein (one miner per job): the sealed agent key, the per-job points (the owner's rule), the
+"""Einstein (one miner per job): the miner's own agent key, the per-job points (the owner's rule),
 7-day weights with no owner weight, the recompute auditor, and the desk -- routing by wait,
 acceptance, the Watt gate, reassignment from scratch up to the cap, "didn't finish" not charged,
 copies -- against an in-memory platform."""
 
 from __future__ import annotations
 
-import base64
 import io
 import json
 import random
@@ -33,7 +32,6 @@ from cadmind_einstein.scoring import (
     standing,
     vector,
 )
-from cadmind_einstein.sealing import new_keypair, open_sealed, seal
 from cadmind_einstein.service import _host_refused_of, serve
 
 VALIDATOR = Keypair.create_from_uri("//Validator")
@@ -60,6 +58,12 @@ GOOD = {
 }
 
 
+NOT_LINKED_WORDS = (
+    "No agent key names this hotkey: link it to your developer platform account and create an "
+    "agent key naming it."
+)
+
+
 class FakePlatform:
     """The operator routes and the validator's own workspaces, in memory. A miner 'works' by setting
     its
@@ -68,7 +72,9 @@ class FakePlatform:
     def __init__(self) -> None:
         self.ws: dict[str, dict[str, Any]] = {}
         self.grants: list[dict[str, Any]] = []
-        self.keys: dict[str, str] = {}
+        self.unlinked: set[str] = set()  # hotkeys linked to no account, or named by no live key
+        self.looked_up: list[str] = []  # the hotkeys whose key the validator asked for
+        self.closed: list[str] = []  # the hotkeys whose open job workspaces it had frozen
         self.n = 0
         self.queue: list[dict[str, Any]] = []  # the platform's single queue (einstein's jobs)
         self.leased: list[str] = []
@@ -107,19 +113,26 @@ class FakePlatform:
         self.ws[name] = {"files": {}, "deliverable": False, "frozen": False, "compute_ms": 0, **kw}
         return name
 
-    def mint_key(self, hotkey: str) -> dict[str, Any]:
+    def _linked(self, hotkey: str) -> None:
         if hotkey in self.suspended:
             raise PlatformError("suspended", 403, "agent_suspended")
-        self.keys[hotkey] = f"cma_secret_for_{hotkey[:6]}"
-        return {"key_id": f"k-{hotkey[:6]}", "secret": self.keys[hotkey]}
+        if hotkey in self.unlinked:
+            raise PlatformError(NOT_LINKED_WORDS, 404, "miner_not_linked")
 
-    def disable_key(self, hotkey: str) -> dict[str, Any]:
-        self.keys.pop(hotkey, None)
-        return {"deleted": []}
+    def miner_key(self, hotkey: str) -> dict[str, Any]:
+        self._linked(hotkey)
+        self.looked_up.append(hotkey)
+        return {"hotkey": hotkey, "key_id": f"k-{hotkey[:6]}"}
+
+    def close_grants(self, hotkey: str) -> dict[str, Any]:
+        self.closed.append(hotkey)
+        mine = [n for n, w in self.ws.items() if w.get("hotkey") == hotkey and not w["frozen"]]
+        for n in mine:
+            self.ws[n]["frozen"] = True
+        return {"hotkey": hotkey, "frozen": mine}
 
     def grant(self, hotkey: str, *, brief: str = "", seed: str = "", name: str = "job") -> str:
-        if hotkey in self.suspended:
-            raise PlatformError("suspended", 403, "agent_suspended")
+        self._linked(hotkey)
         self.grants.append({"hotkey": hotkey, "brief": brief, "seed": seed})
         files = dict(self.ws[seed]["files"]) if seed else {"brief/brief.md": brief}
         return self._new(hotkey=hotkey, files=files)
@@ -262,19 +275,6 @@ def wait_state(
             return st
         time.sleep(0.02)
     raise AssertionError(f"{job} stayed {desk.status(job)['state']}")
-
-
-class TestSealing(unittest.TestCase):
-    def test_only_the_miner_opens_its_key(self) -> None:
-        priv, pub = new_keypair()
-        sealed = seal("cma_abc", pub, A)
-        self.assertNotIn("cma_abc", json.dumps(sealed))
-        self.assertEqual(open_sealed(sealed, priv, A), "cma_abc")
-        with self.assertRaises(ValueError):
-            open_sealed(sealed, priv, B)  # bound to the hotkey
-        other, _ = new_keypair()
-        with self.assertRaises(ValueError):
-            open_sealed(sealed, other, A)
 
 
 def passing(job: str, hk: str, *, ended_ms: int = 0, **kw: Any) -> JobOutcome:
@@ -475,7 +475,7 @@ class TestDesk(unittest.TestCase):
             rng=random.Random(7),  # noqa: S311 -- a test's seed,
         )
         for hk in (A, B, C):
-            self.desk.agent_key(hk, new_keypair()[1])
+            self.desk.agent_key(hk)
             self.desk.miners[hk].admitted = True  # the entry test has its own test
 
     def tearDown(self) -> None:
@@ -615,7 +615,7 @@ class TestDesk(unittest.TestCase):
 
     def test_four_timeouts_end_the_job_didnt_finish_and_each_counts(self) -> None:
         self.reg.append(D)
-        self.desk.agent_key(D, new_keypair()[1])
+        self.desk.agent_key(D)
         self.desk.miners[D].admitted = True
         for _ in range(4):
             self.poll(A, B, C, D)
@@ -824,8 +824,8 @@ class TestDesk(unittest.TestCase):
         with self.assertRaises(DeskError):
             self.desk.signal("s1", {"kind": "stars", "stars": 9, "trust": "paid"})
 
-    def test_a_miner_watt_suspended_gets_no_job_and_no_new_key(self) -> None:
-        self.p.suspended.add(A)  # the platform deleted A's key after Watt's telemetry suspended it
+    def test_a_miner_watt_suspended_gets_no_job_and_no_key_lookup(self) -> None:
+        self.p.suspended.add(A)  # Watt's telemetry suspended A: no lookup, no grant for it
         self.poll(A, B, C)
         for n in range(3):
             self.enqueue({"job": f"s{n}", "brief": "A wall hook."})
@@ -836,7 +836,7 @@ class TestDesk(unittest.TestCase):
         self.assertNotIn(A, owners)
         self.assertLessEqual(sum(1 for g in self.p.grants if g["hotkey"] == A), 1)
         with self.assertRaises(DeskError) as e:
-            self.desk.agent_key(A, new_keypair()[1])
+            self.desk.agent_key(A)
         self.assertEqual(e.exception.status, 403)
 
 
@@ -1167,7 +1167,7 @@ class TestSurvivorsWords(unittest.TestCase):
 
 
 class TestService(unittest.TestCase):
-    def test_a_signed_agent_key_request_answers_a_sealed_key(self) -> None:
+    def test_a_signed_agent_key_request_answers_the_key_id_and_no_secret(self) -> None:
         p = FakePlatform()
         desk = Desk(p, Ledger(), registered=lambda: [A])
         server = serve(
@@ -1182,8 +1182,7 @@ class TestService(unittest.TestCase):
         threading.Thread(target=server.serve_forever, daemon=True).start()
         base = f"http://127.0.0.1:{server.server_address[1]}"
         alice = Keypair.create_from_uri("//Alice")
-        priv, pub = new_keypair()
-        body = json.dumps({"x25519_public": base64.b64encode(pub).decode()}).encode()
+        body = json.dumps({"x25519_public": "ignored: a miner before 0.6.0"}).encode()
         headers = {
             "Content-Type": "application/json",
             **btauth.sign(
@@ -1199,7 +1198,7 @@ class TestService(unittest.TestCase):
         )
         with urllib.request.urlopen(req, timeout=10) as r:  # noqa: S310 -- loopback
             out = json.loads(r.read())
-        self.assertEqual(open_sealed(out["sealed"], priv, A), p.keys[A])
+        self.assertEqual(out, {"key_id": f"k-{A[:6]}"})
         req = urllib.request.Request(base + "/v1/jobs/work", data=b"{}")  # noqa: S310 -- unsigned
         with self.assertRaises(urllib.error.HTTPError) as e:
             urllib.request.urlopen(req, timeout=10)  # noqa: S310

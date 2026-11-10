@@ -28,7 +28,6 @@ from cadmind_einstein.fake_miner import signed
 from cadmind_einstein.models import Prices, Spend
 from cadmind_einstein.platform import PlatformError
 from cadmind_einstein.scoring import HOUR_MS, Ledger
-from cadmind_einstein.sealing import new_keypair
 from cadmind_einstein.service import serve
 from cadmind_einstein.votes import Reviewer
 
@@ -110,7 +109,7 @@ class Rig(unittest.TestCase):
         self.desk.on_delivered = self.reviewer.enqueue
         self.desk.practice_book.reviewer = self.reviewer
         for hk in (A, B, C):
-            self.desk.agent_key(hk, new_keypair()[1])
+            self.desk.agent_key(hk)
             self.desk.miners[hk].admitted = True
 
     def tearDown(self) -> None:
@@ -387,7 +386,7 @@ class TestPracticeService(unittest.TestCase):
     def test_signed_post_and_get(self) -> None:
         p = PracticePlatform()
         desk = Desk(p, Ledger(), registered=lambda: [A])
-        desk.agent_key(A, new_keypair()[1])
+        desk.agent_key(A)
         server = serve(
             desk,
             "127.0.0.1",

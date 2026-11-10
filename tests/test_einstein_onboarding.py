@@ -1,7 +1,7 @@
 """Manual miner onboarding and launch-equal weights (0.4.8).
 
 - A registered hotkey's key request is recorded as pending until the operator approves it; only
-  then is a key minted. A refusal or a revocation is answered with the operator's reason.
+  then is its key looked up. A refusal or a revocation is answered with the operator's reason.
 - Only an approved key holder takes the entry test; until it passes, no job and no weight.
 - A revocation drops the key and the admission, frees the miner's job unscored, and removes the
   miner from the next vector under every rule; re-approved, it takes the entry test again.
@@ -14,7 +14,6 @@
 
 from __future__ import annotations
 
-import base64
 import contextlib
 import io
 import json
@@ -44,7 +43,6 @@ from cadmind_einstein.scoring import (
     standing,
     vector,
 )
-from cadmind_einstein.sealing import new_keypair, open_sealed
 from cadmind_einstein.service import serve
 from cadmind_einstein.store import Store
 from tests.test_einstein import GOOD, OWNER, VALIDATOR, A, B, C, Clock, FakePlatform, wait_state
@@ -97,7 +95,7 @@ class _Case(unittest.TestCase):
         self.assertTrue(self.desk.wait_idle())
 
     def key(self, hk: str, **kw: Any) -> dict[str, Any]:
-        return self.desk.agent_key(hk, new_keypair()[1], **kw)
+        return self.desk.agent_key(hk, **kw)
 
     def onboard(self, hk: str) -> str:
         """Approved, keyed and through the entry test; answers the test's job id."""
@@ -121,9 +119,9 @@ class TestKeyApproval(_Case):
     def test_an_unapproved_hotkey_gets_no_key_and_its_ask_is_recorded(self) -> None:
         got = self.key(A, ip="203.0.113.7", note="  reach me\non the forum\x07 ")
         self.assertTrue(got["pending"])
-        self.assertNotIn("sealed", got)
+        self.assertNotIn("key_id", got)
         self.assertIn("approval", got["message"])
-        self.assertEqual(self.p.keys, {})  # nothing minted
+        self.assertEqual(self.p.looked_up, [])  # the platform is not asked
         first = self.clock.t
         self.clock.t += 600
         self.key(A, ip="203.0.113.8")
@@ -138,12 +136,11 @@ class TestKeyApproval(_Case):
             self.desk.admission(A)  # no entry test before approval
         self.assertEqual(e.exception.status, 403)
 
-    def test_once_approved_the_same_call_mints_the_sealed_key(self) -> None:
+    def test_once_approved_the_same_call_looks_the_key_up(self) -> None:
         self.key(A)
         self.desk.approve(A)
-        priv, pub = new_keypair()
-        got = self.desk.agent_key(A, pub)
-        self.assertEqual(open_sealed(got["sealed"], priv, A), self.p.keys[A])
+        self.assertEqual(self.desk.agent_key(A), {"key_id": f"k-{A[:6]}"})
+        self.assertEqual(self.p.looked_up, [A])
         self.assertEqual(self.desk.key_requests(), [])  # no longer pending
         [row] = self.desk.key_requests("approved")
         self.assertEqual(
@@ -159,7 +156,7 @@ class TestKeyApproval(_Case):
         with self.assertRaises(DeskError):
             self.desk.approve(OWNER)
 
-    def test_a_refusal_answers_its_reason_and_mints_nothing(self) -> None:
+    def test_a_refusal_answers_its_reason_and_looks_nothing_up(self) -> None:
         self.key(A)
         with self.assertRaises(DeskError):
             self.desk.refuse(A, "   ")  # a refusal says why
@@ -168,7 +165,7 @@ class TestKeyApproval(_Case):
             self.key(A)
         self.assertEqual(e.exception.status, 403)
         self.assertIn("no contact given", str(e.exception))
-        self.assertEqual(self.p.keys, {})
+        self.assertEqual(self.p.looked_up, [])
         self.desk.approve(B)
         self.key(B)
         with self.assertRaises(DeskError) as e:
@@ -224,7 +221,7 @@ class TestKeyApproval(_Case):
             self.assertEqual(self.desk.miners[hk].key_id, "")
         self.desk.tick()
         self.assertTrue(self.desk.wait_idle())
-        self.assertEqual(self.p.keys, {})  # deleted on the platform
+        self.assertEqual(sorted(self.p.closed), sorted([A, B]))  # closed on the platform
         st = self.desk.status("g1")
         self.assertEqual((st["state"], st["attempts"][-1]["kind"]), ("queued", "revoked"))
         self.assertEqual(self.ledger.outcomes, [])
@@ -244,9 +241,7 @@ class TestKeyApproval(_Case):
             key_approval="manual",
             pending_message="Ask on the  official\nchannel.",
         )
-        self.assertEqual(
-            d.agent_key(B, new_keypair()[1])["message"], "Ask on the official channel."
-        )
+        self.assertEqual(d.agent_key(B)["message"], "Ask on the official channel.")
         d.stop()
 
     def test_a_pending_request_of_a_hotkey_that_left_is_dropped(self) -> None:
@@ -391,7 +386,7 @@ class TestRevoke(_Case):
         self.assertEqual(st["state"], "queued")
         self.assertEqual(st["attempts"][-1]["kind"], "revoked")
         self.assertEqual(self.ledger.outcomes, [])  # nobody scored
-        self.assertNotIn(holder, self.p.keys)  # the key deleted on the platform
+        self.assertIn(holder, self.p.closed)  # its open job workspaces frozen on the platform
         m = self.desk.miners[holder]
         self.assertEqual((m.key_id, m.admitted, m.job), ("", False, ""))
         self.assertIsNone(self.desk.work(holder)["job"])
@@ -633,7 +628,7 @@ class TestAskKey(unittest.TestCase):
         answers = [
             (202, {"pending": True, "message": "wait", "retry_after_s": 900}),
             (202, {"pending": True, "message": "wait", "retry_after_s": 900}),
-            (200, {"key_id": "k", "sealed": {}}),
+            (200, {"key_id": "k"}),
         ]
         bodies: list[dict[str, Any]] = []
         slept: list[float] = []
@@ -643,20 +638,35 @@ class TestAskKey(unittest.TestCase):
             bodies.append(body)
             return answers.pop(0)
 
-        code, got = ask_key(
-            call, b"\x01" * 32, contact="me", log=lambda _m: None, sleep=slept.append
-        )
+        code, got = ask_key(call, contact="me", log=lambda _m: None, sleep=slept.append)
         self.assertEqual((code, got["key_id"]), (200, "k"))
         self.assertEqual(slept, [900.0, 900.0])
         self.assertEqual(bodies[0]["contact"], "me")
+
+    def test_a_hotkey_the_platform_has_no_key_for_waits_and_reads_what_to_do(self) -> None:
+        answers = [
+            (409, {"error": "link the hotkey and create a key", "code": "miner_not_linked"}),
+            (409, {"error": "link the hotkey and create a key", "code": "miner_not_linked"}),
+            (200, {"key_id": "k"}),
+        ]
+        slept: list[float] = []
+        said: list[str] = []
+        code, got = ask_key(lambda _p, _b: answers.pop(0), log=said.append, sleep=slept.append)
+        self.assertEqual((code, got["key_id"]), (200, "k"))
+        self.assertEqual(slept, [900.0, 900.0])  # never a fast loop
+        self.assertEqual(sum("link the hotkey and create a key" in m for m in said), 2)
+
+    def test_another_409_ends_the_ask(self) -> None:
+        code, _ = ask_key(
+            lambda _p, _b: (409, {"error": "x"}), log=lambda _m: None, sleep=lambda _s: None
+        )
+        self.assertEqual(code, 409)
 
     def test_a_bounded_wait_gives_up_pending(self) -> None:
         def call(path: str, body: dict[str, Any]) -> tuple[int, Any]:
             return 202, {"pending": True, "retry_after_s": 900}
 
-        code, _ = ask_key(
-            call, b"\x01" * 32, log=lambda _m: None, sleep=lambda _s: None, max_wait_s=60
-        )
+        code, _ = ask_key(call, log=lambda _m: None, sleep=lambda _s: None, max_wait_s=60)
         self.assertEqual(code, 202)
 
 
@@ -668,13 +678,11 @@ class TestAskKeyNewcomer(unittest.TestCase):
             (403, {"error": "hotkey is not registered on the subnet"}),
             (403, {"error": "hotkey is not registered on the subnet"}),
             (202, {"pending": True, "message": "wait", "retry_after_s": 900}),
-            (200, {"key_id": "k", "sealed": {}}),
+            (200, {"key_id": "k"}),
         ]
         slept: list[float] = []
         said: list[str] = []
-        code, got = ask_key(
-            lambda _p, _b: answers.pop(0), b"\x01" * 32, log=said.append, sleep=slept.append
-        )
+        code, got = ask_key(lambda _p, _b: answers.pop(0), log=said.append, sleep=slept.append)
         self.assertEqual((code, got["key_id"]), (200, "k"))
         self.assertEqual(slept, [60.0, 60.0, 900.0])
         self.assertEqual(sum("does not see this hotkey registered yet" in m for m in said), 1)
@@ -682,7 +690,6 @@ class TestAskKeyNewcomer(unittest.TestCase):
     def test_any_other_refusal_still_ends_the_ask(self) -> None:
         code, got = ask_key(
             lambda _p, _b: (403, {"error": "refused by the subnet team"}),
-            b"\x01" * 32,
             log=lambda _m: None,
             sleep=lambda _s: None,
         )
@@ -690,10 +697,10 @@ class TestAskKeyNewcomer(unittest.TestCase):
 
     def test_every_pending_ask_is_logged_so_the_miner_is_seen_alive(self) -> None:
         answers = [(202, {"pending": True, "message": "write to us", "retry_after_s": 900})] * 3 + [
-            (200, {"key_id": "k", "sealed": {}})
+            (200, {"key_id": "k"})
         ]
         said: list[str] = []
-        ask_key(lambda _p, _b: answers.pop(0), b"\x01" * 32, log=said.append, sleep=lambda _s: None)
+        ask_key(lambda _p, _b: answers.pop(0), log=said.append, sleep=lambda _s: None)
         self.assertEqual(
             sum(m.startswith("agent key: pending approval -- write to us") for m in said), 1
         )
@@ -718,7 +725,7 @@ class TestUnblock(_Case):
         m = self.desk.miners[A]
         self.assertGreater(m.blocked_until_ms, self.desk.now_ms())
         self.assertFalse(m.admitted or m.key_id)
-        self.assertNotIn(A, self.p.keys)  # revoked on the platform
+        self.assertIn(A, self.p.closed)  # its open job workspaces frozen on the platform
         with self.assertRaises(DeskError) as e:
             self.key(A)
         self.assertEqual(e.exception.status, 403)
@@ -727,7 +734,7 @@ class TestUnblock(_Case):
         self.assertEqual(m.blocked_until_ms, 0)
         self.assertNotIn(A, self.desk.strikes)
         self.assertTrue(m.admitted)
-        self.assertNotIn(A, self.p.keys)  # never a key: the miner mints one as usual
+        self.assertEqual(m.key_id, "")  # not keyed again: the miner asks as usual
         self.assertEqual(self.desk.enforce(), [])  # the same counts act once
         self.assertIn("key_id", self.key(A))
         self.assertIn(A, self.desk.admitted())
@@ -828,12 +835,9 @@ class TestHttpAndCli(unittest.TestCase):
         self.desk.stop()
         self.tmp.cleanup()
 
-    def ask(self, contact: str = "") -> tuple[int, dict[str, Any], Any]:
+    def ask(self, contact: str = "") -> tuple[int, dict[str, Any]]:
         alice = Keypair.create_from_uri("//Alice")
-        priv, pub = new_keypair()
-        body = json.dumps(
-            {"x25519_public": base64.b64encode(pub).decode(), "contact": contact}
-        ).encode()
+        body = json.dumps({"contact": contact}).encode()
         headers = {
             "Content-Type": "application/json",
             **btauth.sign(
@@ -849,9 +853,9 @@ class TestHttpAndCli(unittest.TestCase):
         )
         try:
             with urllib.request.urlopen(req, timeout=10) as r:  # noqa: S310 -- loopback
-                return r.status, json.loads(r.read()), priv
+                return r.status, json.loads(r.read())
         except urllib.error.HTTPError as e:
-            return e.code, json.loads(e.read()), priv
+            return e.code, json.loads(e.read())
 
     def cli(self, *args: str) -> tuple[int, str, str]:
         out, err = io.StringIO(), io.StringIO()
@@ -862,7 +866,7 @@ class TestHttpAndCli(unittest.TestCase):
         return code, out.getvalue(), err.getvalue()
 
     def test_pending_then_approved_over_http_and_the_cli(self) -> None:
-        code, got, _ = self.ask("forum: alice")
+        code, got = self.ask("forum: alice")
         self.assertEqual(code, 202)
         self.assertTrue(got["pending"])
         rc, out, _ = self.cli("pending")
@@ -874,14 +878,13 @@ class TestHttpAndCli(unittest.TestCase):
         self.assertEqual(listed["requests"][0]["ip"], "127.0.0.1")
         self.assertNotIn(TOKEN, out)
         self.assertEqual(self.cli("approve", A)[0], 0)
-        code, got, priv = self.ask()
-        self.assertEqual(code, 200)
-        self.assertEqual(open_sealed(got["sealed"], priv, A), self.p.keys[A])
+        code, got = self.ask()
+        self.assertEqual((code, got), (200, {"key_id": f"k-{A[:6]}"}))
         rc, out, err = self.cli("revoke", A, "--reason", "testing")
         self.assertEqual(rc, 0)
         self.assertNotIn(TOKEN, out + err)
-        self.assertNotIn(A, self.p.keys)
-        code, got, _ = self.ask()
+        self.assertIn(A, self.p.closed)
+        code, got = self.ask()
         self.assertEqual(code, 403)
         self.assertIn("testing", got["error"])
         rc, _, err = self.cli("refuse", B, "--reason", "unknown")

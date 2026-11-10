@@ -23,7 +23,6 @@ from cadmind_einstein.platform import (
     RoleRefusedError,
 )
 from cadmind_einstein.scoring import Ledger
-from cadmind_einstein.sealing import new_keypair
 from cadmind_einstein.store import Store
 from tests.test_einstein import GOOD, A, Clock, FakePlatform
 
@@ -101,9 +100,9 @@ class _Case(unittest.TestCase):
 
 class TestRoleRouting(_Case):
     def test_each_call_carries_its_roles_key(self) -> None:
-        c = self.client(mint_key="mint", queue_key="queue")
-        c.mint_key(A)
-        c.disable_key(A)
+        c = self.client(keys_key="keys", queue_key="queue")
+        c.miner_key(A)
+        c.close_grants(A)
         c.grant(A, brief="b")
         c.state("w")
         c.freeze("w")
@@ -116,8 +115,8 @@ class TestRoleRouting(_Case):
         c.claimed()
         c.complete("j", {"label": "delivered"})
         by_path = {(m, p.split("?")[0]): k for m, p, k in self.platform.seen}
-        self.assertEqual(by_path[("POST", "/api/agent/subnet/keys")], "mint")
-        self.assertEqual(by_path[("POST", "/api/agent/subnet/keys/disable")], "mint")
+        self.assertEqual(by_path[("POST", "/api/agent/subnet/keys")], "keys")
+        self.assertEqual(by_path[("POST", "/api/agent/subnet/keys/disable")], "keys")
         others = [k for (_m, p), k in by_path.items() if "/subnet/keys" not in p]
         self.assertEqual(set(others), {"op"})
         self.assertEqual(len(others), 7)
@@ -127,7 +126,7 @@ class TestRoleRouting(_Case):
 
     def test_an_unset_role_key_is_the_operator_key(self) -> None:
         c = self.client()
-        c.mint_key(A)
+        c.miner_key(A)
         c.claim()
         self.assertEqual({k for _m, _p, k in self.platform.seen + self.queue.seen}, {"op"})
 
@@ -155,7 +154,7 @@ class TestFrozenRole(_Case):
         self.assertEqual(len(self.queue.seen), sent)
         self.assertEqual(sum("ALERT" in x and "froze" in x for x in self.logs), 1)
         self.assertEqual(c.frozen(), ["queue"])
-        c.mint_key(A)  # the other roles go on
+        c.miner_key(A)  # the other roles go on
         c.grant(A, brief="b")
         self.t[0] += 60  # past the 5 minutes: asked again (still frozen)
         with self.assertRaises(RoleFrozenError):
@@ -265,7 +264,7 @@ class TestDeskUnderAFrozenRole(unittest.TestCase):
                 store=store,
                 rng=random.Random(1),  # noqa: S311 -- a test's seed
             )
-            desk.agent_key(A, new_keypair()[1])
+            desk.agent_key(A)
             desk.miners[A].admitted = True
             p.queue.append({"job": "j1", "brief": "A hook."})
             desk.work(A)
@@ -294,7 +293,7 @@ class TestDeskUnderAFrozenRole(unittest.TestCase):
         p, clock = FakePlatform(), Clock()
         desk = Desk(p, Ledger(), registered=lambda: [A], clock=clock)
         self.addCleanup(desk.stop)
-        desk.agent_key(A, new_keypair()[1])
+        desk.agent_key(A)
         desk.miners[A].admitted = True
         p.queue.append({"job": "j1", "brief": "A hook."})
         desk.work(A)
@@ -319,17 +318,17 @@ class TestDeskUnderAFrozenRole(unittest.TestCase):
         self.assertTrue(desk.wait_idle())
         self.assertEqual(desk.status("j1")["result"]["label"], "delivered")
 
-    def test_a_refused_or_frozen_mint_is_a_503_to_the_miner(self) -> None:
+    def test_a_refused_or_frozen_keys_role_is_a_503_to_the_miner(self) -> None:
         p = FakePlatform()
 
-        def mint(_hotkey: str) -> dict[str, Any]:
+        def lookup(_hotkey: str) -> dict[str, Any]:
             raise RoleFrozenError("frozen", 503, "operator_frozen", ours=True)
 
-        p.mint_key = mint  # type: ignore[method-assign]
+        p.miner_key = lookup  # type: ignore[method-assign]
         desk = Desk(p, Ledger(), registered=lambda: [A])
         self.addCleanup(desk.stop)
         with self.assertRaises(DeskError) as e:
-            desk.agent_key(A, new_keypair()[1])
+            desk.agent_key(A)
         self.assertEqual(e.exception.status, 503)
 
 

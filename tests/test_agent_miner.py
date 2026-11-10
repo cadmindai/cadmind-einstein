@@ -569,48 +569,57 @@ class TestSendAndKeepAdmitted(unittest.TestCase):
             self.assertEqual(len(slept), tries - 1)
             self.assertEqual(code, codes[tries - 1])
 
-    def test_a_revoked_key_is_minted_again_and_admission_asked_again(self) -> None:
+    def test_the_hourly_check_asks_for_the_key_again_then_the_admission(self) -> None:
         calls: list[str] = []
-        minted: list[bool] = []
+        taken: list[bool] = []
 
         def call(path: str, body: dict) -> tuple[int, dict]:
             calls.append(path)
             return 200, {"admitted": True}
 
-        def mint() -> bool:
-            minted.append(True)
-            return True
+        def take(ok: bool = True) -> bool:
+            taken.append(ok)
+            return ok
 
-        agent_miner.keep_admitted(call, mint, lambda: False, log=lambda m: None)
-        self.assertEqual((minted, calls), ([True], ["/v1/miners/admission"]))
-        minted.clear()
+        agent_miner.keep_admitted(call, take, log=lambda m: None)
+        self.assertEqual((taken, calls), ([True], ["/v1/miners/admission"]))
         calls.clear()
-        for works in (True, None):  # taken, or the platform could not tell: no new key
-            agent_miner.keep_admitted(call, mint, lambda w=works: w, log=lambda m: None)
-        self.assertEqual((minted, calls), ([], ["/v1/miners/admission"] * 2))
+        # the validator does not take the key now (a block, a refusal): no admission asked
+        agent_miner.keep_admitted(call, lambda: take(False), log=lambda m: None)
+        self.assertEqual(calls, [])
 
-    def test_a_stored_key_the_platform_refuses_is_minted_again_at_startup(self) -> None:
-        minted: list[bool] = []
-        said: list[str] = []
+    def test_the_key_file_is_the_flag_then_the_environment_then_the_state_directory(self) -> None:
+        ns = argparse.Namespace(state=Path("/s"), agent_key_file=Path("/flag.key"))
+        env = {agent_miner.AGENT_KEY_ENV: "/env.key"}
+        with mock.patch.dict(os.environ, env):
+            self.assertEqual(agent_miner.agent_key_file(ns), Path("/flag.key"))
+            ns.agent_key_file = None
+            self.assertEqual(agent_miner.agent_key_file(ns), Path("/env.key"))
+        with mock.patch.dict(os.environ):
+            os.environ.pop(agent_miner.AGENT_KEY_ENV, None)
+            self.assertEqual(agent_miner.agent_key_file(ns), Path("/s/agent.key"))
 
-        def mint() -> bool:
-            minted.append(True)
-            return True
+    def test_a_missing_or_empty_key_file_holds_no_key(self) -> None:
+        with tempfile.TemporaryDirectory() as d:
+            f = Path(d) / "agent.key"
+            self.assertEqual(agent_miner.read_agent_key(f), "")
+            f.write_text("\n")
+            self.assertEqual(agent_miner.read_agent_key(f), "")
+            f.write_text("cma_mine\n")
+            self.assertEqual(agent_miner.read_agent_key(f), "cma_mine")
 
-        agent_miner.check_stored_key(mint, lambda: False, log=said.append)
-        self.assertEqual(minted, [True])
-        self.assertIn("minting a new one", said[0])
-        minted.clear()
-        for works in (True, None):  # taken, or the platform could not tell: the stored key stays
-            agent_miner.check_stored_key(mint, lambda w=works: w, log=said.append)
-        self.assertEqual(minted, [])
+    def test_the_miner_works_only_on_the_key_the_platform_has_for_its_hotkey(self) -> None:
+        self.assertEqual(agent_miner.key_mismatch("k1", "k1"), "")
+        self.assertEqual(agent_miner.key_mismatch("k1", None), "")  # the platform could not tell
+        other = agent_miner.key_mismatch("k2", "k1")
+        self.assertIn("agent key k2 for this hotkey", other)
+        self.assertIn("is key k1", other)
+        self.assertIn("newest live agent key naming the hotkey", other)
+        refused = agent_miner.key_mismatch("k2", "")
+        self.assertIn("not taken by the platform", refused)
 
-    def test_a_refused_mint_at_startup_leaves_it_to_the_hourly_check(self) -> None:
-        said: list[str] = []
-        agent_miner.check_stored_key(lambda: False, lambda: False, log=said.append)
-        self.assertIn("hourly check", said[-1])
-
-    def test_key_works_reads_the_platforms_answer(self) -> None:
+    def test_own_key_id_reads_the_platforms_answer(self) -> None:
+        import io
         import urllib.error
 
         def raising(code: int):
@@ -619,14 +628,30 @@ class TestSendAndKeepAdmitted(unittest.TestCase):
 
             return f
 
+        seen: list[object] = []
+
+        def answering(body: bytes):
+            def f(req: object, **k: object) -> io.BytesIO:
+                seen.append(req)
+                return io.BytesIO(body)
+
+            return f
+
         with mock.patch.object(agent_miner.urllib.request, "urlopen", raising(401)):
-            self.assertIs(agent_miner.key_works("https://p", "k"), False)
+            self.assertEqual(agent_miner.own_key_id("https://p", "k"), "")
         with mock.patch.object(agent_miner.urllib.request, "urlopen", raising(502)):
-            self.assertIsNone(agent_miner.key_works("https://p", "k"))
+            self.assertIsNone(agent_miner.own_key_id("https://p", "k"))
         with mock.patch.object(agent_miner.urllib.request, "urlopen", side_effect=OSError):
-            self.assertIsNone(agent_miner.key_works("https://p", "k"))
-        with mock.patch.object(agent_miner.urllib.request, "urlopen", mock.MagicMock()):
-            self.assertIs(agent_miner.key_works("https://p", "k"), True)
+            self.assertIsNone(agent_miner.own_key_id("https://p", "k"))
+        with mock.patch.object(agent_miner.urllib.request, "urlopen", answering(b"{}")):
+            self.assertIsNone(agent_miner.own_key_id("https://p", "k"))
+        with mock.patch.object(
+            agent_miner.urllib.request, "urlopen", answering(b'{"key_id": "k1", "used": 3}')
+        ):
+            self.assertEqual(agent_miner.own_key_id("https://p/", "cma_mine"), "k1")
+        req = seen[-1]
+        self.assertEqual(req.full_url, "https://p/api/agent/usage")  # type: ignore[attr-defined]
+        self.assertEqual(req.get_header("Authorization"), "Bearer cma_mine")  # type: ignore[attr-defined]
 
 
 class TestOneRule(unittest.TestCase):
