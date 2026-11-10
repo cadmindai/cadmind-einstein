@@ -50,41 +50,50 @@ client job (public, free-plan, or opted in)
    └─> validator: claims it from the platform's queue, routes it to ONE miner
          └─> platform: a job workspace granted to that miner's agent key
 miner: its own agent, any model, any harness
-   └─ MCP / REST with its hotkey-bound agent key ──> platform (keys, quotas, meter) ──> Watt agent bench
+   └─ MCP / REST with its own agent key, naming its hotkey ──> platform (keys, quotas, meter) ──> Watt agent bench
 validator: freeze on submit, fork, read Watt's verdict (the gate), copy check, score,
            deliver (or reassign), record client signals, hourly weights and report
 ```
 
-## 2. Identity: an agent key per hotkey, sealed to the miner
+## 2. Identity: the miner's own agent key, naming its hotkey
 
-- A miner asks the validator for its agent key with `POST /v1/miners/agent_key {x25519_public}`, signed by its
-  hotkey (`btauth/1`, Bittensor's HTTP signing). The validator checks the hotkey is registered on the metagraph,
-  has the platform mint (or rotate) an agent key **bound to that hotkey**, and answers it **sealed**: X25519 with a
-  fresh ephemeral key, HKDF-SHA256 (salt: both public keys; info: `cadmind-agent-key/1` and the hotkey),
-  AES-256-GCM with the hotkey as associated data. The secret is never in clear on the wire or in a log
-  (`cadmind_einstein/sealing.py`).
-- On the platform each miner key lives in a service account of its own that nobody can sign in to, so the
-  platform's ordinary ownership checks isolate miners from each other and from the operator.
+- A miner has an account of its own on the developer platform. It **links its hotkey** to that account by signing
+  a challenge with it, and creates there an **agent key that names the hotkey**. The key and its secret are the
+  miner's: its operator gives the secret to the miner program in a file, and the validator never sees it. One key
+  per hotkey is used: the newest live agent key that names it.
+- The miner asks the validator to take that key with `POST /v1/miners/agent_key`, signed by its hotkey (`btauth/1`,
+  Bittensor's HTTP signing). The validator checks the hotkey is registered on the metagraph, asks the platform
+  which key names the hotkey, and answers its id, `{key_id}`. The miner checks that this is the key it runs on (the
+  platform names the calling key's id) and stops when it is not. A hotkey the platform has no key for (linked to
+  no account, or named by no live key) is answered `409 miner_not_linked` with the platform's own instruction; the
+  miner logs it and asks again later. A miner is *keyed* at the validator once this call answered: only then may
+  it take the entry test, practise or get a job.
+- **Compute is paid in credits, and the allowance comes with the job.** Every Watt run costs credits. A miner has
+  none of its own (they cannot be bought yet): each job workspace the validator grants carries an allowance of
+  credits from the platform, and a job workspace is the only place a miner's key runs compute. The allowance is
+  the platform's business; the validator's grant call says nothing about it.
 - Only the validator's own agent keys reach the platform's *operator* routes, one key per role so that no single
-  secret does everything: the mint key mints and disables miners' keys; the operator key grants, freezes and forks
-  job workspaces; the queue key claims and completes jobs (completing a delivered job charges the client). Past
-  its ceilings (mints, charges) the platform freezes that role's key until it is enabled again; the validator
-  stops that role, alerts, re-checks every 5 minutes, and keeps results to return in its store. A deregistered or
-  abusive hotkey's key is deleted.
+  secret does everything: the keys key asks which agent key a hotkey has and closes a hotkey's open job
+  workspaces; the operator key grants, freezes and forks job workspaces; the queue key claims and completes jobs
+  (completing a delivered job charges the client). Past its ceilings the platform freezes that role's key until it
+  is enabled again; the validator stops that role, alerts, re-checks every 5 minutes, and keeps results to return
+  in its store. A deregistered, disabled or revoked hotkey is no longer keyed at the validator and its open job
+  workspaces are frozen on the platform (queued and retried until the platform takes it); its agent key stays its
+  own, with no workspace to work in.
 - **Manual approval** (`--key-approval manual`, the default since 0.4.8). Miners are let in by hand. A registered
-  hotkey that is not approved gets no key: its request is recorded -- hotkey, coldkey, first and last ask, client
+  hotkey that is not approved is not keyed: its request is recorded -- hotkey, coldkey, first and last ask, client
   address, the miner's optional `contact` note -- and answered `202 {"pending": true, ...}`. The operator lists,
   approves, refuses (with a reason the miner reads) or revokes over Bearer routes (`/v1/operator/...`, the
-  `cadmind-einstein-operator` CLI). Once approved, the same call mints the key. An approval is bound to the
-  hotkey's coldkey: under another coldkey the hotkey asks again. **Revoking** deletes the key (queued and retried,
-  as for a deregistration), drops the admission, ends the job the miner holds without scoring anyone (`revoked`,
+  `cadmind-einstein-operator` CLI). Once approved, the same call looks the key up. An approval is bound to
+  the hotkey's coldkey: under another coldkey the hotkey asks again. **Revoking** stops taking the key, freezes the
+  hotkey's open job workspaces (queued and retried, as for a deregistration), drops the admission, ends the job the miner holds without scoring anyone (`revoked`,
   uncounted) and sends it to another miner; an entry test it holds ends "not admitted" without counting as a
   failure, and one judged after the revocation admits nobody. Decisions persist in the validator's state
   (namespace `approval`, one row per hotkey); a pending request of a hotkey that deregistered is dropped. When a
-  validator starts under manual approval, every hotkey holding a key or an admission it was never approved for (a
-  key from the self-serve rule) is revoked the same way and goes back to pending: it asks, is approved and passes
+  validator starts under manual approval, every hotkey keyed or admitted there that was never approved (keyed
+  under the self-serve rule) is revoked the same way and goes back to pending: it asks, is approved and passes
   the entry test like anyone else. What a pending miner reads is the operator's (`--pending-message-file`).
-  `--key-approval auto` keeps the self-serve rule: any registered hotkey gets a key.
+  `--key-approval auto` keeps the self-serve rule: any registered hotkey's key is taken.
 
 ## 3. Jobs: one miner each, client briefs only
 
@@ -236,7 +245,7 @@ Not delivered, failed the gate, timed out, handed back (rejected), a copy: **0**
   (coldkeys play no part in this rule), and is set **every hour**. An hour with no work still pays miners from their
   last 7 days: **weight is never burned**.
 - **Only admitted hotkeys are weighted**, by every rule and every fallback below: a miner whose admission was
-  dropped (its key revoked, disabled, deregistered) is out from the next vector on, whatever its points
+  dropped (revoked, disabled, deregistered) is out from the next vector on, whatever its points
   and whatever the last vector held.
 - **Launch** (a manual switch saved in the state: `--launch-equal on|off` sets and saves it, the operator's route
   `/v1/operator/launch_equal` changes it at runtime; without the flag a restart keeps the saved value, off when
@@ -360,12 +369,12 @@ points and what decided them, each miner's weight and average, the admitted and 
 ## 8. Durability and capacity
 
 - All validator state (jobs, attempts, miners, admission, telemetry, outcomes and signals, the copy
-  window, results not yet taken by the platform, keys still to revoke, the last hour closed, commitments) lives in
+  window, results not yet taken by the platform, hotkeys whose workspaces are still to freeze, the last hour closed, commitments) lives in
   one SQLite file (WAL, `synchronous=FULL`). A desk mutation and the ledger writes it causes share one transaction.
   A restart -- mid-job or mid-hour -- loses nothing: a grant cut off mid-call is re-queued, a working attempt keeps
   its workspace and absolute deadline, a judging attempt is judged again (re-attached to the guard run it had
   started), and an hour missed while down is closed.
-- Every slow platform call (grant, judge, return a result, revoke a key) runs in a bounded worker pool, and the
+- Every slow platform call (grant, judge, return a result, close a hotkey's grants) runs in a bounded worker pool, and the
   lease has its own heartbeat thread, so the desk's tick never waits on the platform. A platform outage during
   judging leaves the job judging and retries later, on the same guard run (a failed poll is asked again 3 times
   first): an outage on the validator's side never fails a miner.
@@ -452,11 +461,11 @@ subnet's hyperparameters, inside `weights_rate_limit`. The weights carry the val
 ## 11. Abuse, secrecy and the HTTP face
 
 - **Disables.** Every tick the validator disables a miner whose counts since its last strike cross the policy:
-  copies (2), Watt suspensions (1: the platform suspends a key on Watt-side telemetry such as secrecy refusals or
+  copies (2), Watt suspensions (1: the platform suspends a miner on Watt-side telemetry such as secrecy refusals or
   quota storms), failed entry tests (3), or the rejection pattern (at
   least 5 rejections at over twice the fleet's rate, or 3 overturned rejections -- delivered by a miner of another
   coldkey; the same rule is applied to each
-  coldkey's hotkeys together, so spreading rejections over hotkeys does not hide them). A disable revokes the key, drops
+  coldkey's hotkeys together, so spreading rejections over hotkeys does not hide them). A disable freezes the hotkey's open job workspaces, drops
   the admission, sends the open job to another miner unscored and blocks the hotkey for a day, doubling per later
   strike up to 30 days. All thresholds are daemon flags (`--abuse-*`; 0 turns a rule off). Every disable is logged
   and listed in the next hourly report.
@@ -466,7 +475,7 @@ subnet's hyperparameters, inside `weights_rate_limit`. The weights carry the val
 - **HTTP face.** The validator refuses before it reads a body: a missing, malformed, duplicated or oversized
   `Content-Length` (and any `Transfer-Encoding`), an unsigned request on a signed route, an unregistered hotkey, a
   Bearer route without the token. Bodies are capped at 4 MiB; every read has a timeout and every request a
-  deadline; connections are capped in all and per address; agent-key minting is rate-limited per hotkey (6/h) and
+  deadline; connections are capped in all and per address; agent-key requests are rate-limited per hotkey (6/h) and
   per address (60/h). In production a TLS reverse proxy stands in front and is named with `--trusted-proxy`.
 - **Signed answers.** Every answer on a miner's route carries `X-Einstein-Validator` (the validator's ss58) and
   `X-Einstein-Signature`, the validator hotkey's sr25519 signature over newline-joined UTF-8 lines:

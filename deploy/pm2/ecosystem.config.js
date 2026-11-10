@@ -18,7 +18,7 @@ module.exports = {
         "--token-file", `${HOME}/.config/cadmind-einstein/desk.token`,
         "--platform", "https://cadmind.ai",
         "--operator-key-file", `${HOME}/.config/cadmind-einstein/operator.key`,
-        "--mint-key-file", `${HOME}/.config/cadmind-einstein/mint.key`,
+        "--keys-key-file", `${HOME}/.config/cadmind-einstein/keys.key`,
         "--queue-key-file", `${HOME}/.config/cadmind-einstein/queue.key`,
         "--wallet.name", "VALIDATOR_WALLET", "--wallet.hotkey", "VALIDATOR_HOTKEY_NAME",
         "--subtensor.network", "test", "--netuid", "NETUID",
@@ -38,6 +38,8 @@ module.exports = {
         "--validator", "https://VALIDATOR_HOST", "--validator-hotkey", "VALIDATOR_SS58",
         "--platform", "https://cadmind.ai",
         "--state", `${HOME}/.local/share/cadmind-einstein-miner`,
+        // your own agent key (0600), made on the developer platform and naming your hotkey
+        "--agent-key-file", `${HOME}/.config/cadmind-einstein/agent.key`,
       ],
       env: { PYTHONUNBUFFERED: "1" },
       restart_delay: 30000,

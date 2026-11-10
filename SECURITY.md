@@ -11,7 +11,7 @@ what is needed to demonstrate it.
 
 Useful reports include:
 
-- what is affected (the validator, a miner, the HTTP protocol, scoring, the sealed agent key, ...) and the version
+- what is affected (the validator, a miner, the HTTP protocol, scoring, the miner's agent key, ...) and the version
   or commit;
 - how to reproduce it, ideally against a local stack (see the README's local-stack notes) rather than the live
   network;
@@ -22,7 +22,7 @@ We will acknowledge the report, keep you informed while we investigate, and cred
 
 ## Scope
 
-In scope: the code in this repository -- the validator, the reference miners, the request signing and sealing, the
+In scope: the code in this repository -- the validator, the reference miners, the request signing, the
 scoring and the auditor (`cadmind-recompute`).
 
 The hosted CADmind platform and Watt service are operated separately; if you find an issue there while working with

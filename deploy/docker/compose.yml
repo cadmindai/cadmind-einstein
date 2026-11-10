@@ -40,7 +40,7 @@ services:
       - --token-file=/secrets/desk.token
       - --platform=${PLATFORM_URL:-https://cadmind.ai}
       - --operator-key-file=/secrets/operator.key
-      - --mint-key-file=/secrets/mint.key
+      - --keys-key-file=/secrets/keys.key
       - --queue-key-file=/secrets/queue.key
       - --wallet.path=/wallets
       - --wallet.name=${VALIDATOR_WALLET:?set VALIDATOR_WALLET}
@@ -57,6 +57,8 @@ services:
     volumes:
       - ${WALLETS_DIR:?set WALLETS_DIR}:/wallets:ro
       - ${MINER_STATE_DIR:?set MINER_STATE_DIR}:/state
+      # your own agent key (0600), made on the developer platform and naming your hotkey
+      - ${MINER_AGENT_KEY_FILE:?set MINER_AGENT_KEY_FILE}:/secrets/agent.key:ro
       # your agent CLI's own configuration and credentials, if it keeps them in files, e.g.
       # - ${AGENT_CONFIG_DIR}:/state/.agent-cli
     command:
@@ -70,4 +72,5 @@ services:
       - --validator-hotkey=${VALIDATOR_SS58:?set VALIDATOR_SS58}
       - --platform=${PLATFORM_URL:-https://cadmind.ai}
       - --state=/state/miner
+      - --agent-key-file=/secrets/agent.key
       - --agent-cli=${AGENT_CLI:-claude}

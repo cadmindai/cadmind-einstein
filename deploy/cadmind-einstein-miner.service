@@ -1,5 +1,7 @@
 # The reference einstein miner as a systemd user unit (systemctl --user). The agent CLI must be on
 # PATH and already configured with your own model credentials; follow your provider's terms.
+# --agent-key-file holds your own agent key (mode 0600): create it on the developer platform, on the
+# account your hotkey is linked to, naming the hotkey (docs/MINER.md, section 2).
 # The self-review (on by default) runs the validators' judge on your own model key: put the key in
 # the file named by --self-review-key-file (mode 0600, pip install '.[review]'); without the file
 # the round is skipped and the miner works as before. --self-review off turns it off.
@@ -15,6 +17,7 @@ ExecStart=%h/cadmind-einstein/.venv/bin/cadmind-einstein-miner \
   --validator https://VALIDATOR_HOST --validator-hotkey VALIDATOR_SS58 \
   --platform https://cadmind.ai \
   --state %h/.local/share/cadmind-einstein-miner \
+  --agent-key-file %h/.config/cadmind-einstein/agent.key \
   --self-review-key-file %h/.config/cadmind-einstein/judge.key
 Restart=on-failure
 RestartSec=30
