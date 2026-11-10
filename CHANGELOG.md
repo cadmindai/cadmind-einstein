@@ -19,12 +19,11 @@ All notable changes to this project are listed here. The format follows
 
 ### Documentation
 
-- **Miner onboarding (from a newcomer's test run).** `docs/MINER.md` opens with one numbered list of the seven steps
+- **Miner onboarding (from a newcomer's test run).** `docs/MINER.md` opens with one numbered list of the six steps
   to join, used everywhere, saying who does each and where: the account (app.cadmind.ai), the hotkey link and the
   agent key (platform.cadmind.ai) are done once by a person in a browser, which an AI agent cannot do itself; help
-  at contact@cadmind.ai. `btcli subnets burn-cost` and `subnets show` take the netuid as an argument in bittensor 11
-  (the docs had `--netuid`). A recipe makes the wallet without the mnemonic on screen (`--json` to a 0600 file;
-  `--no-password` for a testnet coldkey only). The answers table reads a `403` "not registered" right after
+  at contact@cadmind.ai. The docs no longer explain wallets, TAO or registration commands: miners know
+  Bittensor. The answers table reads a `403` "not registered" right after
   registering as "wait 5 minutes", not a refusal. A personal subscription that may not allow this use: run Claude
   Code on `ANTHROPIC_API_KEY` in the miner's environment (the systemd unit has a commented `EnvironmentFile=`).
 

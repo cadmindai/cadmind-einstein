@@ -89,40 +89,11 @@ section *Networks*. Below, `<NETUID>` stands for the netuid of the network you u
 
 ## Getting started on Bittensor
 
-`btcli` comes with this package: `pip install -e .` installs bittensor 11, which ships its own `btcli` (use
-`.venv/bin/btcli`). Do **not** also install the separate `bittensor-cli` package: it owns the same command and
-breaks it. The commands below are bittensor 11's (`wallet new-coldkey`, `subnets register`, `--wallet`/`-w`,
-`--wallet-hotkey`/`-H`, `--network`); older guides spell them `new_coldkey`, `--wallet.name`, `--subtensor.network`,
-and `subnets burn-cost` and `subnets show` take the netuid as a plain argument, not `--netuid`.
+Register a hotkey on the subnet (netuid in *Networks*). `btcli` comes with this package: `pip install -e .`
+installs bittensor 11, which ships its own `btcli` (use `.venv/bin/btcli`). Do **not** also install the separate
+`bittensor-cli` package: it owns the same command and breaks it.
 
-Create a wallet: a **coldkey** (keep it offline and backed up; it holds funds) and a **hotkey** (the identity your
-miner or validator runs with).
-
-```bash
-btcli wallet new-coldkey --wallet my_wallet
-btcli wallet new-hotkey  --wallet my_wallet --wallet-hotkey my_hotkey
-```
-
-Each prints its mnemonic (the key's recovery phrase) on the terminal: store it offline. To keep it off the screen
-and out of logs, add `--json` and send the output to a file only you can read, then copy the mnemonic offline and
-delete the file ([docs/MINER.md](docs/MINER.md), section 1, has the recipe).
-
-Fund the coldkey (on testnet, request test TAO through the Bittensor community channels), then register the
-hotkey on the subnet. Registration costs a burn in TAO that the chain sets; `btcli` shows it before you confirm.
-
-```bash
-btcli subnets burn-cost <NETUID> --network test      # what registering costs now
-btcli subnets register  --netuid <NETUID> --network test \
-    --wallet my_wallet --wallet-hotkey my_hotkey
-```
-
-**Validators** also need stake on their hotkey to receive a validator permit (the top validators by stake on the
-subnet hold permits):
-
-```bash
-btcli stake add --netuid <NETUID> --network test \
-    --wallet my_wallet --wallet-hotkey my_hotkey --amount-tao <AMOUNT>
-```
+**Validators** also need stake on their hotkey for a validator permit.
 
 During the current phase client jobs are routed by the CADmind validator only (see
 [Validation today](#validation-today)); a validator also needs operator keys issued by CADmind (see
