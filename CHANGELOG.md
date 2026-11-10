@@ -7,6 +7,20 @@ All notable changes to this project are listed here. The format follows
 
 ## [Unreleased]
 
+### Fixed
+
+- **Answers gate: a later change request replaces an earlier answer.** A client who answered a question and then
+  asked for the opposite in a change request had the delivery refused ("does not quote the client's answer"), since
+  no decision could quote the replaced answer. The answer now counts as recorded when the decision that supersedes
+  the answered one is settled and its `found_by` names the later `brief/change-*.md` file with a `reading` quoting
+  it. The refusal's reason says so.
+
+### Added
+
+- **Reference miner: the answers check before the submit.** The miner runs the validator's own answers check on its
+  workspace's export before it submits; while the check would refuse the delivery and time is left, the builder runs
+  again with the reason (twice at most). The builder's prompt says how to record an answer a change request replaced.
+
 ## [0.6.0] - 2026-11-10
 
 **A protocol change for miners: update the miner and the validator together.** A miner before 0.6.0 cannot get a

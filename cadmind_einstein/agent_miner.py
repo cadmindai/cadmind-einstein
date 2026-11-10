@@ -111,6 +111,7 @@ from __future__ import annotations
 
 import argparse
 import contextlib
+import functools
 import json
 import logging
 import os
@@ -124,12 +125,13 @@ import time
 import urllib.error
 import urllib.request
 import uuid
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import Any
 
 from . import __spec_version__, __version__
 from . import self_review as sr
+from .answers import check as answers_check
 from .cli import (
     add_logging_args,
     add_subtensor_args,
@@ -341,7 +343,10 @@ choice = the option they picked, answer = { from = "client: <their words, quoted
 (cadmind.ai, <date>)" }; keep its assumption line: an answer that picks the assumption you built \
 on keeps the recorded guard), change what hangs on it, and re-run what `watt impact` names for \
 that decision. A change request (brief/change-*.md) is the client's too: \
-do what it asks; a photo they send (kind photo, brief/photo-*) is theirs: look at it with \
+do what it asks; when it replaces an answer the client gave earlier, supersede the answered \
+decision by a new one (status = "decided") whose found_by is { ref = "brief/change-<...>.md", \
+reading = "<the client's words, quoted from that file>" }; a photo they send (kind photo, \
+brief/photo-*) is theirs: look at it with \
 `view_image`. The validator refuses a delivery that leaves an answer unrecorded. Use \
 `wait_for_answer` only when no useful work can go on under the assumptions (it waits briefly). \
 If `client_answers` says `no_questions: true`, the client asked not to be asked: decide every \
@@ -1020,6 +1025,75 @@ def start_self_review(
     return rnd
 
 
+ANSWER_CHECKS = 2
+"""How many times the builder is sent back to record the client's answers before the hand-over."""
+ANSWERS_MIN_LEFT_S = 5 * 60
+"""No such correction starts with less than this left before the submit's reserve."""
+ANSWERS_NOTE = """Before the hand-over, the check the validator runs on the client's answers was \
+run on your project. It would refuse the delivery:
+
+{why}
+
+Correct exactly that in the project's decisions (spec/), from what the client's files under brief/ \
+say. Then run `watt status` again; if the digest changed, run what you ran before your first DONE \
+line again. End with your final lines for the client and the DONE line of the digest now \
+delivered. You have about {minutes} minutes."""
+
+
+def answers_round(
+    got: Build,
+    *,
+    job: str,
+    ws: str,
+    deadline_ms: int,
+    no_questions: bool,
+    export: Callable[[], bytes | None],
+    correct: sr.Correct,
+    cancelled: Callable[[], bool],
+    log: Callable[[str], None],
+    clock: Callable[[], float] = time.time,
+) -> int:
+    """Before the submit: the validator's own check on the client's answers (:mod:`.answers`), run
+    by the builder on its workspace's export. While it would refuse the delivery and there is time,
+    the builder runs once more with the reason (at most :data:`ANSWER_CHECKS` times), so that a
+    decision recorded wrongly costs minutes, not the round. ``got.text`` becomes the corrected run's
+    text when it ends with a ``DONE`` line. ``no_questions``: also refuse an open client decision
+    (False on a style round, whose settled decisions stay open). Returns the corrections made.
+    Never raises."""
+    made = 0
+    try:
+        while not (got.cancelled or cancelled()):
+            kind, body = outcome(job, ws, got.text)
+            if kind != "submit" or not body.get("digest") or body.get("host_refused"):
+                break
+            data = export()
+            if data is None:
+                log(f"{job}: answers check: skipped: the workspace's export did not come")
+                break
+            why = answers_check(data, no_questions=no_questions)
+            if not why:
+                if made:
+                    log(f"{job}: answers check: passes after {made} correction(s)")
+                break
+            left = deadline_ms / 1000 - clock() - sr.SUBMIT_RESERVE_S if deadline_ms else 0.0
+            if made >= ANSWER_CHECKS or left < ANSWERS_MIN_LEFT_S:
+                log(f"{job}: answers check: handed over as it is ({why[:300]})")
+                break
+            log(f"{job}: answers check: the builder runs again: {why[:300]}")
+            made += 1
+            text, stopped = correct(
+                ANSWERS_NOTE.format(why=why, minutes=max(1, int(left // 60))), left
+            )
+            if stopped:
+                got.cancelled = True
+                break
+            if _DONE.search(text):
+                got.text = text
+    except Exception as e:  # noqa: BLE001 -- the check is the builder's own help, never its end
+        log(f"{job}: answers check: skipped: {type(e).__name__}: {str(e)[:200]}")
+    return made
+
+
 def corrector(
     a: argparse.Namespace,
     got: Build,
@@ -1475,6 +1549,20 @@ def main(argv: list[str] | None = None) -> int:
                 log(f"{job}: agent timed out")
             log(f"{job}: agent finished in {(time.time() - t0) / 60:.1f} min")
             got.cancelled = got.cancelled or cancel.is_set()
+            agent_key = key_file.read_text().strip() if key_file.exists() else ""
+            asked = not (isinstance(work, dict) and work.get("no_questions"))
+            again = corrector(
+                a,
+                got,
+                cmd=cmd,
+                prompt=prompt,
+                prompt_file=prompt_file,
+                mcp_file=mcp_file,
+                work_dir=work_dir,
+                ws=ws,
+                job=job,
+                watch=watch,
+            )
             rnd = start_self_review(
                 a,
                 got,
@@ -1482,20 +1570,21 @@ def main(argv: list[str] | None = None) -> int:
                 job=job,
                 ws=ws,
                 deadline_ms=deadline_ms,
-                key=key_file.read_text().strip() if key_file.exists() else "",
-                questions_allowed=not (isinstance(work, dict) and work.get("no_questions")),
-                correct=corrector(
-                    a,
-                    got,
-                    cmd=cmd,
-                    prompt=prompt,
-                    prompt_file=prompt_file,
-                    mcp_file=mcp_file,
-                    work_dir=work_dir,
-                    ws=ws,
-                    job=job,
-                    watch=watch,
-                ),
+                key=agent_key,
+                questions_allowed=asked,
+                correct=again,
+                cancelled=cancel.is_set,
+                log=log,
+            )
+            got.cancelled = got.cancelled or cancel.is_set()
+            answers_round(
+                got,
+                job=job,
+                ws=ws,
+                deadline_ms=deadline_ms,
+                no_questions=not asked and not (isinstance(work, dict) and work.get("style")),
+                export=functools.partial(sr.workspace_export, a.platform, agent_key, ws),
+                correct=again,
                 cancelled=cancel.is_set,
                 log=log,
             )

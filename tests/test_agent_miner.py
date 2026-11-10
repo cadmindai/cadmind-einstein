@@ -9,7 +9,7 @@ import tempfile
 import time
 import unittest
 from pathlib import Path
-from typing import ClassVar
+from typing import Any, ClassVar
 from unittest import mock
 
 from cadmind_einstein import agent_miner
@@ -724,3 +724,108 @@ class TestEntryTestVerdict(unittest.TestCase):
     def test_the_stale_tool_names_are_gone(self) -> None:
         for gone in ("MultiEdit", "LS", "NotebookRead"):
             self.assertNotIn(gone, agent_miner.BUILTIN_TOOLS)
+
+
+class TestAnswersRound(unittest.TestCase):
+    """Before the submit the builder runs the validator's answers check on its own export, and
+    runs again with the reason while it would be refused and there is time."""
+
+    OPEN = (
+        '[decision.mount]\nquestion = "Screws or tape?"\n'
+        'options = { screws = "two screws", tape = "foam tape" }\nby = "client"\n'
+        'status = "open"\nassumption = "screws"\nbecause = "keys"\naffects = ["R.holds"]\n'
+    )
+    DONE = OPEN.replace('status = "open"', 'status = "answered"\nchoice = "tape"').replace(
+        'because = "keys"',
+        'because = "the client"\nanswer = { from = "client: tape (foam tape) (cadmind.ai, x)" }',
+    )
+    ANSWER = "# The client's answer to decision mount\n\nAnswer: tape (foam tape)\n"
+
+    def _run(
+        self,
+        specs: list[str],
+        *,
+        left_s: float = 3600.0,
+        text: str = "built\nDONE sha256:aa\n",
+        said: str = "recorded\nDONE sha256:bb\n",
+        stopped: bool = False,
+        export_fails: bool = False,
+        no_questions: bool = False,
+    ) -> tuple[Any, list[str], list[str], int]:
+        import io
+        import zipfile
+
+        from cadmind_einstein.agent_miner import Build, answers_round
+
+        got = Build(text, "", timed_out=False, cancelled=False)
+        notes: list[str] = []
+        logs: list[str] = []
+        state = {"spec": 0}
+
+        def export() -> bytes | None:
+            if export_fails:
+                return None
+            b = io.BytesIO()
+            with zipfile.ZipFile(b, "w") as z:
+                z.writestr("brief/answer-2026-10-15-mount-115800.md", self.ANSWER)
+                z.writestr("spec/decisions.toml", specs[min(state["spec"], len(specs) - 1)])
+            return b.getvalue()
+
+        def correct(message: str, budget_s: float) -> tuple[str, bool]:
+            notes.append(message)
+            state["spec"] += 1
+            return said, stopped
+
+        made = answers_round(
+            got,
+            job="j1",
+            ws="ag-1",
+            deadline_ms=int((1000.0 + left_s) * 1000),
+            no_questions=no_questions,
+            export=export,
+            correct=correct,
+            cancelled=lambda: False,
+            log=logs.append,
+            clock=lambda: 1000.0,
+        )
+        return got, notes, logs, made
+
+    def test_a_project_that_passes_is_handed_over_as_it_is(self) -> None:
+        got, notes, logs, made = self._run([self.DONE])
+        self.assertEqual((made, notes, logs), (0, [], []))
+        self.assertIn("sha256:aa", got.text)
+
+    def test_an_unrecorded_answer_sends_the_builder_back_with_the_reason(self) -> None:
+        got, notes, logs, made = self._run([self.OPEN, self.DONE])
+        self.assertEqual(made, 1)
+        self.assertIn("which is still open", notes[0])
+        self.assertIn("about 57 minutes", notes[0])  # the hour less the submit's reserve
+        self.assertIn("sha256:bb", got.text)  # the corrected run's DONE line is the one sent
+        self.assertIn("passes after 1 correction(s)", logs[-1])
+
+    def test_it_stops_after_two_corrections_and_keeps_words_without_a_done_line(self) -> None:
+        got, notes, logs, made = self._run([self.OPEN], said="I could not")
+        self.assertEqual((made, len(notes)), (2, 2))
+        self.assertIn("handed over as it is", logs[-1])
+        self.assertIn("sha256:aa", got.text)
+
+    def test_no_correction_without_time_nor_for_a_rejection_or_a_failed_export(self) -> None:
+        _, notes, logs, made = self._run([self.OPEN], left_s=7 * 60)
+        self.assertEqual((made, notes), (0, []))
+        self.assertIn("handed over as it is", logs[-1])
+        for kw in ({"text": "REJECT not-capable too hard"}, {"text": "no digest"}):
+            self.assertEqual(self._run([self.OPEN], **kw)[1:], ([], [], 0))
+        _, notes, logs, made = self._run([self.OPEN], export_fails=True)
+        self.assertEqual((made, notes), (0, []))
+        self.assertIn("export did not come", logs[-1])
+
+    def test_a_cancelled_correction_cancels_the_job_and_no_questions_is_checked(self) -> None:
+        got, _, _, made = self._run([self.OPEN], stopped=True)
+        self.assertTrue(got.cancelled)
+        self.assertEqual(made, 1)
+        decided = self.OPEN  # an open client decision, no answer file about another one
+        _, notes, _, _ = self._run(
+            [decided.replace("[decision.mount]", "[decision.other]") + self.DONE],
+            no_questions=True,
+        )
+        self.assertIn("asked not to be asked", notes[0])

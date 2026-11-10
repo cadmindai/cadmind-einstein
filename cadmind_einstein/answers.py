@@ -20,6 +20,12 @@ the project's own files (the export), trusting nothing the builder says:
   recorded choice. When a decision was answered more than once, its latest answer is the one that
   counts. An answer that arrived after the hand-over never counts against the builder: it is the
   next round's.
+- a client may change their mind: a change request that arrived after an answer replaces it. The
+  answer is then recorded by the decision that superseded the answered one when that decision is
+  settled (``answered`` or ``decided``) and its ``found_by`` names the later change file (``ref =
+  "brief/change-<date>-<HHMMSS>.md"``) with a ``reading`` quoting it. The quote is looked for in
+  what the platform wrote there for the client, never in the lines it quotes from an earlier
+  builder's summary.
 - in a split project, a parent decision may be only a link to a part's decision (Watt's
   ``same_as = "subs.<key>.decision.<id>"``, ADR-014): the question, its status and its answer are
   the part's, in the part's tree vendored under ``subprojects/<key>/``. The check follows the link
@@ -49,6 +55,14 @@ from typing import Any
 
 ANSWER_NAME = re.compile(r"^answer-(\d{4}-\d{2}-\d{2})-(.+?)(?:-(\d{6}))?\.md$")
 """``answer-<date>-<decision>-<HHMMSS>.md`` (the stamp is optional in older files)."""
+CHANGE_NAME = re.compile(r"^change-(\d{4}-\d{2}-\d{2})-(\d{6})\.md$")
+"""``change-<date>-<HHMMSS>.md``: a change the client asked for (UTC; when it arrived)."""
+MIN_READING = 24
+"""A ``found_by.reading`` shorter than this (characters, spaces folded) quotes no change request:
+a few common words are in every file."""
+QUOTED = ">"
+"""In a change file, a line the platform quotes from the earlier builder's summary starts with
+this: the builder's words, never the client's."""
 RECEIVED = re.compile(r"\(received (\d{4}-\d{2}-\d{2}) (\d{2}):(\d{2}) UTC")
 MAX_SPEC_BYTES = 2_000_000
 """A spec file larger than this is not read (it is not a hand-written project file)."""
@@ -132,7 +146,8 @@ def parse_answer(path: str, text: str) -> AnswerFile | None:
 
 
 def _norm(text: str) -> str:
-    return " ".join(text.replace("“", '"').replace("”", '"').split()).casefold()
+    plain = text.replace("“", '"').replace("”", '"').replace("\u2019", "'")
+    return " ".join(plain.split()).casefold()
 
 
 def quote_of(answer_from: str) -> str:
@@ -271,16 +286,56 @@ def _chain(parts: _Parts, ident: str) -> tuple[list[_Step], str]:
     return out, ""
 
 
+def client_words(change_text: str) -> str:
+    """A change file's text without the lines the platform quotes from the earlier builder's
+    summary (:data:`QUOTED`): what was written for the client's side, not by a builder."""
+    return "\n".join(
+        line for line in change_text.splitlines() if not line.lstrip().startswith(QUOTED)
+    )
+
+
+def replaced(
+    later: Iterable[_Step],
+    answer: AnswerFile,
+    changes: Mapping[str, str],
+    *,
+    before_ms: int = 0,
+) -> bool:
+    """Whether a change request of the client's replaces ``answer``: one of the decisions that
+    superseded the answered one (``later``) is settled and found by a change file that arrived
+    after the answer (and before the hand-over, ``before_ms``), its reading quoting that file."""
+    for step in later:
+        d = step.decision
+        found = d.get("found_by")
+        if d.get("status") not in ("answered", "decided") or not isinstance(found, Mapping):
+            continue
+        ref = str(found.get("ref") or "")
+        named = CHANGE_NAME.match(ref.removeprefix("brief/")) if ref.startswith("brief/") else None
+        text = changes.get(ref)
+        if named is None or text is None:
+            continue
+        at = _stamp_ms(named.group(1), named.group(2))
+        if not at or at <= answer.at_ms or (before_ms and at > before_ms):
+            continue
+        reading = _norm(str(found.get("reading") or ""))
+        if len(reading) >= MIN_READING and reading in _norm(client_words(text)):
+            return True
+    return False
+
+
 def unrecorded(
     answers: Iterable[AnswerFile],
     decisions: Mapping[str, Mapping[str, Any]],
     *,
     before_ms: int = 0,
     specs: Mapping[str, str] | None = None,
+    changes: Mapping[str, str] | None = None,
 ) -> list[str]:
     """What is wrong with how the project records its client's answers, one line each; [] when every
     answer that arrived before ``before_ms`` (0: every one) is recorded. ``specs`` (path -> text,
-    as :func:`project_files` reads them) are where a ``same_as`` link finds its part's decision."""
+    as :func:`project_files` reads them) are where a ``same_as`` link finds its part's decision.
+    ``changes`` (path -> text) are the client's change requests under ``brief/``: one that arrived
+    after an answer replaces it (:func:`replaced`)."""
     latest: dict[str, AnswerFile] = {}
     for a in answers:
         if before_ms and a.at_ms > before_ms:
@@ -321,9 +376,14 @@ def unrecorded(
             and quotes(_from_of(s.decision), a)
         ]
         if not recorded:
+            if replaced(stated[1:], a, changes or {}, before_ms=before_ms):
+                continue  # the client changed their mind: the later request is what is built
             problems.append(
                 f"decision {chain[-1].where} does not quote the client's answer {a.path}: its"
-                ' answer.from must be "client: <words from that file> (cadmind.ai, <date>)"'
+                ' answer.from must be "client: <words from that file> (cadmind.ai, <date>)" (or,'
+                " when a later change request of the client's replaces that answer, the decision"
+                ' that supersedes it has found_by = { ref = "brief/change-<date>-<time>.md",'
+                ' reading = "<words quoted from that file>" })'
             )
             continue
         rec = recorded[-1].decision
@@ -337,11 +397,11 @@ def unrecorded(
 
 
 def project_files(export: bytes) -> tuple[dict[str, str], dict[str, str]]:
-    """``(brief answer files, spec files)`` of a project export (a zip): path in the project ->
-    text. The spec files are the project's ``spec/*.toml`` and those of its vendored parts
-    (``subprojects/<key>/spec/*.toml``, nested parts too, :data:`MAX_DEPTH`). The export's entries
-    may sit under one top directory (the workspace's name); either way paths are the project's
-    own."""
+    """``(brief answer and change files, spec files)`` of a project export (a zip): path in the
+    project -> text. The spec files are the project's ``spec/*.toml`` and those of its vendored
+    parts (``subprojects/<key>/spec/*.toml``, nested parts too, :data:`MAX_DEPTH`). The export's
+    entries may sit under one top directory (the workspace's name); either way paths are the
+    project's own."""
     briefs: dict[str, str] = {}
     specs: dict[str, str] = {}
     budget = MAX_SPECS_BYTES
@@ -362,7 +422,11 @@ def project_files(export: bytes) -> tuple[dict[str, str], dict[str, str]]:
             if ".." in rel.split("/") or rel.startswith("/"):
                 continue
             top_level = rel.count("/") == 1
-            if top_level and rel.startswith("brief/") and ANSWER_NAME.match(rel[6:]):
+            if (
+                top_level
+                and rel.startswith("brief/")
+                and (ANSWER_NAME.match(rel[6:]) or CHANGE_NAME.match(rel[6:]))
+            ):
                 if info.file_size <= MAX_ANSWER_BYTES:
                     briefs[rel] = z.read(info).decode("utf-8", errors="replace")
             elif SPEC_PATH.match(rel) and info.file_size <= MAX_SPEC_BYTES:
@@ -446,7 +510,8 @@ def check(
         return "the delivered project could not be read to check the client's answers"
     decisions = decisions_of(specs)
     answers = [a for a in (parse_answer(p, t) for p, t in briefs.items()) if a is not None]
-    problems = unrecorded(answers, decisions, before_ms=before_ms, specs=specs)
+    changes = {p: t for p, t in briefs.items() if CHANGE_NAME.match(p.removeprefix("brief/"))}
+    problems = unrecorded(answers, decisions, before_ms=before_ms, specs=specs, changes=changes)
     said: list[str] = []
     if problems:
         more = f" (and {len(problems) - SAID} more)" if len(problems) > SAID else ""

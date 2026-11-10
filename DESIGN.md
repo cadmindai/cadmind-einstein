@@ -135,7 +135,13 @@ validator: freeze on submit, fork, read Watt's verdict (the gate), copy check, s
   own export of the fork the validator then checks (`cadmind_einstein/answers.py`) that every answer that arrived
   before the hand-over (the submit, or the deadline) is recorded in its decision: no longer open, an `answer.from`
   quoting the file, the option the client picked as its choice. An answer that arrived after the hand-over never
-  counts against the miner (it starts the client's next round). A job whose client asked not to be asked questions
+  counts against the miner (it starts the client's next round). A client may change their mind: when a change
+  request arrived after an answer and replaces it, the answer is recorded by the decision that supersedes the
+  answered one, settled, with `found_by = { ref = "brief/change-<date>-<HHMMSS>.md", reading = "<a quote of that
+  file>" }` (the quote is not looked for in the lines the platform quotes there from an earlier builder's summary).
+  The reference miner runs this same check on its own export before it submits, and runs its builder again with the
+  reason (twice at most, while 5 minutes are left before the submit's reserve), so a decision recorded wrongly costs
+  minutes instead of the round. A job whose client asked not to be asked questions
   (`no_questions`; every job opened through the developer API) must leave no client decision open: each would-be
   question is the builder's own decision (`by = "agent"`, `status = "decided"`), which the client sees as an
   assumption. Either failure is a gate failure, with the reason in the miner's receipt.

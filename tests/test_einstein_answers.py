@@ -156,6 +156,60 @@ class TestCheck(unittest.TestCase):
         superseded += ANSWERED.replace("[decision.mount]", "[decision.mount2]")
         self.assertEqual(check(exported({PATH: ANSWER, "spec/decisions.toml": superseded})), "")
 
+    def test_a_later_change_request_replaces_an_answer(self) -> None:
+        """The client answers tape, then asks for screws in a change request: the decision that
+        supersedes the answered one cites the request, and the answer counts as recorded."""
+        change = "brief/change-2026-10-15-115930.md"
+        asked = (
+            "# The client's change request\n\nScrew it to the wall after all, the tape let"
+            " go of the tiles.\n\n(received 2026-10-15 11:59 UTC on cadmind.ai)\n\n## From"
+            " CADmind, not the client: what the client was told with this version\n\n> The hook"
+            " is stuck on with foam tape as the client chose.\n"
+        )
+        old = OPEN.replace('status = "open"', 'status = "superseded"\nsuperseded_by = "mount2"')
+
+        def new(ref: str, reading: str, status: str = "decided") -> str:
+            return (
+                DECIDED.replace("[decision.mount]", "[decision.mount2]")
+                .replace('choice = "tape"', 'choice = "screws"')
+                .replace('status = "decided"', f'status = "{status}"')
+                + f'found_by = {{ ref = "{ref}", reading = "{reading}" }}\n'
+            )
+
+        said = "screw it to the wall after all, the tape let go"
+
+        def why(spec: str, files: dict[str, str] | None = None, **kw: Any) -> str:
+            got = {PATH: ANSWER, change: asked, "spec/decisions.toml": spec}
+            return check(exported(got if files is None else files), **kw)
+
+        self.assertEqual(why(old + new(change, said)), "")
+        self.assertEqual(why(old + new(change, said), before_ms=T0 * 1000), "")
+        # the reason teaches the way out
+        self.assertIn("found_by", why(old + new("brief/brief.md", said)))
+        # words the request does not hold; a few common words; the earlier builder's summary
+        self.assertIn(
+            "does not quote", why(old + new(change, "put the hook on with two screws now"))
+        )
+        self.assertIn("does not quote", why(old + new(change, "to the wall")))
+        self.assertIn(
+            "does not quote", why(old + new(change, "stuck on with foam tape as the client chose"))
+        )
+        # a file that is not a change request of the client's, or one the export does not hold
+        self.assertIn("does not quote", why(old + new("brief/brief.md", "A key hook.")))
+        self.assertIn("does not quote", why(old + new("brief/change-2026-10-15-115931.md", said)))
+        # a request that came before the answer does not replace it; nor one after the hand-over
+        early = "brief/change-2026-10-15-115700.md"
+        files = {PATH: ANSWER, early: asked, "spec/decisions.toml": old + new(early, said)}
+        self.assertIn("does not quote", why("", files))
+        self.assertIn("does not quote", why(old + new(change, said), before_ms=(T0 - 60) * 1000))
+        # the superseding decision must be settled, and the answered one cannot cite its way out
+        self.assertIn("does not quote", why(old + new(change, said, status="open")))
+        alone = (
+            ANSWERED.replace("client: tape (foam tape: holds less)", "client: something else")
+            + f'found_by = {{ ref = "{change}", reading = "{said}" }}\n'
+        )
+        self.assertIn("does not quote", why(alone))
+
     def test_only_the_latest_answer_to_a_decision_counts(self) -> None:
         later = "brief/answer-2026-10-15-mount-115900.md"
         changed = ANSWER.replace(
