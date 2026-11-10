@@ -17,6 +17,14 @@ All notable changes to this project are listed here. The format follows
 
 ### Added
 
+- **Reference miner: auto-update between jobs.** A miner run from a git checkout reads the repository's release
+  tags every 30 minutes (`--auto-update-interval`); a newer `vX.Y.Z` is applied only between jobs: the current job
+  is built and submitted (or ends), no new job is accepted, the tag is checked out, reinstalled (`pip install -e`,
+  with the installed extras) and verified to import with the tag's version, then the miner re-executes itself on
+  the same command line (same PID). Any failure returns to the previous commit and reinstalls it; the miner keeps
+  running. A checkout with local changes is never updated. `--no-auto-update` (or `--auto-update off`) and
+  `CADMIND_MINER_AUTO_UPDATE=0` turn it off, never penalised. `--auto-update follow-checkout` restarts onto a
+  checkout's new HEAD instead (no fetch, no install). `cadmind_einstein.auto_update`.
 - **Reference miner: the answers check before the submit.** The miner runs the validator's own answers check on its
   workspace's export before it submits; while the check would refuse the delivery and time is left, the builder runs
   again with the reason (twice at most). The builder's prompt says how to record an answer a change request replaced.

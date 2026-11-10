@@ -393,6 +393,15 @@ points and what decided them, each miner's weight and average, the admitted and 
   first): an outage on the validator's side never fails a miner.
 - Each job workspace has a credit allowance on the platform; the validator caps jobs in flight at
   the agent bench's capacity.
+- **Miners update themselves between jobs** (`cadmind_einstein/auto_update.py`). A reference miner run from a git
+  checkout reads the remote's release tags every 30 minutes; a newer release is applied only at the miner's idle
+  point -- the top of its job loop, when the validator's `work` answer names no accepted job of its own -- so a job
+  is never interrupted and none is accepted while an update is pending. It checks the tag out, reinstalls it,
+  verifies in a fresh interpreter that the code imports and carries the tag's version, then re-executes itself on
+  the same command line (`os.execv`: same PID under any supervisor). Any failure restores the previous commit and
+  its install and the miner runs on. A dirty checkout is never touched. `--no-auto-update` or
+  `CADMIND_MINER_AUTO_UPDATE=0` turns it off, with no penalty; `--auto-update follow-checkout` restarts onto a
+  checkout's new HEAD instead, with no fetch.
 
 ## 9. Against untrusted miners
 

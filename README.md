@@ -318,6 +318,15 @@ before it submits. A check costs about $0.8-0.9; a round with one correction abo
 skipped and the miner works as before; `--self-review off` turns it off. See
 [docs/MINER.md](docs/MINER.md#self-review-before-the-submit-on-by-default).
 
+**The miner updates itself, between jobs only.** Run from a git checkout (`pip install -e .`), it reads this
+repository's release tags every 30 minutes. When a newer release `vX.Y.Z` is out, it finishes the job it is on
+(built and submitted, or ended), accepts no new job, checks the release out, reinstalls it, checks that it imports
+and says its version, and restarts itself with the same command line (same process ID, so systemd, pm2 or a shell
+see no restart). A job is never interrupted. Any failure puts the checkout back where it was, reinstalls that and
+keeps the miner running; a checkout with local changes is never touched. Turn it off with `--no-auto-update` or
+`CADMIND_MINER_AUTO_UPDATE=0`: that is never penalised, but a miner too old for the validator's protocol can be
+refused (see [Updating](#updating)). See [docs/MINER.md](docs/MINER.md#updates-automatic-between-jobs).
+
 ## Running and updating
 
 Each program is one long-running process; run it under whichever supervisor you prefer. In every example below,
@@ -372,7 +381,9 @@ journalctl --user -u cadmind-einstein -f
 ### Updating
 
 Releases are tagged `vMAJOR.MINOR.PATCH` and published as GitHub releases; [`CHANGELOG.md`](CHANGELOG.md) lists
-what changed. To update a checkout by hand:
+what changed. **The reference miner updates itself** between jobs (see [Running a miner](#running-a-miner);
+`--no-auto-update` or `CADMIND_MINER_AUTO_UPDATE=0` turns it off), so what follows is for the validator and for a
+miner with auto-update off. To update a checkout by hand:
 
 ```bash
 git fetch --tags && git checkout vX.Y.Z && .venv/bin/pip install -e . && pm2 restart einstein-validator
@@ -385,7 +396,7 @@ runs anything. `--no-version-check` turns it off. The validator sets its weights
 `weights_version` hyperparameter can require a minimum validator release; the validator warns when it is older
 than that.
 
-**Automatic updates (opt-in).** [`scripts/auto_update.sh`](scripts/auto_update.sh) checks the remote for a newer
+**Automatic updates for the validator (opt-in).** [`scripts/auto_update.sh`](scripts/auto_update.sh) checks the remote for a newer
 release tag; when there is one it checks it out, reinstalls it into the virtualenv and runs the restart command you
 give it. It never touches a checkout with local changes, considers release tags only (never a branch head), and with
 `--verify-tag` accepts only tags whose signature git verifies. Nothing updates unless you run or schedule it:

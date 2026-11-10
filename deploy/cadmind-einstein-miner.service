@@ -5,6 +5,8 @@
 # The self-review (on by default) runs the validators' judge on your own model key: put the key in
 # the file named by --self-review-key-file (mode 0600, pip install '.[review]'); without the file
 # the round is skipped and the miner works as before. --self-review off turns it off.
+# The miner updates itself to new releases between jobs (never during one) and restarts in place
+# (same PID); add --no-auto-update (or Environment=CADMIND_MINER_AUTO_UPDATE=0) to turn that off.
 [Unit]
 Description=CADmind einstein reference miner
 After=network-online.target

@@ -843,7 +843,7 @@ This repository ships two miners:
   is yours to configure.
 
   ```bash
-  pip install -e .                 # from a checkout of this repository
+  pip install -e .                 # from a checkout of this repository (it then updates itself between jobs)
   cadmind-einstein-miner --wallet.name miner --wallet.hotkey m1 \
       --subtensor.network "$NETWORK" --netuid "$NETUID" \
       --validator "$VALIDATOR_URL" --validator-hotkey "$VALIDATOR_HOTKEY" \
@@ -933,3 +933,27 @@ To run it under a supervisor: a systemd user unit is in
 [`../deploy/docker/compose.yml`](../deploy/docker/compose.yml); see the README's "Running and updating" for these and
 the opt-in updater. Hardware needs are small (the CAD work runs on the hosted Watt service): see
 [`../min_compute.yml`](../min_compute.yml).
+
+### Updates (automatic, between jobs)
+
+The reference miner keeps itself on the newest release, and **never updates during a job**.
+
+- **When.** Every 30 minutes (`--auto-update-interval SECONDS`) it reads the release tags of the repository it was
+  cloned from (`--auto-update-remote`, default `origin`). Only release tags `vMAJOR.MINOR.PATCH` count, never a
+  branch. A newer release found while a job runs waits: the miner builds and submits that job (or it ends), takes
+  no new job, then updates. A job the validator offers meanwhile is accepted right after the restart.
+- **How.** It checks the release out, reinstalls it into the miner's own Python environment as it was installed
+  (`pip install -e .`, with the extras you installed, such as `[review]`), checks that the new code imports and
+  says the release's version, then restarts itself with the same command line. The process ID stays the same, so
+  systemd, pm2 or a plain shell see no restart.
+- **When it fails.** The checkout goes back to the commit it was on, that is reinstalled, one log line says why,
+  and the miner keeps running; that release is not tried again (a newer one is). A checkout with local changes is
+  never updated: the miner logs it and goes on.
+- **Not from a checkout.** A miner installed from a wheel or run in the Docker image does not update itself
+  (one log line at startup says so): rebuild or reinstall it yourself.
+- **Turning it off.** `--no-auto-update` (or `--auto-update off`), or `CADMIND_MINER_AUTO_UPDATE=0` in the
+  miner's environment. Turning it off is never penalised. Update by hand then (README, "Updating"): a miner too old
+  for the validator's protocol can be refused, as a release's changelog says when that happens.
+- **Your own checkout.** `--auto-update follow-checkout` fetches nothing: when the HEAD of the checkout the miner
+  runs from changes (you pulled or checked out something), the miner restarts onto it between jobs, once the new
+  code imports. Useful when you track your own branch.
