@@ -292,7 +292,7 @@ See [`docs/MINER.md`](docs/MINER.md). In short:
 cadmind-einstein-miner --wallet.name MINER_WALLET --wallet.hotkey MINER_HOTKEY_NAME \
     --subtensor.network test --netuid <NETUID> \
     --validator https://VALIDATOR_HOST --validator-hotkey VALIDATOR_SS58 \
-    --platform https://cadmind.ai --state ~/.local/share/cadmind-einstein-miner \
+    --platform https://platform.cadmind.ai --state ~/.local/share/cadmind-einstein-miner \
     --agent-key-file ~/.local/share/cadmind-einstein-miner/agent.key \
     [--agent-cli claude] [--model MODEL] [--agent-command '...']
 ```
@@ -517,16 +517,14 @@ still checked.
   frozen and its job is reassigned unscored.
 - A miner's agent key is its own, names a hotkey it proved by signature, and runs compute only in the job
   workspaces it is granted, each with its allowance; the validator never holds a miner's secret.
-- Miners never learn which client a job came from; the router, not the miner, assigns jobs; free accounts' ratings
-  weigh 0.1.
-- Rejections and gate failures are held and count against the miner when another miner passes the job, or when
-  the job ends undelivered on one owner's opinions (a "not finished" round ended by one miner's gate failure counts
-  it 0);
+- Miners never learn which client a job came from; the router, not the miner, assigns jobs; free and paid clients
+  count the same.
+- Rejections and gate failures score 0 at once;
   rejection rates far above the fleet's, or repeatedly overturned rejections, disable the hotkey; the same rule
   applies to each coldkey's hotkeys together.
 - A rejected job goes next to a miner of another coldkey, and only rejections from two coldkeys end a job declined:
   hotkeys of one owner cannot end hard jobs for free. A worked attempt that does not pass ends the round "not
-  finished" (its project kept, nothing charged) and is never a free exit: its timeout or held gate failure counts.
+  finished" (its project kept, nothing charged) and is never a free exit: its timeout or gate failure counts 0.
 - Copies score 0 and are reassigned. Outputs are compared as normalised features (Python statements with names,
   strings, comments and layout normalised; TOML values; other lines), so renaming, reformatting, commenting,
   reordering or padding a copy does not hide it; a copy is an identical digest, identical normalised features, or a

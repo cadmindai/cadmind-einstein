@@ -6,8 +6,8 @@ protocol, how a job is scored, what counts as copying, and how to run an agent C
 The design behind it is in [`../DESIGN.md`](../DESIGN.md).
 
 The placeholders below are `$NETUID` (the subnet), `$NETWORK` (`test` or `finney`), `$VALIDATOR_URL` and
-`$VALIDATOR_HOTKEY` (the validator's address and SS58 hotkey), and `$PLATFORM` (the CADmind platform,
-`https://cadmind.ai`). Their values for each live network are on CADmind's developer platform:
+`$VALIDATOR_HOTKEY` (the validator's address and SS58 hotkey), and `$PLATFORM` (the CADmind developer platform,
+`https://platform.cadmind.ai`). Their values for each live network are on CADmind's developer platform:
 [platform.cadmind.ai/docs/einstein-miners](https://platform.cadmind.ai/docs/einstein-miners#networks), section
 *Networks*.
 
@@ -96,9 +96,14 @@ never holds its secret: it only asks the platform which key your hotkey has.
 
 ### Create it on the developer platform
 
-1. **Create an account** on [platform.cadmind.ai](https://platform.cadmind.ai).
-2. **Link your hotkey** to the account. Ask the console for a challenge, sign it with the hotkey and paste the
-   signature:
+Steps 1 to 3 are done once, signed in, in the platform's console: no key can do them, so an agent needs its
+operator for them.
+
+1. **Create an account** and sign in to [platform.cadmind.ai](https://platform.cadmind.ai). Accounts are made on
+   [app.cadmind.ai](https://app.cadmind.ai) (or with Google); confirm your email from the message sent at sign-up.
+   A miner's account needs a confirmed email and nothing paid.
+2. **Link your hotkey** to the account on the console's **Miner > Hotkeys** page. Ask it for a challenge, sign it
+   with the hotkey and paste the signature:
 
    ```bash
    btcli wallet sign --use-hotkey --wallet miner --wallet-hotkey m1 --message "<the challenge text>"
@@ -115,7 +120,9 @@ never holds its secret: it only asks the platform which key your hotkey has.
 
    A hotkey belongs to one account (signing again moves it). Only a linked hotkey can be named on your account's
    agent keys.
-3. **Create an agent key that names the hotkey.** The platform shows its secret once.
+3. **Create an agent key that names the hotkey** on the console's **Agent keys** page (choose the hotkey under
+   "Miner hotkey"). The platform shows its secret once. An account holds at most 5 live agent keys, so at most 5
+   mining hotkeys.
 4. **Give the secret to your miner**: save it in a file only you can read, and name the file with
    `--agent-key-file` (or `$CADMIND_AGENT_KEY_FILE`; the default is `agent.key` in the miner's `--state` directory).
 
@@ -179,6 +186,20 @@ call answers `409`:
 
 Do the steps above, then ask again; the reference miner logs the message and asks again every 15 minutes.
 
+What each answer means:
+
+| Answer | From | Meaning | What to do |
+|---|---|---|---|
+| `202` pending | validator | your hotkey waits for approval, which is by hand | ask again after `retry_after_s` |
+| `409 miner_not_linked` | validator | no live agent key names your hotkey | link the hotkey and create the key |
+| `403` | validator | refused, revoked or disabled, with the reason | write to the subnet team |
+| `429` | validator | more than 6 asks in an hour | wait |
+| `402 no_credits` | platform | compute asked outside a job workspace | work only in the workspace of your job |
+| `429 job_compute_limit` | platform | the job workspace's allowance of credits is used | `watt status` and `watt report` without mutate still run: submit what you have |
+| `403 agent_suspended` | platform | Watt suspended your key | write to the platform's support |
+
+To reach the subnet team, write to contact@cadmind.ai with your hotkey.
+
 Calls to this route are rate-limited (6 per hotkey per hour, 429 past it). The validator also disables a hotkey for
 a day (longer on a repeat) on copies, a suspension, repeated failed admission tests, or a pattern of rejections that
 other miners overturn: its open job workspaces are frozen, its admission dropped and its open job given to another
@@ -189,7 +210,7 @@ each case your agent key stays yours, but it has no job workspace to work in.
 **What the reference miner says while you wait.** Right after registering, the validator may not see your hotkey
 yet (it reads the chain every few minutes): the miner says so once and asks again every minute, it does not exit.
 If the platform has no agent key for your hotkey it logs the platform's instruction and asks again every 15
-minutes. While your request is pending it logs the validator's message once (it says how to reach the subnet team), then one
+minutes. While your request is pending it logs the validator's message once, then one
 `agent key: still pending at HH:MM UTC; asking again in N min` line per ask, so you can see it is alive. After the
 entry test it logs `entry test passed: this miner is ADMITTED` or `entry test NOT passed`; `cadmind-miner-stats`
 shows `registered` and `admitted` on its first line too.
@@ -644,12 +665,11 @@ einstein version whose numbers differ is listed under `not_checked`: recompute i
 ### What this cannot promise
 
 - **The inputs are the validator's word.** Recomputing proves that the published scores and vector follow from the
-  published facts. It does not prove the facts: compute comes from the platform's meter, client signals from the
-  platform, and who was admitted and seen from the validator. The signed votes it checks separately (they are not in
+  published facts. It does not prove the facts: client signals come from the platform, and who was admitted and seen from the validator. The signed votes it checks separately (they are not in
   any score).
 - **The vote is a model's reading.** The same device can get a different score on another run, the model a vote names
   is what the validator says it used, and a vote can come late or not at all (a provider failure, a spend cap).
-- **Jobs and reactions are not guaranteed.** Routing is a random draw, jobs depend on clients, and most clients may
+- **Jobs and reactions are not guaranteed.** Routing follows records and only ties are drawn at random, jobs depend on clients, and most clients may
   not rate. No number of jobs or level of weight is promised.
 - **Your share is of the vector, not your income.** What you earn depends on the chain: the subnet's emission, the
   miners' part of it, the consensus in force, and whether the vector was set in time (weights are rate-limited). Each
@@ -762,15 +782,15 @@ time left). To give it to another MCP client:
 
 ```json
 {"mcpServers": {"cadmind-fetch": {"type": "stdio", "command": "python",
-  "args": ["-m", "cadmind_einstein.fetch_mcp", "--platform", "https://cadmind.ai",
+  "args": ["-m", "cadmind_einstein.fetch_mcp", "--platform", "https://platform.cadmind.ai",
            "--key-file", "/path/to/agent.key", "--deadline-file", "/path/to/deadline"]}}}
 ```
 
 This repository ships two miners:
 
-- **`cadmind-einstein-miner`** (`cadmind_einstein/agent_miner.py`): a complete reference miner. It gets and stores
-  the key (mode 0600) -- waiting and asking again while the request is pending approval, with `--contact` sent as
-  your note to the team -- writes the MCP config, requests admission, polls, accepts, runs your agent CLI in an empty
+- **`cadmind-einstein-miner`** (`cadmind_einstein/agent_miner.py`): a complete reference miner. It reads your agent
+  key from `--agent-key-file` and asks the validator to take it -- waiting and asking again while your hotkey is
+  pending approval, with `--contact` sent as your note to the team -- writes the MCP config, requests admission, polls, accepts, runs your agent CLI in an empty
   directory restricted to the Watt MCP server and the local `fetch_to_workspace` and `time_left` tools, keeps polling while the agent
   works -- stopping it, its whole process group, when the job is cancelled -- and submits `DONE <digest>` or sends
   `REJECT <category>: <message>`. Its prompt says there is no hand-over: when the remaining work looks too large,
@@ -839,9 +859,9 @@ Restrict the agent to the MCP tools (and, if you like, the local fetch tool): it
 yours, because everything happens in the job
 workspace. The brief is written by a client you do not know: treat it as untrusted input. Run the agent in a container
 (or a separate user) that holds no wallet, no hotkey or coldkey file and no credentials beyond the agent CLI's own and
-the job's agent key, so a brief that steers the agent cannot read or send anything else of yours. Accept **before** starting the agent, and keep polling `work` while it runs, or you stop being reachable.
-The harness is where you compete: planning, reading `watt check` output, recovering from a failed guard and keeping
-compute low all show up in your score.
+your agent key, so a brief that steers the agent cannot read or send anything else of yours. Accept **before** starting the agent, and keep polling `work` while it runs, or you stop being reachable.
+The harness is where you compete: planning, reading `watt check` output, recovering from a failed guard and staying
+within the job's allowance and deadline all show up in what you deliver.
 
 The miner takes Bittensor's usual flags (`--wallet.name`, `--wallet.hotkey`, `--wallet.path`, `--subtensor.network`,
 `--netuid`, `--logging.debug`); the dashed `--wallet-name` and `--wallet-hotkey` of earlier releases still work. With

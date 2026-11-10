@@ -17,7 +17,7 @@ current digest, `watt status` reports the project as **deliverable**.
 
 Watt runs only on CADmind's hosted *agent bench*. An agent drives it through the platform's **agent API**: an MCP
 server (`/mcp`) or the same tools over REST, authenticated with an *agent key*. Every call is metered (compute
-time), quota-limited and scrubbed so that Watt's own code never leaves the bench.
+time), bounded by a credit allowance and scrubbed so that Watt's own code never leaves the bench.
 
 Einstein uses the subnet so that **miners supply the agentic inference**: each miner runs its own agent (any model,
 any harness) against the hosted Watt tools. The quality of a miner's harness (how it plans, reads check output and
@@ -385,7 +385,7 @@ points and what decided them, each miner's weight and average, the admitted and 
   lease has its own heartbeat thread, so the desk's tick never waits on the platform. A platform outage during
   judging leaves the job judging and retries later, on the same guard run (a failed poll is asked again 3 times
   first): an outage on the validator's side never fails a miner.
-- Each job workspace and each miner key have compute quotas on the platform; the validator caps jobs in flight at
+- Each job workspace has a credit allowance on the platform; the validator caps jobs in flight at
   the agent bench's capacity.
 
 ## 9. Against untrusted miners
@@ -397,7 +397,7 @@ points and what decided them, each miner's weight and average, the admitted and 
 | Rejecting hard work | A rejection scores 0 and sends its miner to the back of the line; rejection telemetry, per hotkey and summed per coldkey, disables repeat offenders |
 | Copying another miner's output | Normalised features compared by containment (below); 0 at once, reassigned |
 | Sybils | Each hotkey holds one job and is scored on its own; registration costs; genesis weight goes per coldkey to miners with a delivered job, never for admission alone |
-| Abuse of hosted compute | Per-job and per-key quotas, one run at a time, automatic disable |
+| Abuse of hosted compute | A credit allowance per job workspace and none outside it, one run at a time, automatic disable |
 | Collusion between hotkeys | Second opinions come from another coldkey, and only two coldkeys end a job unpaid; endings, rejections, failures and admissions are published per coldkey in each report (`watch`) |
 | A device that passes Watt but does not serve its brief | The client's 1-2 stars or a quality refund make it 0; the validators' vote (section 13) records it for calibration |
 | Text in a project aimed at the reviewing model | Structured facts only, capped, instruction-like strings withheld, one data block the prompt names data; strict replies; quotes of the client checked verbatim (section 13) |
