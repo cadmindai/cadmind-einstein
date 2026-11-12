@@ -7,6 +7,14 @@ All notable changes to this project are listed here. The format follows
 
 ## [Unreleased]
 
+## [0.6.4] - 2026-11-12
+
+### Changed
+
+- **Validator: the entry test goes on during the hold.** Under `--hold` an approved miner may take its entry test
+  and be admitted, so it is ready on the day the subnet opens. Client jobs and weight stay held (the validator
+  still burns every hour and claims nothing), and practice jobs are still refused (`409 hold`).
+
 ## [0.6.3] - 2026-11-12
 
 ### Added

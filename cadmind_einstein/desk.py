@@ -417,9 +417,9 @@ def not_registered_message(sync_s: float = SYNC_S) -> str:
 
 
 HOLD_MESSAGE = (
-    "the subnet is on hold: no work is given out and no weight is set yet (the miners' "
-    "emission is burned). Your approval is kept; ask again later -- the reference miner "
-    "does so by itself"
+    "the subnet is on hold: no client job is given out and no weight is set yet (the miners' "
+    "emission is burned). Your approval and admission are kept; ask again later -- the "
+    "reference miner does so by itself"
 )
 """What a miner reads while the operator holds the subnet (``Desk.hold``)."""
 
@@ -801,9 +801,9 @@ class Desk:
         """whether the state held a launch switch when this desk loaded it"""
         self.hold = False
         """the operator's hold (the daemon's ``--hold``): every hour burns, admitted miners or
-        not, and no miner is given work -- no client job is claimed, no entry test or practice
-        job is started -- so nobody works for nothing. Key requests and approvals go on; a job
-        already handed out runs to its end."""
+        not, and no client job is claimed or handed out, and no practice job is started. Key
+        requests, approvals and the entry test go on, so a miner is admitted and ready on the
+        day the subnet opens; a job already handed out runs to its end."""
         self.approvals: dict[str, KeyRequest] = {}
         """hotkey -> its key request and the operator's decision (manual approval)"""
         self.max_attempts, self.max_inflight = max_attempts, max_inflight
@@ -2023,13 +2023,8 @@ class Desk:
             if m.admitted:
                 return {"admitted": True}
             now = self.now_ms()
-            live = [
-                j
-                for j in self.jobs.values()
-                if j.kind == "admission" and j.target == hotkey and j.state != "done"
-            ]
-            if self.hold and not live:
-                raise DeskError(HOLD_MESSAGE, 409, "hold")
+            # On hold the entry test is still given (owner 2026-11-12): a miner is ready on the day
+            # the subnet opens; client jobs and weight stay held.
             if now - m.admission_ms < 86_400_000:
                 live = [
                     j for j in self.jobs.values() if j.kind == "admission" and j.target == hotkey

@@ -615,13 +615,12 @@ class TestHold(_Case):
         self.assertEqual([j["job"] for j in self.p.queue], ["c1"])  # left in the platform's queue
         self.assertEqual(self.desk.work(A)["job"], None)
         self.assertEqual(self.desk.capacity()["active_miners"], 0)
-        # a newly approved miner gets no entry test and no practice job; its approval stays
+        # a newly approved miner gets no practice job; its approval stays
         self.desk.approve(B)
         self.assertIn("key_id", self.key(B))
-        for start in (self.desk.admission, self.desk.practice):
-            with self.assertRaises(DeskError) as caught:
-                start(B)
-            self.assertEqual((caught.exception.status, caught.exception.code), (409, "hold"))
+        with self.assertRaises(DeskError) as caught:
+            self.desk.practice(B)
+        self.assertEqual((caught.exception.status, caught.exception.code), (409, "hold"))
         with tempfile.TemporaryDirectory() as d:
             rep = self.report(True, d)
             self.assertEqual((rep["vector"], rep["rule"], rep["hold"]), ([], HOLD_RULE, True))
@@ -636,6 +635,19 @@ class TestHold(_Case):
         self.desk.hold = False
         self.tick()
         self.assertEqual(self.desk.work(A)["job"], "c1")
+
+    def test_on_hold_the_entry_test_is_still_given_and_admits(self) -> None:
+        """Owner 2026-11-12: miners take the test during the hold, ready for the day it opens."""
+        self.desk.hold = True
+        self.desk.approve(B)
+        self.key(B)
+        self.pass_test(B)
+        self.assertEqual(self.desk.admitted(), [B])
+        self.p.queue.append({"job": "c1", "brief": "A wall hook."})
+        self.desk.work(B)
+        self.tick()
+        self.assertEqual(self.desk.work(B)["job"], None)  # admitted, but no client job on hold
+        self.assertEqual([j["job"] for j in self.p.queue], ["c1"])
 
     def test_an_entry_test_handed_out_before_the_hold_runs_to_its_end(self) -> None:
         self.desk.approve(C)

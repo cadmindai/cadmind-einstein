@@ -237,9 +237,9 @@ def parser() -> argparse.ArgumentParser:
         "--hold",
         action="store_true",
         help="the operator's hold: every hour burns (all weight on the subnet owner's uid), "
-        "admitted miners or not, and no miner is given work -- no client job is claimed, no "
-        "entry test or practice job is started; key requests and approvals go on, and a job "
-        "already handed out runs to its end. Restart without it to open the subnet",
+        "admitted miners or not, and no client job is claimed or handed out, and no practice "
+        "job is started; key requests, approvals and entry tests go on, and a job already "
+        "handed out runs to its end. Restart without it to open the subnet",
     )
     ap.add_argument(
         "--launch-equal",
@@ -585,7 +585,11 @@ def main(argv: list[str] | None = None) -> int:
         + (" (brief from file)" if a.admission_brief_file else " (built-in brief)")
         + f"; launch-equal {'ON' if desk.launch_equal else 'off'} (source: {source})"
         + f"; burn when no miner: {'ON' if a.burn_when_empty else 'off'}"
-        + ("; HOLD: burning every hour, no work given out" if a.hold else "")
+        + (
+            "; HOLD: burning every hour, no client job given out (entry tests go on)"
+            if a.hold
+            else ""
+        )
     )
 
     reviewer = None
