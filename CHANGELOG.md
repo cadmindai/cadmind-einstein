@@ -7,6 +7,17 @@ All notable changes to this project are listed here. The format follows
 
 ## [Unreleased]
 
+## [0.6.3] - 2026-11-12
+
+### Added
+
+- **Validator: the operator's hold (`--hold`).** Every hour burns (all weight on the subnet owner's uid) whoever
+  is admitted, and no miner is given work: no client job is claimed from the platform (they wait in its queue),
+  no entry test or practice job is started (`409` with code `hold`), and the validator's room counts no active
+  miner. Key requests and approvals go on, and a job already handed out (an entry test included) runs to its
+  end. The hour's report records `hold`, its rule is "hold: ...", and `cadmind-recompute` follows it. Restart
+  without the flag to open the subnet.
+
 ## [0.6.2] - 2026-11-10
 
 ### Changed

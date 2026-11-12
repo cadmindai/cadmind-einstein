@@ -34,6 +34,7 @@ from cadmind_einstein import onboarding
 from cadmind_einstein.desk import ADMISSION_BRIEF, JOB_DEADLINE_S, Desk, DeskError
 from cadmind_einstein.fake_miner import _not_registered_yet, ask_key
 from cadmind_einstein.scoring import (
+    HOLD_RULE,
     HOUR_MS,
     JobOutcome,
     Ledger,
@@ -586,6 +587,72 @@ class TestLaunchEqual(unittest.TestCase):
             old = json.loads(files[-1].read_text())
             del old["launch_equal"]
             self.assertTrue(recompute(old)["matches_published"])
+
+
+class TestHold(_Case):
+    """The operator's hold (``--hold``): burn every hour whoever is admitted; give out no work."""
+
+    def report(self, hold: bool, d: str) -> dict[str, Any]:
+        ledger = Ledger(report_dir=Path(d))
+        return ledger.report(
+            self.desk.now_ms(),
+            {OWNER: 0, A: 1, B: 2, C: 3},
+            owner_hotkey=OWNER,
+            admitted=self.desk.admitted(),
+            reachable=self.desk.reachable(),
+            genesis="coldkey",
+            launch_equal=True,
+            hold=hold,
+        )
+
+    def test_on_hold_no_work_is_given_out_and_nobody_is_weighted(self) -> None:
+        self.onboard(A)
+        self.assertEqual(self.desk.admitted(), [A])
+        self.desk.hold = True
+        self.desk.work(A)
+        self.p.queue.append({"job": "c1", "brief": "A wall hook."})
+        self.tick()
+        self.assertEqual([j["job"] for j in self.p.queue], ["c1"])  # left in the platform's queue
+        self.assertEqual(self.desk.work(A)["job"], None)
+        self.assertEqual(self.desk.capacity()["active_miners"], 0)
+        # a newly approved miner gets no entry test and no practice job; its approval stays
+        self.desk.approve(B)
+        self.assertIn("key_id", self.key(B))
+        for start in (self.desk.admission, self.desk.practice):
+            with self.assertRaises(DeskError) as caught:
+                start(B)
+            self.assertEqual((caught.exception.status, caught.exception.code), (409, "hold"))
+        with tempfile.TemporaryDirectory() as d:
+            rep = self.report(True, d)
+            self.assertEqual((rep["vector"], rep["rule"], rep["hold"]), ([], HOLD_RULE, True))
+            published = json.loads(sorted(Path(d).glob("hour-*.json"))[-1].read_text())
+            again = recompute(published)
+            self.assertTrue(again["matches_published"])
+            self.assertEqual(again["rule"], HOLD_RULE)
+            self.assertEqual(
+                self.report(False, d)["vector"], [[1, 65_535]]
+            )  # lifted: the launch rule
+        # lifted: the job goes to the admitted miner
+        self.desk.hold = False
+        self.tick()
+        self.assertEqual(self.desk.work(A)["job"], "c1")
+
+    def test_an_entry_test_handed_out_before_the_hold_runs_to_its_end(self) -> None:
+        self.desk.approve(C)
+        self.key(C)
+        adm = self.desk.admission(C)
+        self.desk.hold = True
+        self.assertEqual(self.desk.admission(C)["job"], adm["job"])  # its own test, not a refusal
+        self.assertTrue(self.desk.wait_idle())
+        w = self.desk.work(C)
+        self.assertEqual(w["job"], adm["job"])
+        self.desk.accept(C, w["job"])
+        self.p.work(w["workspace"], GOOD, deliverable=True)
+        self.desk.submit(C, w["job"], w["workspace"], "d")
+        wait_state(self.desk, w["job"], ("done",))
+        self.assertEqual(
+            self.desk.admitted(), [C]
+        )  # admitted; still no work and no weight while held
 
 
 class TestLaunchSwitch(_Case):

@@ -214,6 +214,9 @@ CONSTANTS = {
 
 GENESIS = ("delivered", "coldkey", "hotkey")
 LAUNCH_RULE = "launch: equal among admitted miners"
+HOLD_RULE = "hold: the operator burns every hour; no miner is weighted"
+"""The rule of an hour under ``--hold`` (the validator burns, admitted miners or not, and gives
+out no work)."""
 
 
 def vector(
@@ -228,6 +231,7 @@ def vector(
     proven: Iterable[str] = (),
     last: Mapping[str, float] | None = None,
     launch_equal: bool = False,
+    hold: bool = False,
 ) -> tuple[list[tuple[int, int]], str]:
     """The weights and the rule that made them. Never the subnet owner's hotkey; never burned.
     ``coldkeys`` (hotkey -> coldkey; a hotkey with none stands alone) and ``proven`` (hotkeys with
@@ -237,7 +241,8 @@ def vector(
     Null consensus spreads the miners' emission evenly over every registered UID. So when the
     rules above weight nobody, ``last`` -- the last non-empty vector, hotkey -> weight -- is sent
     again (its hotkeys still registered); before any vector was ever set, equal shares per coldkey
-    among the admitted, reachable miners. Empty only with no admitted miner at all.
+    among the admitted, reachable miners. Empty only with no admitted miner at all, or under the
+    operator's hold (``hold``: the daemon burns instead).
 
     Every rule and every fallback weights ADMITTED hotkeys only (registered, never the owner's):
     a miner whose admission was dropped -- its key revoked, disabled, deregistered -- is out of the
@@ -248,6 +253,10 @@ def vector(
     none reachable, equal among the admitted ones (never empty). Off, the rules above apply."""
     if genesis not in GENESIS:
         raise ValueError(f"genesis is one of {GENESIS}")
+    if hold:
+        # The operator's hold (``--hold``): nobody is weighted and the validator burns, whoever
+        # is admitted; the report says so (``hold``) and recompute follows it.
+        return [], HOLD_RULE
     adm = {h for h in admitted if h in uid_by_hotkey and h != owner_hotkey}
     live = adm & set(reachable)
     if launch_equal:
@@ -457,6 +466,7 @@ class Ledger:
         proven: Iterable[str] = (),
         votes: Mapping[str, Any] | None = None,
         launch_equal: bool = False,
+        hold: bool = False,
     ) -> dict[str, Any]:
         """The hour's report, written as its canonical bytes (``hour-N.json``) beside its SHA-256
         (``hour-N.sha256``), both atomically. ``chain`` (the block, our stake share, the weights
@@ -480,6 +490,7 @@ class Ledger:
             proven=prov,
             last=last,
             launch_equal=launch_equal,
+            hold=hold,
         )
         hotkey_of = {u: h for h, u in uid_by_hotkey.items()}
         by_hotkey = {hotkey_of[u]: w for u, w in vec if u in hotkey_of}
@@ -496,6 +507,7 @@ class Ledger:
             "reachable": reach,
             "genesis": genesis,
             "launch_equal": bool(launch_equal),
+            "hold": bool(hold),
             "coldkeys": cold,
             "proven": prov,
             "vector": [list(x) for x in vec],
@@ -573,6 +585,7 @@ def recompute(report: Mapping[str, Any]) -> dict[str, Any]:
         proven=report.get("proven") or (),
         last=report.get("last_vector") or {},
         launch_equal=report.get("launch_equal") is True,
+        hold=report.get("hold") is True,
     )
     same = [list(x) for x in vec] == [list(x) for x in report["vector"]]
     return {"vector": vec, "rule": rule, "matches_published": same, "mismatches": mismatches}

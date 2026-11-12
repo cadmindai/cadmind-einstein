@@ -416,6 +416,14 @@ def not_registered_message(sync_s: float = SYNC_S) -> str:
     )
 
 
+HOLD_MESSAGE = (
+    "the subnet is on hold: no work is given out and no weight is set yet (the miners' "
+    "emission is burned). Your approval is kept; ask again later -- the reference miner "
+    "does so by itself"
+)
+"""What a miner reads while the operator holds the subnet (``Desk.hold``)."""
+
+
 class DeskError(Exception):
     def __init__(self, message: str, status: int = 400, code: str = "") -> None:
         super().__init__(message)
@@ -791,6 +799,11 @@ class Desk:
         across restarts otherwise"""
         self.launch_saved = False
         """whether the state held a launch switch when this desk loaded it"""
+        self.hold = False
+        """the operator's hold (the daemon's ``--hold``): every hour burns, admitted miners or
+        not, and no miner is given work -- no client job is claimed, no entry test or practice
+        job is started -- so nobody works for nothing. Key requests and approvals go on; a job
+        already handed out runs to its end."""
         self.approvals: dict[str, KeyRequest] = {}
         """hotkey -> its key request and the operator's decision (manual approval)"""
         self.max_attempts, self.max_inflight = max_attempts, max_inflight
@@ -2010,6 +2023,13 @@ class Desk:
             if m.admitted:
                 return {"admitted": True}
             now = self.now_ms()
+            live = [
+                j
+                for j in self.jobs.values()
+                if j.kind == "admission" and j.target == hotkey and j.state != "done"
+            ]
+            if self.hold and not live:
+                raise DeskError(HOLD_MESSAGE, 409, "hold")
             if now - m.admission_ms < 86_400_000:
                 live = [
                     j for j in self.jobs.values() if j.kind == "admission" and j.target == hotkey
@@ -2073,6 +2093,8 @@ class Desk:
             live = [j for j in mine if j.state != "done"]
             if live:
                 return self._practice_view(live[-1])
+            if self.hold:
+                raise DeskError(HOLD_MESSAGE, 409, "hold")
             if m.job:
                 raise DeskError("you hold a job: practice once it is over", 409)
             if self._client_job_for(m) is not None:
@@ -2324,7 +2346,10 @@ class Desk:
             active = [
                 m
                 for m in self.miners.values()
-                if m.admitted and m.key_id and now - m.last_seen_ms <= ALIVE_S * 1000
+                if m.admitted
+                and m.key_id
+                and now - m.last_seen_ms <= ALIVE_S * 1000
+                and not self.hold
             ]
             free = sum(1 for m in active if not m.job)
             held = sum(
@@ -2513,7 +2538,9 @@ class Desk:
             ]:
                 self._archive_job(key, "dropped")
                 del self.jobs[key]
-            want = self._want(now)
+            want = (
+                0 if self.hold else self._want(now)
+            )  # on hold, the jobs stay in the platform's queue
         # The claim loop: one job from the platform's queue per free admitted miner, assigned at
         # once. A job held for a reassignment takes a free miner first; with no free miner, nothing
         # is claimed and the jobs stay in the platform's queue.
@@ -2562,6 +2589,8 @@ class Desk:
             for job in queued:
                 if inflight >= self.max_inflight:
                     break
+                if self.hold and job.kind == "client":
+                    continue  # on hold, no client job is handed to a miner
                 m = self.route(job)
                 if m is None:
                     continue

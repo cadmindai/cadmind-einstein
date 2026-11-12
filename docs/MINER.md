@@ -210,6 +210,7 @@ What each answer means:
 |---|---|---|---|
 | `202` pending | validator | your hotkey waits for approval, which is by hand | ask again after `retry_after_s` |
 | `409 miner_not_linked` | validator | no live agent key names your hotkey | link the hotkey and create the key (steps 3 and 4) |
+| `409 hold` | validator | the subnet is on hold: no work is given out and no weight is set yet (the miners' emission is burned); your approval is kept | nothing: the reference miner asks again by itself |
 | `403` not registered on the subnet | validator | registered moments ago: the validator re-reads the chain every 5 minutes | wait 5 minutes and ask again (the reference miner does) |
 | `403` (any other reason) | validator | refused, revoked or disabled, with the reason | write to the subnet team |
 | `429` | validator | more than 6 asks in an hour | wait |

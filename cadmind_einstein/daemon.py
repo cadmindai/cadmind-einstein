@@ -234,6 +234,14 @@ def parser() -> argparse.ArgumentParser:
         "it on the next hour, with no manual step",
     )
     ap.add_argument(
+        "--hold",
+        action="store_true",
+        help="the operator's hold: every hour burns (all weight on the subnet owner's uid), "
+        "admitted miners or not, and no miner is given work -- no client job is claimed, no "
+        "entry test or practice job is started; key requests and approvals go on, and a job "
+        "already handed out runs to its end. Restart without it to open the subnet",
+    )
+    ap.add_argument(
         "--launch-equal",
         choices=("on", "off"),
         default=None,
@@ -571,11 +579,13 @@ def main(argv: list[str] | None = None) -> int:
         **extra,
     )
     source = apply_launch_flag(desk, a.launch_equal)
+    desk.hold = bool(a.hold)
     _log(
         f"onboarding: key approval {a.key_approval}; job deadline {a.job_deadline_min:g} min"
         + (" (brief from file)" if a.admission_brief_file else " (built-in brief)")
         + f"; launch-equal {'ON' if desk.launch_equal else 'off'} (source: {source})"
         + f"; burn when no miner: {'ON' if a.burn_when_empty else 'off'}"
+        + ("; HOLD: burning every hour, no work given out" if a.hold else "")
     )
 
     reviewer = None
@@ -694,6 +704,7 @@ def main(argv: list[str] | None = None) -> int:
             proven=desk.proven(),
             votes=votes,
             launch_equal=desk.launch_equal,
+            hold=desk.hold,
         )
         desk.clear_watch(len(watch["copy_pairs"]))
         try:
@@ -716,7 +727,7 @@ def main(argv: list[str] | None = None) -> int:
         )
         if rep["vector"]:
             weights.submit(rep["vector"], hour=rep["hour"])
-        elif a.burn_when_empty:
+        elif a.burn_when_empty or a.hold:
             weights.burn(hour=rep["hour"])
             _log(f"hour {rep['hour']}: {rep['rule']}; burn mode: all weight on the owner's uid")
         else:
