@@ -7,6 +7,19 @@ All notable changes to this project are listed here. The format follows
 
 ## [Unreleased]
 
+## [0.6.6] - 2026-11-13
+
+### Fixed
+
+- **Reference miner: an agent that cannot start never holds a client's job.** The agent program not starting (not
+  installed, not on the PATH, not executable, its working directory missing) crashed the miner with the job accepted;
+  restarted, it crashed again on the same job, which waited for its deadline. Now the miner checks its agent program
+  before asking for any work (it refuses to start, saying what is wrong), and a launch that fails hands the job back
+  at once (`reject`, `not-capable`: another miner takes it), waits, and stops the miner after 3 in a row.
+- **Reference miner: a 429 on the key request is waited out.** The miner exited on it, so a supervisor restarting it
+  every few seconds flooded the validator; it now waits the validator's `retry_after_s` (else 10 minutes) and asks
+  again.
+
 ## [0.6.5] - 2026-11-12
 
 ### Fixed

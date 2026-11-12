@@ -29,6 +29,18 @@ from typing import Any
 
 from .desk import host_refusal
 
+RATE_RETRY_S = 600.0
+"""How long a miner waits after a 429 on its key request when the validator names no
+``retry_after_s``."""
+
+
+def _retry_after(got: Any, default: float) -> float:
+    try:
+        value = float(got.get("retry_after_s")) if isinstance(got, dict) else 0.0
+    except (TypeError, ValueError):
+        value = 0.0
+    return value if value > 0 else default
+
 
 def ask_key(
     call: Any,
@@ -50,6 +62,7 @@ def ask_key(
     start = clock()
     asks = 0
     said = False
+    slowed = False
     while True:
         code, got = call("/v1/miners/agent_key", body)
         asks += 1
@@ -62,6 +75,16 @@ def ask_key(
                     "chain every few minutes); asking again every minute"
                 )
             wait = REGISTRATION_RETRY_S
+        elif code == 429:
+            # too many asks (6 an hour per hotkey, or per address): wait, never exit -- a miner
+            # restarted in a loop by its supervisor would otherwise flood the validator (v0.6.6)
+            wait = _retry_after(got, RATE_RETRY_S)
+            if not slowed:
+                log(
+                    "agent key: the validator asks this miner to slow down; asking again in "
+                    f"{wait / 60:.0f} min"
+                )
+                slowed = True
         elif code == 409 and isinstance(got, dict) and got.get("code") == NOT_LINKED:
             wait = NOT_LINKED_RETRY_S
             log(

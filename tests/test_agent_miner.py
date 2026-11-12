@@ -829,3 +829,36 @@ class TestAnswersRound(unittest.TestCase):
             no_questions=True,
         )
         self.assertIn("asked not to be asked", notes[0])
+
+
+class TestAgentLaunch(unittest.TestCase):
+    """v0.6.6: an agent program that cannot start never holds a client's job: the miner checks it
+    before asking for work, and a launch that fails is an `AgentLaunchError` (the job is handed
+    back), never an uncaught crash that left the job held until its deadline."""
+
+    def test_the_preflight_names_what_is_wrong(self) -> None:
+        import sys as _sys
+
+        self.assertEqual(agent_miner.agent_launchable([_sys.executable, "-c", "pass"]), "")
+        self.assertIn(
+            "not on this miner's PATH", agent_miner.agent_launchable(["no-such-agent-cli-x"])
+        )
+        self.assertIn("does not exist", agent_miner.agent_launchable(["/nonexistent/claude"]))
+        with tempfile.NamedTemporaryFile() as f:
+            Path(f.name).chmod(0o644)
+            self.assertIn("not executable", agent_miner.agent_launchable([f.name]))
+        self.assertEqual(agent_miner.agent_launchable([]), "no agent command")
+
+    def test_a_program_that_cannot_start_is_a_launch_error(self) -> None:
+        with tempfile.TemporaryDirectory() as d, self.assertRaises(agent_miner.AgentLaunchError):
+            agent_miner.build(
+                ["/nonexistent/claude", "-p", "x"],
+                session=None,
+                cwd=Path(d),
+                stdin=None,
+                timeout_s=5,
+                deadline_ms=0,
+                watch=lambda _r: None,
+                log=lambda _m: None,
+                job="j1",
+            )

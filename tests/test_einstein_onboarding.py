@@ -768,6 +768,21 @@ class TestAskKey(unittest.TestCase):
         self.assertEqual(slept, [900.0, 900.0])  # never a fast loop
         self.assertEqual(sum("link the hotkey and create a key" in m for m in said), 2)
 
+    def test_too_many_asks_wait_never_exit(self) -> None:
+        """v0.6.6: a 429 is waited out (a miner its supervisor restarted in a loop flooded the
+        validator with 1,600 key requests in two hours)."""
+        answers = [
+            (429, {"error": "too many agent key requests: retry later"}),
+            (429, {"error": "too many", "retry_after_s": 120}),
+            (200, {"key_id": "k"}),
+        ]
+        slept: list[float] = []
+        said: list[str] = []
+        code, got = ask_key(lambda _p, _b: answers.pop(0), log=said.append, sleep=slept.append)
+        self.assertEqual((code, got["key_id"]), (200, "k"))
+        self.assertEqual(slept, [600.0, 120.0])
+        self.assertEqual(sum("slow down" in m for m in said), 1)
+
     def test_another_409_ends_the_ask(self) -> None:
         code, _ = ask_key(
             lambda _p, _b: (409, {"error": "x"}), log=lambda _m: None, sleep=lambda _s: None

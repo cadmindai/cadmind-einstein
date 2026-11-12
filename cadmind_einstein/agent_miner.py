@@ -125,6 +125,7 @@ import logging
 import os
 import re
 import shlex
+import shutil
 import signal
 import subprocess
 import sys
@@ -675,6 +676,39 @@ def _record(out: str, err: str, code: int | None, timed_out: bool) -> str:
     return f"{out}\n--- {end} ---\n--- stderr ---\n{err}"
 
 
+class AgentLaunchError(Exception):
+    """The agent program could not be started at all (not installed, not executable, its working
+    directory missing): the job is handed back at once, never held to its deadline (v0.6.6)."""
+
+
+LAUNCH_FAILURES_MAX = 3
+"""Launch failures in a row after which the miner stops taking jobs (a broken setup)."""
+LAUNCH_BACKOFF_S = 60.0
+"""The wait after a launch failure, doubled at each one in a row."""
+REJECT_LAUNCH = (
+    "The builder's agent program could not start on the miner's machine, so this job goes to "
+    "another builder."
+)
+
+
+def agent_launchable(argv: list[str]) -> str:
+    """Why ``argv``'s program cannot be started ('' when it can): checked before any work is asked,
+    so a broken setup never takes a client's job (v0.6.6)."""
+    if not argv or not argv[0]:
+        return "no agent command"
+    exe = argv[0]
+    if os.sep in exe or (os.altsep and os.altsep in exe):
+        path = Path(exe).expanduser()
+        if not path.is_file():
+            return f"the agent program {exe} does not exist"
+        if not os.access(path, os.X_OK):
+            return f"the agent program {exe} is not executable"
+        return ""
+    if shutil.which(exe) is None:
+        return f"the agent program {exe!r} is not on this miner's PATH"
+    return ""
+
+
 def build(
     cmd: list[str],
     *,
@@ -698,7 +732,10 @@ def build(
 
     def one(argv: list[str], stdin_: str | None, timeout: float) -> tuple[str, str, bool, bool]:
         nonlocal record
-        run = AgentRun(argv, cwd=cwd, stdin=stdin_, env=env)
+        try:
+            run = AgentRun(argv, cwd=cwd, stdin=stdin_, env=env)
+        except OSError as e:  # the program, or its working directory, is not there
+            raise AgentLaunchError(f"{type(e).__name__}: {e}") from None
         watch(run)
         try:
             out, err, timed_out = run.wait(timeout)
@@ -1440,6 +1477,18 @@ def main(argv: list[str] | None = None) -> int:
         log(f"agent key {named} taken by the validator")
         return True
 
+    why_not = agent_launchable(
+        agent_argv(
+            a, prompt="", prompt_file=a.state / "prompt.txt", mcp_file=mcp_file, ws="", job=""
+        )
+    )
+    if why_not:
+        log(
+            f"cannot start: {why_not}. Fix the miner's agent setup (--agent-cli or "
+            "--agent-command) and start it again"
+        )
+        return 2
+
     if not take():
         return 1
 
@@ -1468,6 +1517,7 @@ def main(argv: list[str] | None = None) -> int:
     if updater is not None:
         updater.watch(busy.is_set, stop)  # checks during a job; applied only once it has ended
     done = 0
+    launch_failures = 0
     while not a.max_jobs or done < a.max_jobs:
         code, work = call("/v1/jobs/work", {})
         # the idle point: no job of ours is accepted (a job ended above, before this poll). A
@@ -1562,6 +1612,7 @@ def main(argv: list[str] | None = None) -> int:
         running.update(job=job, agent=None)
         busy.set()
         rnd: sr.SelfReview | None = None
+        launch_error = ""
         try:
             got = build(
                 cmd,
@@ -1622,11 +1673,30 @@ def main(argv: list[str] | None = None) -> int:
                 log=log,
             )
             got.cancelled = got.cancelled or cancel.is_set()
+        except AgentLaunchError as e:
+            launch_error = str(e)
         finally:
             if overrun is not None:
                 overrun.cancel()
             busy.clear()
             running.update(job="", agent=None)
+        if launch_error:
+            # hand the job back at once (another miner takes it), wait; stop after a few in a row
+            launch_failures += 1
+            log(f"{job}: the agent could not start ({launch_error}): handing the job back")
+            reject = {"job": job, "category": "not-capable", "message": REJECT_LAUNCH}
+            code, out = send(call, "/v1/jobs/reject", reject, log=log)
+            log(f"rejected {job}: {code} {out}")
+            if launch_failures >= LAUNCH_FAILURES_MAX:
+                log(
+                    f"the agent could not start {launch_failures} times in a row: stopping. "
+                    "Fix the miner's agent setup and start it again"
+                )
+                stop.set()
+                return 2
+            time.sleep(LAUNCH_BACKOFF_S * 2 ** (launch_failures - 1))
+            continue
+        launch_failures = 0
         _write_private(out_file, got.record)
         review_file = logs / f"{job}.self-review.json"
         if rnd is not None:
