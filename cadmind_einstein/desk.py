@@ -369,7 +369,9 @@ class Platform(Protocol):
 
     def miner_key(self, hotkey: str) -> dict[str, Any]: ...
     def close_grants(self, hotkey: str) -> dict[str, Any]: ...
-    def grant(self, hotkey: str, *, brief: str = "", seed: str = "", name: str = "job") -> str: ...
+    def grant(
+        self, hotkey: str, *, brief: str = "", seed: str = "", name: str = "job", **kw: Any
+    ) -> str: ...
     def grant_continuation(
         self, hotkey: str, *, seed: str, base: str = "", name: str = "job"
     ) -> tuple[str, str]: ...
@@ -1316,6 +1318,45 @@ class Desk:
                 "admitted": m.admitted,
                 "readmitted": readmitted,
                 "keyed": bool(m.key_id),
+            }
+
+    def admit(self, hotkey: str, reason: str) -> dict[str, Any]:
+        """The operator admits ``hotkey`` without (another) entry test: a miner whose test was
+        failed by the subnet's own fault (owner 2026-11-12: an entry-test workspace that did not
+        say no-questions). Only an approved, keyed hotkey that is not disabled; the entry-test
+        failures it holds are taken back (they were not its own). Logged and persisted; answers
+        what changed."""
+        why = _clean(reason, REASON_MAX)
+        if not why:
+            raise DeskError("an admission by the operator says why, for the log")
+        hotkey = str(hotkey or "").strip()
+        if not hotkey:
+            raise DeskError("hotkey required")
+        if hotkey in self.excluded:
+            raise DeskError("the subnet owner's and the validator's hotkeys do not mine")
+        with self._mut():
+            m = self.miners.get(hotkey)
+            now = self.now_ms()
+            if m is None or not self.approved(hotkey):
+                raise DeskError("this hotkey is not approved for its key: not admitted", 409)
+            if not m.key_id:
+                raise DeskError("this hotkey has not taken its key yet: not admitted", 409)
+            if m.blocked_until_ms > now:
+                raise DeskError("this hotkey is disabled: unblock it first", 409)
+            was = m.admitted
+            failures = self.admission_failed.pop(hotkey, 0)
+            m.admitted = True
+            m.admission_ms = m.admission_ms or now
+            self.abuse_seen[hotkey] = self._abuse_counts(hotkey)
+            self.log(
+                f"admitted by the operator: {hotkey} (was admitted: {was}; entry-test failures "
+                f"taken back: {failures}): {why}"
+            )
+            return {
+                "hotkey": hotkey,
+                "admitted": True,
+                "was_admitted": was,
+                "failures_taken_back": failures,
             }
 
     def _passed_entry_test(self, hotkey: str) -> bool:
@@ -2963,7 +3004,12 @@ class Desk:
                     name=job.job,
                 )
             else:
-                ws = self.platform.grant(m.hotkey, brief=job.brief, seed=job.seed, name=job.job)
+                # an entry test has no client to ask: its workspace says so, or Watt (W0753) wants a
+                # citation or an open client decision for every estimate, which the gate refuses
+                no_q = {"no_questions": True} if job.kind == "admission" else {}
+                ws = self.platform.grant(
+                    m.hotkey, brief=job.brief, seed=job.seed, name=job.job, **no_q
+                )
         except PlatformError as e:
             if e.code == SUSPENDED:
                 self._suspended(m.hotkey)

@@ -7,6 +7,21 @@ All notable changes to this project are listed here. The format follows
 
 ## [Unreleased]
 
+## [0.6.5] - 2026-11-12
+
+### Fixed
+
+- **Validator: an entry test's workspace says no-questions.** The entry test has no client, and the gate refuses
+  an open client decision, but its workspace was made as one whose client can be asked, so Watt (W0753) wanted
+  a citation or an open client decision for every estimated fact. The grant now says `no_questions` (the
+  platform honours it for a workspace with no client job behind it).
+
+### Added
+
+- **Validator: `POST /v1/operator/admit {hotkey, reason}`.** The operator admits an approved, keyed hotkey that
+  is not disabled, without another entry test, and takes back its entry-test failures: for a test the subnet's
+  own fault failed. Logged and persisted.
+
 ## [0.6.4] - 2026-11-12
 
 ### Changed

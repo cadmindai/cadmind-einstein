@@ -667,6 +667,39 @@ class TestHold(_Case):
         )  # admitted; still no work and no weight while held
 
 
+class TestOperatorAdmit(_Case):
+    """Owner 2026-11-12: an entry test failed by our own fault; the operator admits by hand."""
+
+    def test_the_entry_test_workspace_says_no_questions(self) -> None:
+        self.desk.approve(A)
+        self.key(A)
+        self.desk.admission(A)
+        self.assertTrue(self.desk.wait_idle())
+        self.assertTrue(self.p.grants[-1]["no_questions"])
+
+    def test_an_approved_keyed_hotkey_is_admitted_and_its_failures_taken_back(self) -> None:
+        with self.assertRaises(DeskError):
+            self.desk.admit(A, "")  # says why
+        with self.assertRaises(DeskError) as caught:
+            self.desk.admit(A, "our fault")  # never approved
+        self.assertEqual(caught.exception.status, 409)
+        self.desk.approve(A)
+        with self.assertRaises(DeskError):
+            self.desk.admit(A, "our fault")  # approved, but no key yet
+        self.key(A)
+        self.desk.admission_failed[A] = 1
+        out = self.desk.admit(A, "the entry-test workspace did not say no-questions")
+        self.assertEqual(
+            out, {"hotkey": A, "admitted": True, "was_admitted": False, "failures_taken_back": 1}
+        )
+        self.assertEqual(self.desk.admitted(), [A])
+        self.desk.stop()
+        self.desk = self.make()
+        self.assertEqual(self.desk.admitted(), [A])  # persisted
+        self.assertEqual(self.desk.admission_failed.get(A, 0), 0)
+        self.assertEqual(self.desk.admission(A), {"admitted": True})  # no test asked of it
+
+
 class TestLaunchSwitch(_Case):
     def test_the_switch_is_persisted_and_changed_at_runtime(self) -> None:
         self.assertFalse(self.desk.launch_equal)

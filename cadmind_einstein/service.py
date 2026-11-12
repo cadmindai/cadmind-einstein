@@ -43,7 +43,9 @@ reason}`` (no longer keyed, its open job workspaces frozen, the admission droppe
 another miner unscored); ``POST /v1/operator/unblock {hotkey, reason, readmit?}`` (a wrong disable
 lifted: the block ends, the last strike is taken back, the abuse counts so far are marked acted on;
 ``readmit: true`` gives back the admission of a hotkey that had passed its entry test; it is not
-keyed again: the miner asks as usual); ``GET /v1/operator/launch_equal`` and ``POST
+keyed again: the miner asks as usual); ``POST /v1/operator/admit {hotkey, reason}`` (an approved,
+keyed hotkey admitted without another entry test, its entry-test failures taken back: a test the
+subnet's own fault failed); ``GET /v1/operator/launch_equal`` and ``POST
 /v1/operator/launch_equal {on}`` (the launch rule, on or off at runtime). Jobs are not posted here:
 the validator CLAIMS them from the platform's queue when it has a free admitted miner
 (``platform.claim``).
@@ -107,6 +109,7 @@ BEARER = (
     "/v1/operator/refuse",
     "/v1/operator/revoke",
     "/v1/operator/unblock",
+    "/v1/operator/admit",
     "/v1/operator/launch_equal",
 )
 """POST routes for the platform and the operator"""
@@ -749,6 +752,9 @@ def serve(
                 elif self.path == "/v1/operator/revoke":
                     hk = str(body.get("hotkey") or "")
                     self._send(200, desk.revoke(hk, str(body.get("reason") or "")))
+                elif self.path == "/v1/operator/admit":
+                    hk = str(body.get("hotkey") or "")
+                    self._send(200, desk.admit(hk, str(body.get("reason") or "")))
                 elif self.path == "/v1/operator/unblock":
                     readmit = body.get("readmit", False)
                     if not isinstance(readmit, bool):

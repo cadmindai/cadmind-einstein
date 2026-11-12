@@ -316,10 +316,21 @@ class OperatorClient:
             self._call("POST", "/api/agent/subnet/keys/disable", {"hotkey": hotkey}, role=KEYS)
         )
 
-    def grant(self, hotkey: str, *, brief: str = "", seed: str = "", name: str = "job") -> str:
+    def grant(
+        self,
+        hotkey: str,
+        *,
+        brief: str = "",
+        seed: str = "",
+        name: str = "job",
+        no_questions: bool = False,
+    ) -> str:
         # ``job`` names the job the workspace is for: the platform's provenance check on a charging
-        # result follows the delivered workspace back to this grant.
+        # result follows the delivered workspace back to this grant. ``no_questions``: a workspace
+        # with no client job behind it (an entry test) has no client to ask.
         body: dict[str, Any] = {"hotkey": hotkey, "name": name, "job": name}
+        if no_questions:
+            body["no_questions"] = True
         body.update({"seed": seed} if seed else {"brief": brief})
         return str(
             self._call("POST", "/api/agent/subnet/workspaces", body, timeout=320)["workspace"]

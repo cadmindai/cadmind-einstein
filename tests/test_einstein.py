@@ -131,9 +131,19 @@ class FakePlatform:
             self.ws[n]["frozen"] = True
         return {"hotkey": hotkey, "frozen": mine}
 
-    def grant(self, hotkey: str, *, brief: str = "", seed: str = "", name: str = "job") -> str:
+    def grant(
+        self,
+        hotkey: str,
+        *,
+        brief: str = "",
+        seed: str = "",
+        name: str = "job",
+        no_questions: bool = False,
+    ) -> str:
         self._linked(hotkey)
-        self.grants.append({"hotkey": hotkey, "brief": brief, "seed": seed})
+        self.grants.append(
+            {"hotkey": hotkey, "brief": brief, "seed": seed, "no_questions": no_questions}
+        )
         files = dict(self.ws[seed]["files"]) if seed else {"brief/brief.md": brief}
         return self._new(hotkey=hotkey, files=files)
 
