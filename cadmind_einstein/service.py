@@ -111,6 +111,7 @@ BEARER = (
     "/v1/operator/unblock",
     "/v1/operator/admit",
     "/v1/operator/launch_equal",
+    "/v1/operator/release",
 )
 """POST routes for the platform and the operator"""
 MAX_STATS_HOTKEYS = 20
@@ -752,6 +753,10 @@ def serve(
                 elif self.path == "/v1/operator/revoke":
                     hk = str(body.get("hotkey") or "")
                     self._send(200, desk.revoke(hk, str(body.get("reason") or "")))
+                elif self.path == "/v1/operator/release":
+                    self._send(
+                        200, desk.release(str(body.get("job") or ""), str(body.get("reason") or ""))
+                    )
                 elif self.path == "/v1/operator/admit":
                     hk = str(body.get("hotkey") or "")
                     self._send(200, desk.admit(hk, str(body.get("reason") or "")))

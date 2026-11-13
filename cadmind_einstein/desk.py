@@ -123,7 +123,7 @@ HOST_BLOCKED = "host_blocked"
 the design) refused a Watt run's result (Watt's ``host_refused``): the round ends "blocked by the
 platform", its project kept, uncharged, uncounted, and nobody is scored
 (:meth:`Desk._host_blocked`)"""
-UNCOUNTED = ("dereg", "disabled", "revoked", "stale", "ours", "lost", NO_CHANGE, HOST_BLOCKED)
+UNCOUNTED = ("dereg", "disabled", "revoked", "released", "stale", "ours", "lost", NO_CHANGE, HOST_BLOCKED)
 """attempt kinds that do not count toward a job's attempt cap and score nobody: the miner left the
 subnet, was disabled for abuse, or had its key revoked by the operator while it held the job
 (``dereg``, ``disabled``, ``revoked``); the first
@@ -1646,6 +1646,30 @@ class Desk:
             out = asdict(r)
             out["freed_job"] = freed
         self._spawn(self._close_grants)
+        return out
+
+    def release(self, job_id: str, reason: str) -> dict[str, Any]:
+        """The operator takes a client job back from the miner working it (owner 2026-11-13: a miner
+        locked out of its own key held a client's job with no way to work it): the attempt ends
+        without scoring anyone (``released``, uncounted), the miner is told to stop as for a cancel,
+        and the job goes back to the queue for a miner that has not tried it, which gets the whole
+        deadline from its own accept. The miner keeps its key and its admission."""
+        why = _clean(reason, REASON_MAX)
+        if not why:
+            raise DeskError("a release says why, for the record")
+        with self._mut():
+            job = self.jobs.get(str(job_id or ""))
+            a = job.current if job else None
+            if job is None or a is None or job.kind != "client" or job.state not in ("assigned", "working"):
+                raise DeskError("no client job being worked by that id", 404)
+            m = self.miners.get(a.hotkey)
+            if m is None or m.job != job.job:
+                raise DeskError("that job's miner does not hold it now", 409)
+            m.cancelled_job, m.cancelled_ms, m.after_cancel = job.job, self.now_ms(), True
+            self._free_job(m, f"taken back by the operator: {why}", "released")
+            self.log(f"job {job.job} released from {a.hotkey} by the operator: {why}")
+            out = {"job": job.job, "released_from": a.hotkey, "state": self.status(job.job)["state"]}
+        self.tick()
         return out
 
     def _free_job(self, m: Miner, why: str, kind: str) -> str:

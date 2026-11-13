@@ -401,6 +401,38 @@ class TestRevoke(_Case):
         with self.assertRaises(DeskError):
             self.desk.admission(holder)
 
+    def test_release_takes_a_client_job_back_and_another_miner_gets_a_whole_deadline(self) -> None:
+        """Owner 2026-11-13: the operator takes a job back from a miner that cannot work it; the miner keeps its key."""
+        self.desk.work(A)
+        self.desk.work(B)
+        self.p.queue.append({"job": "r2", "brief": "A wall hook."})
+        self.tick()
+        holder = next(h for h in (A, B) if self.desk.work(h)["job"] == "r2")
+        other = B if holder == A else A
+        self.desk.accept(holder, "r2")
+        with self.assertRaises(DeskError):
+            self.desk.release("r2", "  ")
+        self.clock.t += 7_000  # nearly two hours of its deadline spent
+        out = self.desk.release("r2", "its miner cannot get its key")
+        self.assertEqual((out["job"], out["released_from"]), ("r2", holder))
+        self.assertTrue(self.desk.wait_idle())
+        st = self.desk.status("r2")
+        self.assertEqual(st["state"], "queued")
+        self.assertEqual(st["attempts"][-1]["kind"], "released")
+        self.assertEqual(self.ledger.outcomes, [])  # nobody scored
+        m = self.desk.miners[holder]
+        self.assertTrue(m.admitted and m.key_id)  # keeps its key and admission
+        self.assertEqual(self.desk.work(holder).get("cancelled"), "r2")  # told to stop
+        self.desk.work(other)
+        self.tick()
+        self.assertEqual(self.desk.work(other)["job"], "r2")
+        self.desk.accept(other, "r2")
+        a = self.desk.jobs["r2"].current
+        self.assertEqual(a.deadline_ms - self.desk.now_ms(), self.desk.deadline_s * 1000)
+        with self.assertRaises(DeskError) as e:
+            self.desk.release("nope", "x")
+        self.assertEqual(e.exception.status, 404)
+
     def test_revoke_ends_an_entry_test_it_holds_without_counting_a_failure(self) -> None:
         self.desk.approve(C)
         self.key(C)

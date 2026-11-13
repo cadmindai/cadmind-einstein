@@ -7,6 +7,15 @@ All notable changes to this project are listed here. The format follows
 
 ## [Unreleased]
 
+## [0.6.8] - 2026-11-13
+
+### Added
+
+- **Validator: `POST /v1/operator/release {job, reason}`.** The operator takes a client job back from the miner
+  working it, when that miner cannot work it: the attempt ends without scoring anyone (`released`, not counted
+  toward the job's attempts), the miner is told to stop as for a cancel and keeps its key and admission, and the
+  job goes to a miner that has not tried it, with the whole deadline from its own accept.
+
 ## [0.6.7] - 2026-11-13
 
 ### Changed
