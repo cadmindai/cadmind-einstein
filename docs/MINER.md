@@ -887,9 +887,9 @@ The miner takes Bittensor's usual flags (`--wallet.name`, `--wallet.hotkey`, `--
 `--netuid`, `--logging.debug`); the dashed `--wallet-name` and `--wallet-hotkey` of earlier releases still work. With
 `--netuid` it checks once at startup that your hotkey is registered.
 
-### Self-review before the submit (on by default)
+### Self-review before the submit (off by default)
 
-After the agent's `DONE` and before the submit, the reference miner runs the **validators' own judge**
+With `--self-review on`, after the agent's `DONE` and before the submit, the reference miner runs the **validators' own judge**
 (`cadmind_einstein.judge`, the same version, prompt and rules as a validator's vote) on the device the agent built,
 and gives the points it upholds back to the agent to fix:
 
@@ -903,8 +903,9 @@ and gives the points it upholds back to the agent to fix:
    correction and its check, the agent goes again, up to `--self-review-loops` times (default 2);
 6. the submit carries the last version the agent delivered (`DONE <digest>`).
 
-**Why it is on by default.** In our trial, the miner's own final check predicted the validators' score well, and the
-correction rounds fixed points the check had upheld. Nothing of the round reaches the platform or the validator: the
+**Why it is off by default.** It costs a few dollars a job on your own key and takes time from the job's deadline.
+In our trial, the miner's own final check predicted the validators' score well, and the correction rounds fixed
+points the check had upheld: turn it on if that is worth it to you. Nothing of the round reaches the platform or the validator: the
 validator judges the delivered device on its own bundle, as for any miner.
 
 **Your model, your key, your cost.** The judge runs on your own account: `--self-review-model` (default
@@ -933,7 +934,7 @@ delivered, it only records whether the correction worked.
 `self-review: 2 nudges, 1 upheld, 1 gone, 0 still there, 0 loop(s); final score 3; delivered the corrected version;
 $2.41 on the judge`), and `logs/<job>.self-review.json` in the state directory keeps every point, verdict and
 reason and the minutes and dollars per step, so you can see whether the round pays for itself. `--self-review off`
-turns it off.
+(the default) turns it off.
 
 **The bundle is drawn by the miner, not served by the platform.** A validator judges the bundle the platform renders
 for a *delivered* version and serves to validators only; a miner's agent key cannot ask for it, and a version under

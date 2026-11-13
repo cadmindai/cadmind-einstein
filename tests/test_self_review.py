@@ -523,3 +523,14 @@ class TestBundle(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class DefaultTests(unittest.TestCase):
+    def test_self_review_is_off_unless_asked_for(self) -> None:
+        """Owner 2026-11-13: the reference miner runs no self-review by default."""
+        base = ["--validator", "http://v", "--validator-hotkey", "5F", "--platform", "http://p", "--state", "/tmp/x"]
+        self.assertEqual(agent_miner.parser().parse_args(base).self_review, "off")
+        self.assertEqual(
+            agent_miner.parser().parse_args([*base, "--self-review", "on"]).self_review, "on"
+        )
+        self.assertEqual(sr.unavailable("off", "openai:m", None), "off (--self-review off)")

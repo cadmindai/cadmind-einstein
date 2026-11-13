@@ -290,12 +290,12 @@ your model provider's terms. Run the agent in a container or under a separate us
 mounted beyond the agent CLI's own: the brief is untrusted input. With `--netuid` it checks once at startup that its hotkey is registered (a warning
 only); without it, it makes no chain call.
 
-**Self-review is on by default.** After the agent's `DONE`, the miner runs the validators' own judge on the built
-device, on your own model key (`--self-review-key-file`, `--self-review-model`, default
+**Self-review is off by default.** With `--self-review on`, after the agent's `DONE` the miner runs the validators'
+own judge on the built device, on your own model key (`--self-review-key-file`, `--self-review-model`, default
 `openai:anthropic/claude-opus-5.5` on OpenRouter at effort high), and gives the upheld points back to the agent to fix
 before it submits. A check costs about $0.8-0.9; a round with one correction about $2-3. With no key file it is
-skipped and the miner works as before; `--self-review off` turns it off. See
-[docs/MINER.md](docs/MINER.md#self-review-before-the-submit-on-by-default).
+skipped and the miner works as before. See
+[docs/MINER.md](docs/MINER.md#self-review-before-the-submit-off-by-default).
 
 **The miner updates itself, between jobs only.** Run from a git checkout (`pip install -e .`), it reads this
 repository's release tags every 30 minutes. When a newer release `vX.Y.Z` is out, it finishes the job it is on

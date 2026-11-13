@@ -7,6 +7,14 @@ All notable changes to this project are listed here. The format follows
 
 ## [Unreleased]
 
+## [0.6.7] - 2026-11-13
+
+### Changed
+
+- **Reference miner: self-review is off by default.** `--self-review` now defaults to `off`; pass
+  `--self-review on` (with `--self-review-key-file`) to run the validators' judge on your own key before the submit,
+  as before. A miner already started with `--self-review on` is unchanged.
+
 ## [0.6.6] - 2026-11-13
 
 ### Fixed

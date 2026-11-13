@@ -90,7 +90,7 @@ stay out; the empty work directory has no project or local ones), ``--settings``
 carries :data:`ISOLATION_ENV` (no ``CLAUDE.md``, no auto-memory). ``--agent-user-settings`` lets the
 user settings back in (for a provider configured there); ``--agent-arg`` flags come last and win.
 
-**Self-review** (``--self-review on``, the default; :mod:`.self_review`): after the agent's
+**Self-review** (``--self-review on``; off by default; :mod:`.self_review`): after the agent's
 ``DONE`` and before the submit, the validators' own judge (:mod:`.judge`, on the miner's own model
 key: ``--self-review-model``, ``--self-review-key-file``) reviews the built device on a review
 bundle the miner draws itself (:mod:`.miner_bundle`), and the upheld points go back to the agent as
@@ -1244,9 +1244,9 @@ def parser() -> argparse.ArgumentParser:
     ap.add_argument(
         "--self-review",
         choices=sr.MODES,
-        default="on",
-        help="after the builder's DONE, the validators' judge reviews the built device on the "
-        "miner's own key and the builder corrects the upheld points (default on; skipped when no "
+        default="off",
+        help="on: after the builder's DONE, the validators' judge reviews the built device on the "
+        "miner's own key and the builder corrects the upheld points (default off; skipped when no "
         "--self-review-key-file is given)",
     )
     ap.add_argument(
