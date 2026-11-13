@@ -66,7 +66,8 @@ account the hotkey is linked to, naming that hotkey, and gives its secret to thi
 validator to take the key (``agent_key``): the validator answers the id of the key the platform has
 for the hotkey, and the miner checks that it is the key it runs on (:func:`key_mismatch`; the
 platform's ``GET /api/agent/usage`` names the calling key) -- it stops when it is not. A request
-the subnet team has not approved yet is answered "pending" (202), and a hotkey the platform has no
+the subnet team has not approved yet is answered "pending" (202), with its place on the waitlist
+(logged: "on the waitlist: #N of M"), and a hotkey the platform has no
 key for 409 ``miner_not_linked`` with what to do: the miner waits and asks again
 (:func:`.fake_miner.ask_key`), with ``--contact`` sent as a note for the team. While idle, the
 miner asks again every hour, and for its admission (:func:`keep_admitted`): a validator that

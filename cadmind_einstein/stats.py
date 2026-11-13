@@ -318,13 +318,18 @@ class MinerStats:
         vec = {str(k): float(v) for k, v in (cur.get("by_hotkey") or {}).items()}
         total = sum(vec.values())
         ranked = sorted((h for h, w in weight.items() if w > 0), key=lambda h: -weight[h])
+        keys = self.desk.key_standing(wanted)
         return {
             "at_ms": now,
             "formula": self.formula(),
             "miners": {
-                hk: self._doc(
-                    hk, now, window, weight, average, days, uids, cold, vec, total, ranked
-                )
+                hk: {
+                    **self._doc(
+                        hk, now, window, weight, average, days, uids, cold, vec, total, ranked
+                    ),
+                    # its own key request and place on the waitlist (0.6.10), None if it never asked
+                    "key_request": keys.get(hk),
+                }
                 for hk in wanted
             },
         }

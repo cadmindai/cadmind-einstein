@@ -254,6 +254,123 @@ class TestKeyApproval(_Case):
         self.assertEqual([r["hotkey"] for r in self.desk.key_requests("all")], [B])
 
 
+class TestWaitlist(_Case):
+    """The waitlist (0.6.10, owner 2026-11-13): first come, first served, one place per coldkey; a
+    duplicate holds no place and everyone behind it moves up."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.more = [Keypair.create_from_uri(f"//Wait{i}").ss58_address for i in range(4)]
+        self.reg += self.more
+        self.cold.update({h: f"cold-w{i}" for i, h in enumerate(self.more)})
+
+    def ask(self, hk: str, **kw: Any) -> dict[str, Any]:
+        self.clock.t += 60
+        return self.key(hk, **kw)
+
+    def places(self) -> dict[str, Any]:
+        return {r["hotkey"]: r["waitlist"] for r in self.desk.key_requests()}
+
+    def test_first_come_first_served_and_the_place_is_in_the_pending_answer(self) -> None:
+        self.assertEqual(self.ask(A)["waitlist"], {"position": 1, "of": 1, "coldkey_known": True})
+        self.assertEqual(self.ask(B)["waitlist"]["position"], 2)
+        self.assertEqual(self.ask(C)["waitlist"], {"position": 3, "of": 3, "coldkey_known": True})
+        self.assertEqual(self.ask(A)["waitlist"], {"position": 1, "of": 3, "coldkey_known": True})
+        self.assertEqual([p["position"] for p in self.places().values()], [1, 2, 3])
+
+    def test_a_duplicate_coldkey_holds_no_place_and_nobody_moves_back(self) -> None:
+        w0, w1 = self.more[:2]
+        self.cold[B] = "cold-a"  # B is A's owner's second hotkey
+        self.ask(A)
+        self.ask(B)
+        got = self.ask(w0)
+        self.assertEqual(got["waitlist"], {"position": 2, "of": 2, "coldkey_known": True})
+        dup = self.places()[B]
+        self.assertEqual(
+            dup, {"position": None, "of": 2, "duplicate_of": A, "duplicate_kind": "waiting"}
+        )
+        # a later read that finds the duplicate moves everyone behind it up
+        self.ask(w1)
+        self.assertEqual(self.places()[w1]["position"], 3)
+        self.cold[w0] = "cold-a"
+        self.assertEqual(self.places()[w1], {"position": 2, "of": 2, "coldkey_known": True})
+        self.assertEqual(self.places()[w0]["duplicate_of"], A)
+
+    def test_an_approval_or_refusal_closes_the_gap(self) -> None:
+        self.cold[B] = "cold-a"
+        for hk in (A, B, C, *self.more[:2]):
+            self.ask(hk)
+        self.desk.approve(A)
+        line = self.places()
+        self.assertEqual(
+            line[B], {"position": None, "of": 3, "duplicate_of": A, "duplicate_kind": "approved"}
+        )
+        self.assertEqual([line[h]["position"] for h in (C, *self.more[:2])], [1, 2, 3])
+        self.desk.refuse(C, "no contact")
+        self.assertEqual([self.places()[h]["position"] for h in self.more[:2]], [1, 2])
+        # a refused coldkey does not hold a place: its other hotkey waits like anyone
+        self.cold[self.more[2]] = "cold-c"
+        self.assertEqual(self.ask(self.more[2])["waitlist"]["position"], 3)
+
+    def test_an_admitted_miner_holds_its_coldkeys_place(self) -> None:
+        self.onboard(A)
+        self.cold[B] = "cold-a"
+        got = self.ask(B)
+        self.assertEqual(got["waitlist"]["duplicate_of"], A)
+        self.assertEqual(got["waitlist"]["duplicate_kind"], "approved")
+        self.assertEqual(self.ask(C)["waitlist"], {"position": 1, "of": 1, "coldkey_known": True})
+
+    def test_an_unknown_coldkey_keeps_its_own_place(self) -> None:
+        del self.cold[B]
+        self.ask(A)
+        got = self.ask(B)
+        self.assertEqual(got["waitlist"], {"position": 2, "of": 2, "coldkey_known": False})
+        self.cold[B] = "cold-a"  # read later: a duplicate after all
+        self.assertEqual(self.places()[B]["duplicate_of"], A)
+        self.assertEqual(self.places()[A]["of"], 1)
+
+    def test_a_new_owner_of_an_approved_hotkey_goes_to_the_end(self) -> None:
+        self.desk.approve(A)
+        self.key(A)
+        self.ask(B)
+        self.cold[A] = "cold-other"
+        got = self.ask(A)
+        self.assertEqual(got["waitlist"], {"position": 2, "of": 2, "coldkey_known": True})
+
+    def test_the_miner_sees_its_own_place_and_never_the_notes(self) -> None:
+        self.ask(A)
+        self.ask(B, note="discord: bob")
+        standing = self.desk.key_standing([B, C])
+        self.assertIsNone(standing[C])
+        self.assertEqual(standing[B]["state"], "pending")
+        self.assertEqual(standing[B]["waitlist"]["position"], 2)
+        self.assertNotIn("note", standing[B])
+        self.assertNotIn("ip", standing[B])
+
+    def test_the_platforms_miner_stats_carry_the_place(self) -> None:
+        from cadmind_einstein.stats import MinerStats
+
+        self.ask(A)
+        self.ask(B, note="discord: bob")
+        docs = MinerStats(self.desk).docs([B, C])["miners"]
+        self.assertEqual(docs[B]["key_request"]["waitlist"]["position"], 2)
+        self.assertIsNone(docs[C]["key_request"])
+        self.assertNotIn("discord", json.dumps(docs))
+
+    def test_auto_approval_has_no_waitlist(self) -> None:
+        self.desk.stop()
+        self.approval = "auto"
+        self.desk = self.make()
+        self.assertEqual(self.desk._waitlist(), {})
+
+    def test_the_place_survives_a_restart(self) -> None:
+        self.ask(A)
+        self.ask(B)
+        self.desk.stop()
+        self.desk = self.make()
+        self.assertEqual(self.places()[B]["position"], 2)
+
+
 class TestAutoApproval(_Case):
     approval = "auto"
 
@@ -865,6 +982,21 @@ class TestAskKeyNewcomer(unittest.TestCase):
         )
         self.assertEqual(sum(m.startswith("agent key: still pending at ") for m in said), 3)
 
+    def test_the_place_on_the_waitlist_is_logged(self) -> None:
+        answers = [
+            (202, {"pending": True, "waitlist": {"position": 3, "of": 7}}),
+            (202, {"pending": True, "waitlist": {"position": None, "of": 6, "duplicate_of": "5X"}}),
+            (202, {"pending": True}),  # an older validator names no place
+            (200, {"key_id": "k"}),
+        ]
+        said: list[str] = []
+        ask_key(lambda _p, _b: answers.pop(0), log=said.append, sleep=lambda _s: None)
+        self.assertIn("agent key: on the waitlist: #3 of 7", said)
+        self.assertEqual(
+            sum("already holds its one place (hotkey 5X is waiting)" in m for m in said), 1
+        )
+        self.assertEqual(sum("waitlist" in m for m in said), 2)
+
 
 class TestUnblock(_Case):
     """A wrong disable is lifted by the operator, not by editing the state with the daemon down."""
@@ -1044,6 +1176,7 @@ class TestHttpAndCli(unittest.TestCase):
         code, got = self.ask("forum: alice")
         self.assertEqual(code, 202)
         self.assertTrue(got["pending"])
+        self.assertEqual(got["waitlist"], {"position": 1, "of": 1, "coldkey_known": False})
         rc, out, _ = self.cli("pending")
         self.assertEqual(rc, 0)
         listed = json.loads(out)
@@ -1051,6 +1184,7 @@ class TestHttpAndCli(unittest.TestCase):
         self.assertEqual([r["hotkey"] for r in listed["requests"]], [A])
         self.assertEqual(listed["requests"][0]["note"], "forum: alice")
         self.assertEqual(listed["requests"][0]["ip"], "127.0.0.1")
+        self.assertEqual(listed["requests"][0]["waitlist"]["position"], 1)
         self.assertNotIn(TOKEN, out)
         self.assertEqual(self.cli("approve", A)[0], 0)
         code, got = self.ask()

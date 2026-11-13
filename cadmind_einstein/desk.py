@@ -205,8 +205,9 @@ NOTE_MAX = 300
 REASON_MAX = 500
 """an operator's reason for a refusal or a revocation, at most (characters)"""
 PENDING_MESSAGE = (
-    "Your request to mine with your agent key is recorded and waits for the subnet team's "
-    "approval. Ask again later with the same call: once approved, it answers. Then pass the entry "
+    "Your request to mine with your agent key is on the waitlist for the subnet team's approval "
+    "(your place in line: waitlist). Requests are approved in the order they arrived, one per "
+    "coldkey. Ask again later with the same call: once approved, it answers. Then pass the entry "
     "test once (POST /v1/miners/admission) before any job or weight."
 )
 """what a miner whose key request is pending reads (the validator's ``--pending-message-file``)"""
@@ -1171,9 +1172,12 @@ class Desk:
         if note:
             r.note = _clean(note, NOTE_MAX)
         if r.state == "approved" and r.approved_coldkey and cold and cold != r.approved_coldkey:
-            # the approval was given to another owner: this one asks anew
+            # the approval was given to another owner: this one asks anew, at the end of the line
             r.state, r.decided_ms, r.reason, r.by = "pending", 0, "", ""
+            r.first_ms = now
             self.log(f"key request: {hotkey} now under another coldkey: pending again")
+        if not r.first_ms:  # a request the operator decided before its first ask
+            r.first_ms = now
         if r.state == "approved":
             if not r.approved_coldkey:
                 r.approved_coldkey = cold
@@ -1189,6 +1193,7 @@ class Desk:
             "message": self.pending_message,
             "retry_after_s": PENDING_RETRY_S,
             "first_ms": r.first_ms,
+            "waitlist": self._waitlist().get(hotkey),
         }
 
     def agent_key(self, hotkey: str, *, ip: str = "", note: str = "") -> dict[str, Any]:
@@ -1559,6 +1564,7 @@ class Desk:
             raise DeskError("state is pending, approved, refused, revoked or all")
         reg = set(self.registered())
         with self._lock:
+            line = self._waitlist()
             rows = []
             for r in sorted(self.approvals.values(), key=lambda r: (r.first_ms, r.hotkey)):
                 if state != "all" and r.state != state:
@@ -1570,9 +1576,95 @@ class Desk:
                         "registered": r.hotkey in reg,
                         "keyed": bool(m and m.key_id),
                         "admitted": bool(m and m.admitted),
+                        "waitlist": line.get(r.hotkey),
                     }
                 )
             return rows
+
+    def _waitlist(self) -> dict[str, dict[str, Any]]:
+        """Inside the lock: the waitlist (owner 2026-11-13: the subnet is full, new miners wait in
+        line), computed afresh from the pending key requests on every read -- nothing of it is
+        stored. Empty under ``auto`` approval (nobody waits).
+
+        First come, first served: the pending requests in the order of their first ask (oldest
+        first; the hotkey breaks a tie). One place per coldkey: a pending request whose coldkey
+        already holds a place -- an earlier pending request, or a hotkey that is approved (keyed and
+        admitted ones among them) -- is a duplicate and holds none; it is skipped, so everyone
+        behind it moves up. A request leaves the line when it is approved, refused or revoked, or
+        when its hotkey deregisters; the next read closes the gap (and an approval turns the
+        coldkey's other pending hotkeys into duplicates). The coldkey is the last metagraph read's,
+        else the one recorded at the hotkey's last ask; a hotkey whose coldkey is not known yet
+        stands alone (``coldkey_known: false``) -- it keeps its place rather than lose it on a
+        missing read, and is checked again on the next read.
+
+        Answers, per pending hotkey, ``{position, of, coldkey_known}`` (``position`` from 1,
+        ``of`` the places in line), or ``{position: null, of, duplicate_of, duplicate_kind}`` for
+        a duplicate: ``duplicate_of`` the hotkey (of the same coldkey) that holds the place,
+        ``duplicate_kind`` ``waiting`` (it is in line) or ``approved`` (it has its place
+        already)."""
+        if self.key_approval != "manual":
+            return {}
+        cmap = self._cmap()
+
+        def cold_of(hk: str) -> str:
+            r = self.approvals.get(hk)
+            return str(cmap.get(hk) or (r.coldkey if r else "") or "")
+
+        holder: dict[str, tuple[str, str]] = {}  # coldkey -> (hotkey, kind) holding its place
+        # under manual approval a hotkey keyed or admitted here is an approved one (any other is
+        # revoked at startup, :meth:`_unapproved_out`); one asking anew is pending, not placed
+        placed = sorted(
+            (r for r in self.approvals.values() if r.state == "approved"),
+            key=lambda r: (r.first_ms or r.last_ms, r.hotkey),
+        )
+        for hk in (r.hotkey for r in placed):
+            if hk in self.excluded:
+                continue
+            ck = cold_of(hk)
+            if ck:
+                holder.setdefault(ck, (hk, "approved"))
+        waiting = sorted(
+            (r for r in self.approvals.values() if r.state == "pending"),
+            key=lambda r: (r.first_ms or r.last_ms, r.hotkey),
+        )
+        line: dict[str, dict[str, Any]] = {}
+        places = 0
+        for r in waiting:
+            ck = cold_of(r.hotkey)
+            if ck and ck in holder:
+                hk, kind = holder[ck]
+                line[r.hotkey] = {"position": None, "duplicate_of": hk, "duplicate_kind": kind}
+                continue
+            places += 1
+            line[r.hotkey] = {"position": places, "coldkey_known": bool(ck)}
+            if ck:
+                holder[ck] = (r.hotkey, "waiting")
+        for row in line.values():
+            row["of"] = places
+        return line
+
+    def key_standing(self, hotkeys: Iterable[str]) -> dict[str, dict[str, Any] | None]:
+        """Each hotkey's key request as its own miner may see it (the platform's Miner page): its
+        state, first and last ask, a refusal's or revocation's reason and its place on the
+        waitlist; never its note, address or anyone else's. None for a hotkey that never asked."""
+        with self._lock:
+            line = self._waitlist()
+            out: dict[str, dict[str, Any] | None] = {}
+            for hk in hotkeys:
+                r = self.approvals.get(hk)
+                out[hk] = (
+                    None
+                    if r is None
+                    else {
+                        "key_approval": self.key_approval,
+                        "state": r.state,
+                        "first_ms": r.first_ms,
+                        "last_ms": r.last_ms,
+                        "reason": r.reason,
+                        "waitlist": line.get(hk),
+                    }
+                )
+            return out
 
     def set_launch_equal(self, on: bool, *, by: str = "operator") -> dict[str, Any]:
         """Turn the launch rule on or off (persisted); the next hourly vector follows it. Answers

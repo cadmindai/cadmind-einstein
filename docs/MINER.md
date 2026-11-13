@@ -1,7 +1,7 @@
 # Mining einstein
 
 How to mine CADmind's einstein engine on its Bittensor subnet: registering, creating your agent key on the
-developer platform, asking the validator and waiting for its approval, passing the entry test once, the job
+developer platform, asking the validator and waiting on the waitlist for its approval, passing the entry test once, the job
 protocol, how a job is scored, what counts as copying, and how to run an agent CLI (or any MCP client) as your miner.
 The design behind it is in [`../DESIGN.md`](../DESIGN.md).
 
@@ -10,6 +10,14 @@ The placeholders below are `$NETUID` (the subnet), `$NETWORK` (`test` or `finney
 `https://platform.cadmind.ai`). Their values for each live network are on CADmind's developer platform:
 [platform.cadmind.ai/docs/einstein-miners](https://platform.cadmind.ai/docs/einstein-miners#networks), section
 *Networks*.
+
+> **The subnet is full for now.** All miner places are taken. You can still join the waitlist: register your
+> hotkey, link it on [platform.cadmind.ai](https://platform.cadmind.ai/miner/hotkeys), and start the miner with
+> `--contact` (an email or Discord handle). Your request waits in line and your miner keeps asking on its own. When
+> a place opens, requests are approved in the order they arrived, one per coldkey, and your miner takes its entry
+> test automatically. One coldkey holds one place, so a second hotkey of the same owner never moves anyone back.
+> Your miner's log (`agent key: on the waitlist: #N of M`) and the Miner page on platform.cadmind.ai show your
+> place in line.
 
 ## What you do
 
@@ -39,15 +47,17 @@ miner machine), then carries on with step 5. Stuck? Write to contact@cadmind.ai.
 | 3. Link the hotkey: sign the challenge with it (section 2) | **a person** (the agent can make the signature) | [platform.cadmind.ai/miner/hotkeys](https://platform.cadmind.ai/miner/hotkeys) |
 | 4. Create an agent key that names the hotkey; save its secret on the miner machine, mode 0600 (section 2) | **a person** | [platform.cadmind.ai/agent-keys](https://platform.cadmind.ai/agent-keys) |
 | 5. Start the miner: it asks the validator to take you (section 2, [Ask the validator](#ask-the-validator)) | you or your agent | the miner machine |
-| 6. Wait for approval, then pass the entry test once (section 3) | the subnet team approves; the miner takes the test | |
+| 6. Wait on the waitlist until a place opens, then pass the entry test once (section 3) | the subnet team approves in order, one per coldkey; the miner takes the test | your miner's log, and the [Miner page](https://platform.cadmind.ai/miner) |
 
 The account is one CADmind account for both sites: you make it on app.cadmind.ai (email and password, or Continue
 with Google) and sign in with it on platform.cadmind.ai, the developer console, for steps 3 and 4. A miner's account
 needs a confirmed email and nothing paid.
 
-Miners are let in by hand: until the subnet team approves your hotkey the validator answers *pending*, and the
-reference miner asks again every 15 minutes or so (add a short note on how to reach you with `--contact`). Only
-after step 6 do you get client jobs and a share of the weights; until then you are registered but not admitted.
+Miners are let in by hand, from the waitlist: until the subnet team approves your hotkey the validator answers
+*pending* with your place in line, and the reference miner asks again every 15 minutes or so (add a short note on how
+to reach you with `--contact`). Places are given first come, first served, one per coldkey (see
+[The waitlist](#the-waitlist)). Only after step 6 do you get client jobs and a share of the weights; until then you
+are registered but not admitted.
 
 **Compute is paid in credits, and you need none of your own.** Every Watt run costs credits on the platform.
 Miners cannot buy credits for now and do not have to: each job workspace the validator grants you carries its own
@@ -177,7 +187,8 @@ platform has for your hotkey.
 **Until the subnet team approves your hotkey**, it answers `202`:
 
 ```json
-{"pending": true, "message": "...", "retry_after_s": 900, "first_ms": 1761000000000}
+{"pending": true, "message": "...", "retry_after_s": 900, "first_ms": 1761000000000,
+ "waitlist": {"position": 3, "of": 7, "coldkey_known": true}}
 ```
 
 Your request is recorded (your hotkey, its coldkey, when you first and last asked, your address and your note).
@@ -185,12 +196,23 @@ Your request is recorded (your hotkey, its coldkey, when you first and last aske
 call. A refused request answers `403` with the team's reason; so does a miner the team revoked. A `403` "hotkey is not
 registered on the subnet" right after you registered is neither: the validator has not read the chain since (it
 does every 5 minutes); ask again after that. An approval is for
-your hotkey under its coldkey: a hotkey that moves to another coldkey asks again. Once approved, the same call
-answers the id of the key the platform has for your hotkey:
+your hotkey under its coldkey: a hotkey that moves to another coldkey asks again, at the end of the line. Once
+approved, the same call answers the id of the key the platform has for your hotkey:
 
 ```json
 {"key_id": "..."}
 ```
+
+#### The waitlist
+
+`waitlist` is your place in line: `position` (from 1) of `of` places. The line is the pending requests in the order
+they first asked, with **one place per coldkey**. A request whose coldkey already holds a place (an earlier request
+still waiting, or an approved miner) is a duplicate: it holds no place and is answered
+`{"position": null, "of": 7, "duplicate_of": "<the hotkey holding the place>", "duplicate_kind": "waiting" | "approved"}`.
+So a second hotkey never moves anyone back, and when a duplicate is found everyone behind it moves up. Your place
+moves up, too, as requests ahead of you are approved, refused or leave the subnet. Until the validator has read
+your coldkey from the chain (`coldkey_known: false`), your hotkey keeps its own place. The same place shows on the
+[Miner page](https://platform.cadmind.ai/miner) of platform.cadmind.ai.
 
 Check that it is the key you run on: the platform's `GET $PLATFORM/api/agent/usage`, called with your agent key,
 answers that key's `key_id`. If they differ, the platform has a newer live key naming your hotkey: use that one.
@@ -208,7 +230,7 @@ What each answer means:
 
 | Answer | From | Meaning | What to do |
 |---|---|---|---|
-| `202` pending | validator | your hotkey waits for approval, which is by hand | ask again after `retry_after_s` |
+| `202` pending | validator | your hotkey is on the waitlist (`waitlist`: your place); approval is by hand, in order | ask again after `retry_after_s` |
 | `409 miner_not_linked` | validator | no live agent key names your hotkey | link the hotkey and create the key (steps 3 and 4) |
 | `409 hold` | validator | the subnet is on hold: no client job or practice job is given out and no weight is set yet (the miners' emission is burned); the entry test still runs, and your approval and admission are kept | nothing: the reference miner asks again by itself |
 | `403` not registered on the subnet | validator | registered moments ago: the validator re-reads the chain every 5 minutes | wait 5 minutes and ask again (the reference miner does) |
@@ -231,7 +253,8 @@ each case your agent key stays yours, but it has no job workspace to work in.
 yet (it reads the chain every few minutes): the miner says so once and asks again every minute, it does not exit.
 If the platform has no agent key for your hotkey it logs the platform's instruction and asks again every 15
 minutes. While your request is pending it logs the validator's message once, then one
-`agent key: still pending at HH:MM UTC; asking again in N min` line per ask, so you can see it is alive. After the
+`agent key: still pending at HH:MM UTC; asking again in N min` line per ask, so you can see it is alive, followed by
+your place: `agent key: on the waitlist: #N of M` (or a line saying your coldkey already holds its place). After the
 entry test it logs `entry test passed: this miner is ADMITTED` or `entry test NOT passed`; `cadmind-miner-stats`
 shows `registered` and `admitted` on its first line too.
 

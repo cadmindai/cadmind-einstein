@@ -42,6 +42,22 @@ def _retry_after(got: Any, default: float) -> float:
     return value if value > 0 else default
 
 
+def waitlist_line(place: Any) -> str:
+    """The miner's place on the validator's waitlist (0.6.10), said in one line; '' when the
+    validator names none (an older validator, or one that approves every hotkey)."""
+    if not isinstance(place, dict):
+        return ""
+    if place.get("position"):
+        return f"on the waitlist: #{place['position']} of {place.get('of') or place['position']}"
+    if place.get("duplicate_of"):
+        held = "is approved" if place.get("duplicate_kind") == "approved" else "is waiting"
+        return (
+            "not on the waitlist: this hotkey's coldkey already holds its one place (hotkey "
+            f"{place['duplicate_of']} {held}); one place per coldkey"
+        )
+    return ""
+
+
 def ask_key(
     call: Any,
     *,
@@ -53,7 +69,8 @@ def ask_key(
 ) -> tuple[int, Any]:
     """Ask the validator to take this miner's agent key (``call(path, body) -> (status,
     answer)``) and wait while the request is pending the operator's approval (202 ``{"pending":
-    true}``, asked again every ``retry_after_s`` the validator names) or while the platform knows
+    true}``, asked again every ``retry_after_s`` the validator names, its place on the waitlist
+    logged with each ask: "on the waitlist: #N of M") or while the platform knows
     no key for the hotkey (409 ``miner_not_linked``: the platform's instruction is logged, and the
     miner asks again every :data:`NOT_LINKED_RETRY_S`); at most ``max_wait_s`` in all (0: no
     limit). Answers the last (status, answer): 200 with ``key_id``, the id of the key the
@@ -102,6 +119,9 @@ def ask_key(
                 f"agent key: still pending at {time.strftime('%H:%M', time.gmtime())} UTC; "
                 f"asking again in {wait / 60:.0f} min"
             )
+            place = waitlist_line(got.get("waitlist"))
+            if place:
+                log(f"agent key: {place}")
         if max_wait_s and clock() - start + wait > max_wait_s:
             return code, got
         sleep(wait)

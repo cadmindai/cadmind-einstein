@@ -9,19 +9,19 @@
     cadmind-einstein-operator ... launch-equal on|off|status
     cadmind-einstein-operator ... void JOB --reason "WHY, FOR THE LOG"
 
-``pending`` lists the key requests (hotkey, coldkey, first and last ask, client address, the
-miner's note); ``approve`` lets the hotkey's next ``agent_key`` call take its own agent key
-(looked up on the platform); ``refuse`` answers its asks with the reason; ``revoke`` stops taking
-its key, freezes its open job workspaces, drops its admission and sends the job it holds to another
-miner unscored; ``unblock`` lifts a wrong disable (the block ends, the last
-strike is taken back, the abuse counts so far are marked acted on so they do not disable it again;
-``--readmit`` gives back the admission of a hotkey that had passed its entry test, else it takes
-the test again; it is not keyed again: the miner asks as usual); ``launch-equal``
-turns the launch rule (equal weight per admitted hotkey) on or off at runtime, saved across
-restarts (unless ``--launch-equal`` sets it); ``void`` makes every rejection of a job count for
-nothing (out of the miners' records, weights and rejection counts: a decline that was right).
-An approved miner still passes the entry test once before any job or weight. The token file (the
-validator's ``--token-file``, mode 0600) is read, never printed.
+``pending`` lists the key requests (hotkey, coldkey, first and last ask, client address, the miner's
+note, its place on the waitlist); ``approve`` lets the hotkey's next ``agent_key`` call take its own
+agent key (looked up on the platform); ``refuse`` answers its asks with the reason; ``revoke`` stops
+taking its key, freezes its open job workspaces, drops its admission and sends the job it holds to
+another miner unscored; ``unblock`` lifts a wrong disable (the block ends, the last strike is taken
+back, the abuse counts so far are marked acted on so they do not disable it again; ``--readmit``
+gives back the admission of a hotkey that had passed its entry test, else it takes the test again;
+it is not keyed again: the miner asks as usual); ``launch-equal`` turns the launch rule (equal
+weight per admitted hotkey) on or off at runtime, saved across restarts (unless ``--launch-equal``
+sets it); ``void`` makes every rejection of a job count for nothing (out of the miners' records,
+weights and rejection counts: a decline that was right). An approved miner still passes the entry
+test once before any job or weight. The token file (the validator's ``--token-file``, mode 0600) is
+read, never printed.
 """
 
 from __future__ import annotations

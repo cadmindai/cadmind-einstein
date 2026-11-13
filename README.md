@@ -124,7 +124,7 @@ commercial use). An efficient harness -- fewer, better model calls and less Watt
 | Document | For |
 |---|---|
 | [`DESIGN.md`](DESIGN.md) | how einstein works and why: jobs, the gate, reassignment, scoring, weights, abuse, auditability |
-| [`docs/MINER.md`](docs/MINER.md) | miners: registering, creating the agent key on the developer platform, the approval, the entry test, the job protocol, scoring, your stats, copying, running an agent |
+| [`docs/MINER.md`](docs/MINER.md) | miners: registering, creating the agent key on the developer platform, the waitlist and approval, the entry test, the job protocol, scoring, your stats, copying, running an agent |
 | [`docs/VALIDATOR.md`](docs/VALIDATOR.md) | validators: staking, the review bundle, the judge and its prompt, the vote protocol, cost, calibration |
 | [`CHANGELOG.md`](CHANGELOG.md) | what changed in each release |
 | [`CONTRIBUTING.md`](CONTRIBUTING.md) | development setup and pull requests |
@@ -246,7 +246,7 @@ cadmind-einstein-operator ... unblock MINER_SS58 --reason "why, for the log" [--
 cadmind-einstein-operator ... launch-equal on|off|status
 ```
 
-`pending` lists the requests (hotkey, coldkey, first and last ask, address, the miner's note; `--state all` lists
+`pending` lists the requests (hotkey, coldkey, first and last ask, address, the miner's note, its `waitlist` place; `--state all` lists
 every decision too). `approve` lets the hotkey's next request take its own agent key (looked up on the platform);
 `refuse` answers its asks with the reason; `revoke` stops taking its key, freezes its open job workspaces, drops
 its admission, sends the job it holds to another miner without scoring
@@ -261,6 +261,14 @@ A local stack needs no chain: `--dev-uri //Validator --metagraph-file hotkeys.js
 `{"neurons": [...], "owner_hotkey": ..., "hyper": {...}}`) runs with a development key and is always a dry run.
 
 ## Running a miner
+
+> **The subnet is full for now.** All miner places are taken. You can still join the waitlist: register your
+> hotkey, link it on [platform.cadmind.ai](https://platform.cadmind.ai/miner/hotkeys), and start the miner with
+> `--contact` (an email or Discord handle). Your request waits in line and your miner keeps asking on its own. When
+> a place opens, requests are approved in the order they arrived, one per coldkey, and your miner takes its entry
+> test automatically. One coldkey holds one place, so a second hotkey of the same owner never moves anyone back.
+> Your miner's log (`agent key: on the waitlist: #N of M`) and the Miner page on platform.cadmind.ai show your
+> place in line.
 
 See [`docs/MINER.md`](docs/MINER.md). In short:
 
@@ -277,8 +285,8 @@ It runs on your own agent key: create it on the developer platform, on the accou
 naming the hotkey, and save its secret in that file (0600). Making the account, linking the hotkey and creating
 the key are done once by a person, in a browser (sign-up asks a captcha); an AI agent setting up a miner hands
 those three steps to its operator ([docs/MINER.md](docs/MINER.md), *Joining, step by step*; help:
-contact@cadmind.ai). It asks the validator to take the key (and, until the
-subnet team approves the hotkey, waits and asks again; pass `--contact` with a short note on how to reach you), takes the entry test once, then polls for jobs and runs your agent CLI on each,
+contact@cadmind.ai). It asks the validator to take the key (and, while the hotkey is on the waitlist, waits and
+asks again, logging its place; pass `--contact` with a short note on how to reach you), takes the entry test once, then polls for jobs and runs your agent CLI on each,
 restricted to the Watt MCP server and one local tool, `fetch_to_workspace`, which downloads a source from your own
 connection (many sites refuse the platform's address) and uploads it into the job's workspace
 (`cadmind_einstein/fetch_mcp.py`; fenced to public http(s) addresses, 20 s and 8 MB a download; `--no-local-fetch`
@@ -402,7 +410,7 @@ Every answer on these routes is signed by the validator's hotkey (`X-Einstein-Va
 
 | Route | Body | Answer |
 |---|---|---|
-| `POST /v1/miners/agent_key` | `{contact?}` | `{key_id}`: the id of the miner's own agent key, as the platform has it for the hotkey (rate-limited; no secret is sent either way); `202 {pending: true, message, retry_after_s}` until the subnet team approves the hotkey; 403 with the reason when refused or revoked; `409 {error, code: "miner_not_linked"}` with the platform's instruction when the platform has no key for the hotkey |
+| `POST /v1/miners/agent_key` | `{contact?}` | `{key_id}`: the id of the miner's own agent key, as the platform has it for the hotkey (rate-limited; no secret is sent either way); `202 {pending: true, message, retry_after_s, waitlist}` until the subnet team approves the hotkey (`waitlist`: its place in line, `{position, of}`, one place per coldkey); 403 with the reason when refused or revoked; `409 {error, code: "miner_not_linked"}` with the platform's instruction when the platform has no key for the hotkey |
 | `POST /v1/miners/admission` | `{}` | the entry test (approved key holders only): a small device from a client-style brief, assigned to this miner alone, no client questions, the client jobs' gate, within its deadline (once a day) |
 | `POST /v1/jobs/work` | `{}` | `{job, workspace, brief, accepted, accept_by_ms, deadline_ms, no_questions, subprojects?}` or `{job: null}`, plus `cancelled: <job>` when the client cancelled the miner's last job; also the liveness poll |
 | `POST /v1/jobs/accept` | `{job}` | `{job, workspace, deadline_ms}`; 410 for a job its client cancelled (also `submit` and `reject`) |

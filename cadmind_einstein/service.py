@@ -7,8 +7,10 @@ the metagraph):
   as the platform has it for the hotkey (the miner made it there and holds its secret; 409 with
   ``code: miner_not_linked`` and the platform's instruction when the platform has none); under
   manual approval (the default) a hotkey the operator has not approved gets ``202
-  {"pending": true, "message", "retry_after_s"}`` instead (its ask recorded, with ``contact``, an
-  optional note for the operator), and a refused or revoked one 403 with the operator's reason;
+  {"pending": true, "message", "retry_after_s", "waitlist"}`` instead (its ask recorded, with
+  ``contact``, an optional note for the operator; ``waitlist``: its place in line, ``{position,
+  of}``, or ``{position: null, duplicate_of}`` when its coldkey already holds the one place it
+  may: :meth:`.desk.Desk._waitlist`), and a refused or revoked one 403 with the operator's reason;
 - ``POST /v1/jobs/work`` -- the miner's assignment, if any (poll every few seconds: it is also how
   the validator knows the miner is alive), and ``cancelled``: the id of its last job when the
   client cancelled it (stop working on it; said until the miner accepts another job);
@@ -36,7 +38,8 @@ download, stars, change request or refund; a ``trust`` is ignored; ``kind: forge
 deleted the job: its calibration archive goes), ``GET /v1/jobs/{job}``, ``GET /v1/scores``, ``POST
 /v1/weights/close`` (the hour's report now: dry runs), ``GET /v1/chain`` (our stake share, kappa,
 the weights path), ``GET /v1/stats/miners?hotkeys=a,b`` (the stats of up to 20 hotkeys: the
-platform's miner dashboard). Onboarding (the operator; ``cadmind-einstein-operator``): ``GET
+platform's miner dashboard; each with ``key_request``, its own request's state and place on the
+waitlist, never its note). Onboarding (the operator; ``cadmind-einstein-operator``): ``GET
 /v1/operator/key_requests?state=pending|approved|refused|revoked|all``, ``POST /v1/operator/approve
 {hotkey}``, ``POST /v1/operator/refuse {hotkey, reason}`` and ``POST /v1/operator/revoke {hotkey,
 reason}`` (no longer keyed, its open job workspaces frozen, the admission dropped, its job sent to

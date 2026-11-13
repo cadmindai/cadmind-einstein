@@ -7,6 +7,24 @@ All notable changes to this project are listed here. The format follows
 
 ## [Unreleased]
 
+## [0.6.10] - 2026-11-13
+
+### Added
+
+- **The waitlist.** The subnet is full for now, and a new miner's key request waits in line. Requests are approved
+  first come, first served, **one place per coldkey**: a second hotkey of a coldkey that already waits (or already
+  has an approved miner) holds no place, so it never moves anyone back -- and when such a duplicate is found, everyone
+  behind it moves up. Nothing changes in what you run: register your hotkey, link it on platform.cadmind.ai, start
+  the miner with `--contact`, and it keeps asking on its own. While pending, the 202 answer to
+  `POST /v1/miners/agent_key` carries `waitlist: {position, of, coldkey_known}` (`of`: the places in line), or
+  `{position: null, duplicate_of, duplicate_kind}` for a duplicate; the reference miner logs
+  `agent key: on the waitlist: #N of M` with each ask, and the Miner page on platform.cadmind.ai shows it too. A
+  hotkey whose coldkey the validator has not read yet keeps its own place until it does. A hotkey that moves to
+  another coldkey after its approval asks again at the end of the line.
+- **Validator:** the operator's `GET /v1/operator/key_requests` (and `cadmind-einstein-operator pending`) gives each
+  request its `waitlist` place; the platform's `GET /v1/stats/miners` gives each hotkey its own `key_request`
+  (state, first and last ask, reason, place on the waitlist -- never its note or address).
+
 ## [0.6.9] - 2026-11-13
 
 ### Fixed
