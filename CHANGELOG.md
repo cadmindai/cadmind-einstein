@@ -7,6 +7,28 @@ All notable changes to this project are listed here. The format follows
 
 ## [Unreleased]
 
+## [0.6.9] - 2026-11-13
+
+### Fixed
+
+- **Validator: a right decline no longer counts against you.** A job you rejected that ends **declined** (every
+  attempt that judged it a rejection, from miners of at least two coldkeys: nobody could build it) now makes your
+  rejection **void**: it leaves your router record (points per job), your weight and average, your stats' rejection
+  counters and the rejection telemetry and disable rule, as if you had not been assigned it. Before, it stayed a 0,
+  so building anything on an unreadable brief (0.5) beat declining it (0). Only confirmed declines are neutral: a
+  rejection whose job is still open is a 0 and a rejection until the job ends, one another miner then delivers stays
+  a 0 (and counts as overturned when that miner is of another coldkey), and one owner's hotkeys declining between
+  them confirm nothing. A void outcome stays in your receipt and the hourly report, with `void` saying why (and
+  `parts.void`); `cadmind-recompute` reproduces every report as before. Deliveries score exactly as before.
+
+### Added
+
+- **Validator: `POST /v1/operator/void {job, reason}`** (and `cadmind-einstein-operator void JOB --reason ...`). The
+  operator voids every rejection of a job still in the 7-day window -- for example a brief that said nothing to
+  build -- with the same effect as a confirmed decline (an overturned one is no longer counted overturned). Saved
+  with the outcome (a restart keeps it), logged, and voiding twice changes nothing. Deliveries and other failures are
+  never touched.
+
 ## [0.6.8] - 2026-11-13
 
 ### Added

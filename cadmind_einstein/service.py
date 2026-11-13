@@ -46,7 +46,10 @@ lifted: the block ends, the last strike is taken back, the abuse counts so far a
 keyed again: the miner asks as usual); ``POST /v1/operator/admit {hotkey, reason}`` (an approved,
 keyed hotkey admitted without another entry test, its entry-test failures taken back: a test the
 subnet's own fault failed); ``GET /v1/operator/launch_equal`` and ``POST
-/v1/operator/launch_equal {on}`` (the launch rule, on or off at runtime). Jobs are not posted here:
+/v1/operator/launch_equal {on}`` (the launch rule, on or off at runtime); ``POST
+/v1/operator/release {job, reason}`` (a client job taken back from the miner working it, nobody
+scored); ``POST /v1/operator/void {job, reason}`` (every rejection of a job counts for nothing: out
+of the records, weights and rejection counts). Jobs are not posted here:
 the validator CLAIMS them from the platform's queue when it has a free admitted miner
 (``platform.claim``).
 
@@ -112,6 +115,7 @@ BEARER = (
     "/v1/operator/admit",
     "/v1/operator/launch_equal",
     "/v1/operator/release",
+    "/v1/operator/void",
 )
 """POST routes for the platform and the operator"""
 MAX_STATS_HOTKEYS = 20
@@ -756,6 +760,10 @@ def serve(
                 elif self.path == "/v1/operator/release":
                     self._send(
                         200, desk.release(str(body.get("job") or ""), str(body.get("reason") or ""))
+                    )
+                elif self.path == "/v1/operator/void":
+                    self._send(
+                        200, desk.void(str(body.get("job") or ""), str(body.get("reason") or ""))
                     )
                 elif self.path == "/v1/operator/admit":
                     hk = str(body.get("hotkey") or "")

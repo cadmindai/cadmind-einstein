@@ -414,7 +414,7 @@ accepted in time, a copy, a rejection) goes to **another miner, from scratch**.
 | a worked attempt does not pass | **not finished** (its project kept; not charged) | that attempt scores 0 |
 | the platform refused a Watt run's result (a host block) | **blocked by the platform** (its project kept; not charged; the platform alerted) | nobody scores; the attempt is not counted |
 | a later round left at the digest of the version it started from, when the client only answered questions by picking offered options | **no change** (the project, its answers recorded, handed back; not charged; not sent to another miner) | that attempt scores nothing |
-| two rejections, by miners of two coldkeys | **declined** (the client reads both messages; the brief is reviewed) | each rejection scored 0 |
+| two rejections, by miners of two coldkeys | **declined** (the client reads both messages; the brief is reviewed) | each rejection **void**: it counts for nothing (see below) |
 | four attempts without either of the above | **didn't finish** | each attempt scored 0 |
 | every admitted miner that could take it has tried it | **declined** if every attempt was a rejection, else **didn't finish** | as above |
 
@@ -454,6 +454,15 @@ A rating or a quality refund outranks a download: the client's latest verdict de
 count the same.
 
 Not delivered, failed the gate, timed out, handed back (rejected), a copy: **0**, at once.
+
+**A right decline counts for nothing.** When a job you rejected ends **declined** -- every attempt that judged it
+a rejection, from miners of at least two coldkeys -- your rejection is made **void**: it leaves your record, your
+weight, your average and the rejection counts (telemetry and the disable rule), as if you had never been assigned
+it. Until the job ends, your rejection is a 0 and a rejection; if another miner delivers the job instead, it stays a
+0 (and is overturned when that miner is of another coldkey). Hotkeys of one coldkey declining between them confirm
+nothing. The validator's operator may also void a job's rejections by hand (a brief that said nothing to build). A
+void outcome still shows in your receipt and the hourly report, with `void` saying why and `parts.void` beside
+`failed`.
 
 Signals that arrive later change the job's points while the job is in the 7-day window; after that they change
 nothing. Your stats and receipt show, per job, its points `s` and what decided them (`parts`: `{"signal": "none" |
@@ -582,7 +591,7 @@ coldkey (after 30 minutes, to any other miner).
 | not accepted within 2 minutes, or late and failing (timeout) | `s = 0` at once |
 | a copy | `s = 0` at once, and a step toward a disable |
 | a gate failure | `s = 0` at once |
-| a rejection | `s = 0` at once, you go to the back of the line, and a step toward a disable when another coldkey delivers the job |
+| a rejection | `s = 0` at once, you go to the back of the line, and a step toward a disable when another coldkey delivers the job; void (counts for nothing) once the job ends declined by two coldkeys |
 | 1 or 2 stars, or a refund for the delivery's quality, as the client's latest signal | `s = 0` |
 | time | a job leaves your weight 7 days after it ended |
 | not polling for 24 hours | out of the launch and history rules while anyone else is seen |

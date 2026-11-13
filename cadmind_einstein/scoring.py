@@ -21,6 +21,14 @@ platform may still send is ignored).
 An attempt that does not deliver -- failed the gate, timed out, handed back (rejected), a copy, a
 delivery the platform refused for what the builder did -- scores **0**, at once.
 
+**A void outcome counts for nothing** (``void``: why): it is published with its facts but is not one
+of the miner's jobs -- neither in its weight, nor its average, nor the router's record. The desk
+voids the rejections of a **confirmed decline** (a job that ended declined: every substantive
+attempt a rejection, from ``second_opinion.coldkeys`` distinct coldkeys -- nobody could do it, so
+handing it back was right), and the operator voids the rejections of a job by hand
+(``POST /v1/operator/void``). A rejection whose job is still open scores 0 until the job ends; one
+another miner then delivered (overturned) keeps its 0.
+
 **Weights, every hour, never burned.** A job counts for 7 days from its end (its delivery), flat:
 no decay. A miner's **weight** is the sum of its job points over the last 7 days; the vector is
 proportional to it over registered, admitted miners seen in the last 24 hours. Its **average**
@@ -103,6 +111,10 @@ class JobOutcome:
     copy_of: str = ""
     kind: str = ""
     """pass | reject | gate | timeout | copy | refused"""
+    void: str = ""
+    """why this outcome counts for nothing ('' while it counts): a confirmed decline's rejection
+    (``declined``) or the operator's (``operator: ...``). It stays in the reports, scored 0, and
+    is left out of every sum, average and record (:func:`counts`)"""
     signals: list[dict[str, Any]] = field(default_factory=list)
     """the client's, in the order they came: {"kind": download | stars | change | refund,
     "stars": 1-5, "quality": a refund for the delivery's quality, "by": "visitor" on a download
@@ -149,6 +161,8 @@ def score(o: JobOutcome) -> float:
         o.parts = {"signal": by}
     else:
         o.s, o.parts = 0.0, {"failed": o.kind or "failed"}
+    if o.void:
+        o.parts["void"] = o.void
     return o.s
 
 
@@ -165,13 +179,18 @@ def in_window(o: JobOutcome, now_ms: int) -> bool:
     return now_ms - o.ended_ms <= WINDOW_H * HOUR_MS
 
 
+def counts(o: JobOutcome, now_ms: int) -> bool:
+    """Whether ``o`` is one of its miner's jobs now: in the window and not void."""
+    return not o.void and in_window(o, now_ms)
+
+
 def standing(jobs: Iterable[JobOutcome], now_ms: int) -> tuple[dict[str, float], dict[str, float]]:
     """(weight, average) per miner over the window's jobs: the SUM of its job points, and that sum
     over its number of jobs (what the stats pages show; nothing routes by it)."""
     total: dict[str, float] = defaultdict(float)
     count: dict[str, int] = defaultdict(int)
     for o in jobs:
-        if not in_window(o, now_ms):
+        if not counts(o, now_ms):
             continue
         total[o.hotkey] += o.s
         count[o.hotkey] += 1
@@ -192,7 +211,7 @@ def record(jobs: Iterable[JobOutcome], now_ms: int) -> dict[str, float]:
     total: dict[str, float] = defaultdict(float)
     count: dict[str, int] = defaultdict(int)
     for o in jobs:
-        if in_window(o, now_ms):
+        if counts(o, now_ms):
             total[o.hotkey] += o.s
             count[o.hotkey] += 1
     return {
@@ -415,6 +434,29 @@ class Ledger:
                 if self.store is not None:
                     self.store.delete("outcome", k)
             return gone
+
+    def void(self, job: str, reason: str, kinds: Iterable[str] = ("reject",)) -> list[JobOutcome]:
+        """Mark every outcome of ``job`` of these ``kinds`` void (``reason``), saved with it;
+        answers the ones newly voided (an outcome already void keeps its first reason)."""
+        kinds = frozenset(kinds)
+        with self._lock:
+            out = []
+            for o in self.jobs.values():
+                if o.job == job and o.kind in kinds and not o.void:
+                    o.void = reason
+                    self._save(o)
+                    score(o)
+                    out.append(o)
+            return out
+
+    def voided(self, job: str) -> set[str]:
+        """The hotkeys holding a void rejection of ``job``."""
+        with self._lock:
+            return {
+                o.hotkey
+                for o in self.jobs.values()
+                if o.job == job and o.kind == "reject" and o.void
+            }
 
     def _window(self, now_ms: int) -> list[JobOutcome]:
         return [o for o in self.jobs.values() if in_window(o, now_ms)]

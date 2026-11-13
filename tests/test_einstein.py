@@ -599,7 +599,11 @@ class TestDesk(unittest.TestCase):
         self.assertEqual(len(res["messages"]), 2)
         self.assertEqual(res["messages"][0]["category"], "not-allowed")
         self.assertEqual(self.scored(), {r1: [0.0], r2: [0.0]})  # a hand-back is 0, at once
-        self.assertEqual(self.desk.telemetry()[r1]["rejected"], 1)
+        # two owners agreed: a confirmed decline counts for nothing (0.6.9), neither in the
+        # records nor in the rejection counts
+        self.assertEqual({o.void for o in self.ledger.outcomes}, {"declined"})
+        self.assertEqual(self.ledger.records(self.desk.now_ms()), {})
+        self.assertEqual(self.desk.telemetry()[r1]["rejected"], 0)
 
     def test_needs_client_is_no_rejection(self) -> None:
         """Owner 2026-10-24: no questions -- the builder assumes, records and delivers; a need is

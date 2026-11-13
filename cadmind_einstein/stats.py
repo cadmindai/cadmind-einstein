@@ -247,6 +247,8 @@ class MinerStats:
 
     def _window(self, hotkey: str, since_ms: int, outcomes: list[JobOutcome]) -> dict[str, Any]:
         c = _empty()
+        # a void rejection (a confirmed decline, or the operator's) is not counted as one
+        void = {o.job for o in outcomes if o.hotkey == hotkey and o.kind == "reject" and o.void}
         with self.desk._lock:  # noqa: SLF001 -- the desk's own lock, read only
             for j in self.desk.jobs.values():
                 last = j.attempts[-1] if j.attempts else None
@@ -257,7 +259,7 @@ class MinerStats:
                         continue
                     c["assigned"] += 1
                     if a.kind == "reject":
-                        c["rejected"] += 1
+                        c["rejected"] += 0 if j.job in void else 1
                     elif a.kind == "gate":
                         c["gate_failed"] += 1
                     elif a.kind == "copy":
@@ -273,7 +275,7 @@ class MinerStats:
             if o.hotkey != hotkey or o.ended_ms < since_ms:
                 continue
             _add(c, outcome_row(o, self._vote_of(o.job) if o.passed else None))
-            if o.kind == "reject" and o.job in passed_by_other:
+            if o.kind == "reject" and not o.void and o.job in passed_by_other:
                 c["overturned"] += 1
         return _finish(c)
 

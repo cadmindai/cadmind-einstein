@@ -24,7 +24,9 @@ What the einstein validator runs ([`../DESIGN.md`](../DESIGN.md) sections 5 and 
 - A client job delivered by a builder that passes the validator's Watt gate scores **0.5** while the client has
   done nothing, **1** when the client downloaded it or rated it 3-5 stars, **0** when the client rated it 1-2 stars
   or a refund was granted for its quality. A rating or a quality refund outranks a download: the client's latest verdict decides whenever there is one (1 star then 5 stars is 1; 1 star then a download is still 0), and a download counts only while there is none. Not delivered, failed the gate, timed
-  out, handed back (rejected), a copy: **0**. The platform's `trust` on a signal is ignored.
+  out, handed back (rejected), a copy: **0**. A rejection whose job ends declined by miners of two coldkeys is
+  void: it counts for nothing in records, weights or rejection counts (so does one the operator voids with
+  `POST /v1/operator/void`). The platform's `trust` on a signal is ignored.
 - A miner's weight is the sum of its points over the last 7 days (flat, no decay); the vector is proportional to it
   over the registered, admitted miners seen in 24 hours. Genesis, launch and never-empty rules are unchanged.
 - The next client job goes to the job's `prefer` miner if it is available, else to the available miner with the best

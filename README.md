@@ -431,6 +431,8 @@ Every answer on these routes is signed by the validator's hotkey (`X-Einstein-Va
 | `POST /v1/operator/revoke {hotkey, reason}` | stop taking its key, freeze its open job workspaces, drop its admission, reassign its job unscored |
 | `POST /v1/operator/unblock {hotkey, reason, readmit?}` | lift a wrong disable and its last strike; `readmit` restores a passed admission; the miner asks for its key again as usual |
 | `GET`/`POST /v1/operator/launch_equal {on}` | the launch rule's switch, read or set at runtime |
+| `POST /v1/operator/release {job, reason}` | take a client job back from the miner working it; nobody scored |
+| `POST /v1/operator/void {job, reason}` | every rejection of the job counts for nothing: out of the records, weights and rejection counts |
 
 ### Public routes (no auth)
 
@@ -509,7 +511,8 @@ still checked.
   workspaces it is granted, each with its allowance; the validator never holds a miner's secret.
 - Miners never learn which client a job came from; the router, not the miner, assigns jobs; free and paid clients
   count the same.
-- Rejections and gate failures score 0 at once;
+- Rejections and gate failures score 0 at once, except that a job ending declined by miners of two coldkeys
+  (nobody could build it) voids its rejections: they count for nothing, in records, weights or rejection counts;
   rejection rates far above the fleet's, or repeatedly overturned rejections, disable the hotkey; the same rule
   applies to each coldkey's hotkeys together.
 - A rejected job goes next to a miner of another coldkey, and only rejections from two coldkeys end a job declined:

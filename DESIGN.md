@@ -180,7 +180,7 @@ validator: freeze on submit, fork, read Watt's verdict (the gate), copy check, s
   | a worked attempt does not pass (gate failure, or late and failing) | **not finished**: its project kept, the builder's summary for the client | no | that attempt scores 0 |
   | a Watt run of the gate answered `host_refused` (the platform refused its result, not the design) | **blocked by the platform** (`host_blocked`): its project kept, the platform told and alerting its operator | no | nobody (the attempt is uncounted) |
   | a later round passes at the digest of the version it started from, and the client only answered questions, each by picking an offered option | **no change**: its project, the answers recorded, handed back | no | that attempt scores nothing |
-  | two rejections, from two coldkeys | **declined**: the client reads both messages; the brief is flagged for review | no | each rejection scored 0 |
+  | two rejections, from two coldkeys | **declined**: the client reads both messages; the brief is flagged for review | no | each rejection void (counts for nothing) |
   | four attempts without either of the above (timeouts before accepting, copies) | **didn't finish** | no | each attempt scored 0 |
   | every admitted miner that could take it has tried it (the second-opinion wait still applies) | **declined** if every attempt was a rejection, else **didn't finish** | no | as above |
 
@@ -205,6 +205,14 @@ validator: freeze on submit, fork, read Watt's verdict (the gate), copy check, s
   2026-11-06; earlier releases held a rejection or a gate failure until another miner passed the job). A rejection
   also sends its miner to the back of the router's line (section 6), and one another coldkey's miner overturns by
   delivering the job counts toward the abuse limits (section 11).
+- **A confirmed decline is neutral** (0.6.9). A job that ends declined -- every substantive attempt a rejection,
+  from `--second-opinion-coldkeys` distinct coldkeys -- was rightly handed back: its rejections are made **void**
+  (`JobOutcome.void`), published with their facts and left out of every weight, average, router record and
+  rejection count. Without it the rule paid 0.5 for building anything on an unreadable brief and 0 for declining
+  it. Only confirmed declines are neutral: a rejection whose job is still open is a 0 and a rejection until the job
+  ends; one another miner delivers stays a 0 (overturned when that miner is of another coldkey); one owner's
+  hotkeys running the fleet out confirm nothing. The operator may void a job's rejections by hand
+  (`POST /v1/operator/void {job, reason}`), saved with the outcome so restarts and recompute agree.
 - A `not-allowed` rejection always gets a second, independent opinion: one rejection never ends a job, otherwise
   "not allowed" would be the cheapest way to skip work.
 - A miner that deregisters mid-job, or is disabled for abuse, loses the job without a score, and that attempt does

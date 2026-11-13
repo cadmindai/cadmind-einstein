@@ -36,6 +36,14 @@ attempt that does not deliver (a timeout, a copy, a rejection, a gate failure) s
 Two rejections end the job **declined** (the client reads the messages, the brief is flagged for
 review); four attempts without a worked one end it **didn't finish**. None is charged.
 
+**A confirmed decline is neutral.** A job that ends declined with every substantive attempt a
+rejection from ``SecondOpinion.coldkeys`` distinct coldkeys was rightly handed back: its rejections
+are made void (:meth:`Ledger.void <.scoring.Ledger.void>`) -- out of every miner's record and weight
+-- and taken out of the rejection counts (telemetry and :meth:`enforce`). A rejection whose job is
+still open counts as a 0 (and a rejection) until the job ends; one another miner then delivered
+stays a 0 and counts as overturned. The operator may void a job's rejections by hand
+(:meth:`Desk.void`).
+
 **Independent opinions.** "Nobody could do it" takes miners of different owners: a job a miner
 rejected or failed goes next to a miner of ANOTHER coldkey (``SecondOpinion.wait_s`` later, any
 other miner: its opinion then is not a second one). Rejections and failures end a job declined or
@@ -1672,6 +1680,81 @@ class Desk:
         self.tick()
         return out
 
+    def void(self, job_id: str, reason: str) -> dict[str, Any]:
+        """The operator voids every rejection of a client job (owner 2026-11-13: a miner rightly
+        declined briefs that said nothing to build, and each still scored 0): each counts for
+        nothing from now on -- out of its miner's record and weight -- and is taken out of the
+        rejection counts (telemetry, :meth:`enforce`; one another miner had overturned is no longer
+        counted overturned). Saved with the outcome, so a restart and a report's recompute agree.
+        Only a rejection still in the ledger's window can be voided; voiding twice changes nothing.
+        Deliveries and other failures are never touched."""
+        why = _clean(reason, REASON_MAX)
+        if not why:
+            raise DeskError("a void says why, for the record")
+        job_id = str(job_id or "")
+        with self._mut():
+            mine = [o for o in self.ledger.outcomes if o.job == job_id and o.kind == "reject"]
+            if not mine:
+                raise DeskError("no rejection of that job in the record", 404)
+            done = self._void(job_id, f"operator: {why}", self._cmap())
+            out = {
+                "job": job_id,
+                "voided": [{"hotkey": o.hotkey, "ended_ms": o.ended_ms} for o in done],
+                "already_void": len(mine) - len(done),
+            }
+        hks = ", ".join(sorted({o.hotkey for o in done})) or "none new"
+        self.log(f"job {job_id}: rejections voided by the operator ({hks}): {why}")
+        return out
+
+    def _void_confirmed(self, job: Job, cmap: Mapping[str, str]) -> list[JobOutcome]:
+        """Inside a mutation, as ``job`` ends declined: when the decline is confirmed -- every
+        substantive attempt a rejection, at least two of them, from ``second_opinion.coldkeys``
+        distinct coldkeys -- its rejections are made void. A decline by one owner's hotkeys alone
+        (the fleet ran out of other owners) is not confirmed: its rejections keep their 0."""
+        if job.kind != "client":
+            return []
+        substantive = [x for x in job.attempts if x.kind in SUBSTANTIVE]
+        owners = {self.coldkey(x.hotkey, cmap) for x in substantive}
+        if (
+            len(substantive) < 2
+            or any(x.kind != "reject" for x in substantive)
+            or len(owners) < max(1, self.second_opinion.coldkeys)
+        ):
+            return []
+        done = self._void(job.job, "declined", cmap)
+        if done:
+            self._event("decline-confirmed", job.job, voided=len(done))
+        return done
+
+    def _void(self, job_id: str, reason: str, cmap: Mapping[str, str]) -> list[JobOutcome]:
+        """Inside a mutation: void ``job_id``'s rejections in the ledger and take each newly void
+        one out of the rejection counts (and the overturned ones, when another owner's miner
+        delivered the job). A count a strike already acted on (``abuse_seen``) is lowered with it,
+        so no later count reads below zero."""
+        done = self.ledger.void(job_id, reason, ("reject",))
+        job = self.jobs.get(job_id)
+        deliverer = (
+            str(job.result.get("hotkey") or "")
+            if job is not None and job.state == "done" and job.result.get("label") == "delivered"
+            else ""
+        )
+        for o in done:
+            hk = o.hotkey
+            self.rejected[hk] = max(0, self.rejected.get(hk, 0) - 1)
+            seen = self.abuse_seen.get(hk)
+            if seen is not None and int(seen.get("rejected", 0)) > self.rejected[hk]:
+                seen["rejected"] = self.rejected[hk]
+            if (
+                deliverer
+                and job is not None
+                and self.overturned.get(hk, 0) > 0
+                and self._overturns(job, hk, deliverer, cmap)
+            ):
+                self.overturned[hk] -= 1
+                if seen is not None and int(seen.get("overturned", 0)) > self.overturned[hk]:
+                    seen["overturned"] = self.overturned[hk]
+        return done
+
     def _free_job(self, m: Miner, why: str, kind: str) -> str:
         """Inside a mutation: the job ``m`` holds ends for it without scoring anyone (``kind``,
         uncounted) and goes back to the queue for another miner (the way a deregistration does); a
@@ -2498,6 +2581,8 @@ class Desk:
         uncharged either way. Its failed attempts scored 0 as they ended."""
         counted = [x for x in job.attempts if x.kind not in UNCOUNTED]
         label = "declined" if all(x.kind == "reject" for x in counted) else "didn't finish"
+        if label == "declined":
+            self._void_confirmed(job, self._cmap())
         job.state = "done"
         last = job.attempts[-1]
         job.result = {
@@ -3148,6 +3233,8 @@ class Desk:
             label = "declined" if all(x.kind == "reject" for x in substantive) else "out of reach"
         else:
             label = "didn't finish"
+        if label == "declined":
+            self._void_confirmed(job, cmap)
         job.state = "done"
         job.result = {
             "label": label,
@@ -3844,8 +3931,13 @@ class Desk:
                     verdict={**verdict, "copy": copy},
                 )
                 return
+            void = self.ledger.voided(job.job)  # the operator's voids are not overturned
             for x in job.attempts:  # another miner passed: its rejections are overturned
-                if x.kind == "reject" and self._overturns(job, x.hotkey, a.hotkey, cmap):
+                if (
+                    x.kind == "reject"
+                    and x.hotkey not in void
+                    and self._overturns(job, x.hotkey, a.hotkey, cmap)
+                ):
                     self.overturned[x.hotkey] = self.overturned.get(x.hotkey, 0) + 1
             outcome.kind = "pass"
             s = self.ledger.add(outcome)
@@ -3936,6 +4028,7 @@ class Desk:
                 self.delivered[o.hotkey] -= 1
             if (
                 o.kind == "reject"
+                and not o.void  # a void rejection was never (or is no longer) counted overturned
                 and self.overturned.get(o.hotkey, 0) > 0
                 and self._overturns(job, o.hotkey, deliverer, cmap)
             ):

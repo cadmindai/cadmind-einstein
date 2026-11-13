@@ -7,6 +7,7 @@
     cadmind-einstein-operator ... revoke HOTKEY --reason "WORDS THE MINER READS"
     cadmind-einstein-operator ... unblock HOTKEY --reason "WHY, FOR THE LOG" [--readmit]
     cadmind-einstein-operator ... launch-equal on|off|status
+    cadmind-einstein-operator ... void JOB --reason "WHY, FOR THE LOG"
 
 ``pending`` lists the key requests (hotkey, coldkey, first and last ask, client address, the
 miner's note); ``approve`` lets the hotkey's next ``agent_key`` call take its own agent key
@@ -17,9 +18,10 @@ strike is taken back, the abuse counts so far are marked acted on so they do not
 ``--readmit`` gives back the admission of a hotkey that had passed its entry test, else it takes
 the test again; it is not keyed again: the miner asks as usual); ``launch-equal``
 turns the launch rule (equal weight per admitted hotkey) on or off at runtime, saved across
-restarts (unless ``--launch-equal`` sets it). An approved miner still passes the entry test once
-before any job or weight. The token file (the validator's ``--token-file``, mode 0600) is read,
-never printed.
+restarts (unless ``--launch-equal`` sets it); ``void`` makes every rejection of a job count for
+nothing (out of the miners' records, weights and rejection counts: a decline that was right).
+An approved miner still passes the entry test once before any job or weight. The token file (the
+validator's ``--token-file``, mode 0600) is read, never printed.
 """
 
 from __future__ import annotations
@@ -101,6 +103,9 @@ def parser() -> argparse.ArgumentParser:
         action="store_true",
         help="give back its admission (only if it had passed its entry test)",
     )
+    p = sub.add_parser("void", help="make every rejection of a job count for nothing")
+    p.add_argument("job")
+    p.add_argument("--reason", required=True, help="why, for the validator's log")
     p = sub.add_parser("launch-equal", help="the launch rule: on, off, or its status")
     p.add_argument("switch", choices=("on", "off", "status"))
     return ap
@@ -126,6 +131,10 @@ def main(argv: list[str] | None = None) -> int:
             "POST",
             "/v1/operator/unblock",
             {"hotkey": a.hotkey, "reason": a.reason, "readmit": a.readmit},
+        )
+    elif a.command == "void":
+        code, out = call(
+            a.validator, token, "POST", "/v1/operator/void", {"job": a.job, "reason": a.reason}
         )
     elif a.command == "approve":
         code, out = call(a.validator, token, "POST", "/v1/operator/approve", {"hotkey": a.hotkey})
