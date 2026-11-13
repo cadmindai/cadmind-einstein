@@ -1643,6 +1643,15 @@ class Desk:
             row["of"] = places
         return line
 
+    def waitlist_places(self) -> list[tuple[str, int]]:
+        """The places in line, ``(hotkey, position)`` from the front: the public Network page's
+        waitlist (owner 2026-11-13: "just UIDs and their place"). Duplicates hold no place and are
+        not listed; nothing else of a request (its note, address or coldkey) is."""
+        with self._lock:
+            line = self._waitlist()
+        placed = [(hk, int(r["position"])) for hk, r in line.items() if r.get("position")]
+        return sorted(placed, key=lambda x: x[1])
+
     def key_standing(self, hotkeys: Iterable[str]) -> dict[str, dict[str, Any] | None]:
         """Each hotkey's key request as its own miner may see it (the platform's Miner page): its
         state, first and last ask, a refusal's or revocation's reason and its place on the

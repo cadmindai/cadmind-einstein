@@ -296,6 +296,18 @@ class TestWaitlist(_Case):
         self.assertEqual(self.places()[w1], {"position": 2, "of": 2, "coldkey_known": True})
         self.assertEqual(self.places()[w0]["duplicate_of"], A)
 
+    def test_the_public_network_lists_only_uids_and_places(self) -> None:
+        from cadmind_einstein.stats import MinerStats
+
+        w0 = self.more[0]
+        self.cold[B] = "cold-a"  # a duplicate: no place, not listed
+        for hk in (A, B, w0):
+            self.ask(hk)
+        uids = {A: 7, B: 8, w0: 9}
+        stats = MinerStats(self.desk)
+        stats.uids = lambda: uids  # type: ignore[method-assign]
+        self.assertEqual(stats.network()["waitlist"], [{"uid": 7, "position": 1}, {"uid": 9, "position": 2}])
+
     def test_an_approval_or_refusal_closes_the_gap(self) -> None:
         self.cold[B] = "cold-a"
         for hk in (A, B, C, *self.more[:2]):

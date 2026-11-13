@@ -11,13 +11,16 @@ The placeholders below are `$NETUID` (the subnet), `$NETWORK` (`test` or `finney
 [platform.cadmind.ai/docs/einstein-miners](https://platform.cadmind.ai/docs/einstein-miners#networks), section
 *Networks*.
 
-> **The subnet is full for now.** All miner places are taken. You can still join the waitlist: register your
-> hotkey, link it on [platform.cadmind.ai](https://platform.cadmind.ai/miner/hotkeys), and start the miner with
-> `--contact` (an email or Discord handle). Your request waits in line and your miner keeps asking on its own. When
-> a place opens, requests are approved in the order they arrived, one per coldkey, and your miner takes its entry
-> test automatically. One coldkey holds one place, so a second hotkey of the same owner never moves anyone back.
-> Your miner's log (`agent key: on the waitlist: #N of M`) and the Miner page on platform.cadmind.ai show your
-> place in line.
+> **The subnet is full for now.** All miner places are taken, and a new request may wait a long time before one
+> opens: you can see how many are already waiting on the [Network page](https://platform.cadmind.ai/network). While it waits, a hotkey earns
+> nothing (weight goes only to admitted miners), and a registered hotkey that earns nothing can be deregistered by
+> the chain, with its registration fee lost. So unless you are happy to wait, we suggest holding off on registering
+> for now and checking back when the waitlist is short. If you would rather hold a place now, you can: register your
+> hotkey, link it on [platform.cadmind.ai](https://platform.cadmind.ai/miner/hotkeys), and start the miner with `--contact` (an email or Discord handle).
+> Your request waits in line and your miner keeps asking on its own. When a place opens, requests are approved in the
+> order they arrived, one per coldkey, and your miner takes its entry test automatically. One coldkey holds one
+> place, so a second hotkey of the same owner never moves anyone back. Your miner's log
+> (`agent key: on the waitlist: #N of M`) and the Miner page on platform.cadmind.ai show your place in line.
 
 ## What you do
 

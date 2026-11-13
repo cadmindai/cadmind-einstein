@@ -444,7 +444,7 @@ class MinerStats:
     def network(self) -> dict[str, Any]:
         """The public leaderboard: every weighted or admitted miner by hotkey -- its share of the
         current vector, weight (7-day points), average points per job, 7-day deliveries, mean stars
-        and mean vote (shown, never scored)."""
+        and mean vote (shown, never scored) -- and the waitlist, each place's UID and position."""
         now = self.desk.now_ms()
         window, weight, average = self.desk.ledger.snapshot(now)
         cur = dict(self.current() or {})
@@ -472,11 +472,17 @@ class MinerStats:
         rows.sort(key=lambda r: (-r["share"], -r["weight"], r["hotkey"]))
         for i, r in enumerate(rows):
             r["rank"] = i + 1
+        places = getattr(self.desk, "waitlist_places", None)
+        waitlist = [
+            {"uid": uids.get(hk), "position": pos} for hk, pos in (places() if places else [])
+        ]
         return {
             "at_ms": now,
             "hour": cur.get("hour"),
             "rule": cur.get("rule", ""),
             "miners": rows,
+            # the waitlist by UID and place only: no hotkey, note, address or coldkey
+            "waitlist": waitlist,
         }
 
 

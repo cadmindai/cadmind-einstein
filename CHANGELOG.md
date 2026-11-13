@@ -7,6 +7,14 @@ All notable changes to this project are listed here. The format follows
 
 ## [Unreleased]
 
+## [0.6.11] - 2026-11-14
+
+### Added
+
+- **Validator: the waitlist on the public leaderboard.** `GET /v1/stats/network` carries `waitlist`: each place's
+  UID and position, front first. Duplicates hold no place and are not listed; no hotkey, note, address or coldkey
+  of a request is published.
+
 ## [0.6.10] - 2026-11-13
 
 ### Added
