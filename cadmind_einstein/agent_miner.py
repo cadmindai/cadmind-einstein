@@ -346,7 +346,8 @@ answer that came is recorded first, and the design made deliverable again), then
 one line:
 DONE <digest>
 (the digest `watt` status reports), after a few lines for the client: what you built, and what you \
-estimated or left open. You have about {minutes} minutes, until {deadline_utc} \
+estimated or left open (the client is shown their first 2000 characters: a missed need first, \
+sources last). You have about {minutes} minutes, until {deadline_utc} \
 UTC. You cannot feel time pass: check it with `time_left` (never guess it). There is no \
 hand-over: an unfinished project earns nothing. When the remaining work looks too large, start \
 its most valuable piece (one control, one hold), build it, test it, then take the next. The only \
@@ -930,7 +931,9 @@ def outcome(job: str, ws: str, text: str, *, setup: str = "") -> tuple[str, dict
     on an admission job; its message is everything from the line's message to the end, over
     several lines when it runs on), else ``("submit", body)``. The body carries a ``summary`` for
     the client: an ``UNFINISHED:`` line when the agent wrote one anyway, else its final text
-    without the ``DONE`` line (whitespace collapsed, the last :data:`SUMMARY_CHARS` characters):
+    without the ``DONE`` line (whitespace collapsed; the first :data:`SUMMARY_CHARS` characters of
+    a delivered project's closing lines, which open with what was built and what was missed, and
+    the last ones of a text that ends with no ``DONE``, where the end says where the work stopped):
     on a delivered project too, the builder's notes (what it estimated, what is open) reach the
     client. A usage-limit notice (:data:`LIMIT`) is never sent as the builder's words. A
     ``HOST_REFUSED`` line adds ``host_refused`` (``{code, why}``) to the submit: the validator's own
@@ -949,7 +952,7 @@ def outcome(job: str, ws: str, text: str, *, setup: str = "") -> tuple[str, dict
     left = _UNFINISHED.search(text)
     said = " ".join((left.group(1) if left else _HOST.sub("", _DONE.sub("", text))).split())
     if said and not LIMIT.search(said):
-        body["summary"] = said[:SUMMARY_CHARS] if left else said[-SUMMARY_CHARS:]
+        body["summary"] = said[:SUMMARY_CHARS] if left or fin else said[-SUMMARY_CHARS:]
     return "submit", body
 
 

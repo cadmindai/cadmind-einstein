@@ -563,6 +563,12 @@ class TestNoHandOver(unittest.TestCase):
         long = "word " * 1000
         self.assertEqual(len(outcome("j", "w", long + "END")[1]["summary"]), 2000)
         self.assertTrue(outcome("j", "w", long + "END")[1]["summary"].endswith("END"))
+        # a delivered project's closing lines keep their head: what was built and missed is said
+        # first, the sources come last
+        done = outcome("j", "w", "Not met: the remote. " + long + "Sources: a, b\nDONE d1\n")
+        self.assertEqual(len(done[1]["summary"]), 2000)
+        self.assertTrue(done[1]["summary"].startswith("Not met: the remote."))
+        self.assertNotIn("Sources", done[1]["summary"])
         # an UNFINISHED line an agent writes anyway (the prompt no longer asks) still wins
         said = outcome("j", "w", "lots of log\nUNFINISHED: the clip is untested\n")[1]["summary"]
         self.assertEqual(said, "the clip is untested")
