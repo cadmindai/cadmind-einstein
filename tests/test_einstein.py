@@ -713,6 +713,13 @@ class TestDesk(unittest.TestCase):
         self.assertEqual(routed(), B)
         self.desk.assigned[A] = 5
         self.assertEqual(routed(), C)
+        # a calibration brief (owner 2026-11-14) goes to the longest wait whatever the record
+        calib = Job(job="k", brief="b", calibration={"set": "calib200", "id": "001"})
+        self.assertEqual(self.desk.route(calib).hotkey, B)  # type: ignore[union-attr]
+        self.desk.miners[B].job = "busy"
+        self.assertEqual(
+            self.desk.route(calib).hotkey, C
+        )  # then the next longest wait (C 2000, A 3000)
 
     def test_one_lucky_job_does_not_put_a_newcomer_first(self) -> None:
         from cadmind_einstein.scoring import record

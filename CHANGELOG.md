@@ -7,6 +7,15 @@ All notable changes to this project are listed here. The format follows
 
 ## [Unreleased]
 
+## [0.6.13] - 2026-11-14
+
+### Changed
+
+- **Routing: the operator's calibration briefs go round in turn.** A job the operator tagged as calibration goes to
+  the available miner that has waited longest, whatever its record, so every admitted miner gets its share of them
+  and is judged on similar briefs. Clients' jobs are routed as before: the best record first, and every fifth to
+  the longest wait. A miner cannot tell a calibration brief from a client's: the tag never reaches it.
+
 ## [0.6.12] - 2026-11-14
 
 ### Changed

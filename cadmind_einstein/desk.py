@@ -2735,7 +2735,9 @@ class Desk:
           first), so registering more hotkeys buys no more turns.
 
         Equal records fall to the longest wait, and equal waits are drawn at random. A miner that
-        hands a job back restarts its clock at the hand-back. Votes play no part. There is no team
+        hands a job back restarts its clock at the hand-back. A job the operator tagged as
+        calibration (``job.calibration``) always goes to the longest wait: those briefs go round
+        in turn. Votes play no part. There is no team
         miner: with no miner free the job waits in the queue -- never rejected for lack of miners
         -- until a miner is free or the client cancels."""
         free = self._available(job)
@@ -2761,8 +2763,11 @@ class Desk:
         def wait(m: Miner) -> tuple[int, int]:
             return owner_clock.get(self.coldkey(m.hotkey, cmap), m.free_ms), m.free_ms
 
-        # every TRIAL_EVERY-th client assignment, counted over all miners (kept across restarts)
-        if sum(self.assigned.values()) % TRIAL_EVERY != TRIAL_EVERY - 1:
+        # the operator's calibration briefs go round in turn, to the longest wait whatever the
+        # record (owner 2026-11-14): every miner gets its share of them and is judged on similar
+        # briefs, and the record decides only the clients' jobs. Every TRIAL_EVERY-th client
+        # assignment, counted over all miners (kept across restarts), goes to the longest wait.
+        if not job.calibration and sum(self.assigned.values()) % TRIAL_EVERY != TRIAL_EVERY - 1:
             records = self.ledger.records(self.now_ms())
             best = max(record_of(records, m.hotkey) for m in free)
             free = [m for m in free if record_of(records, m.hotkey) == best]
