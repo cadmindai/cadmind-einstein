@@ -146,7 +146,12 @@ class TestMinerAgentKey(unittest.TestCase):
         out = io.StringIO()
         argv = [*MINER_BASE[:-1], state, "--dev-uri", "//Alice", "--no-version-check", *extra]
         code: int | None
-        with mock.patch("sys.stdout", out):
+        with (
+            mock.patch("sys.stdout", out),
+            # the agent CLI's own checks: no CLI here, and a test never calls a model
+            mock.patch.object(agent_miner, "agent_launchable", lambda _argv: ""),
+            mock.patch.object(agent_miner, "probe_agent", lambda *_a, **_k: ""),
+        ):
             try:
                 code = agent_miner.main(argv)
             except SystemExit as e:

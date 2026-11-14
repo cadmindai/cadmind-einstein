@@ -389,6 +389,9 @@ class TestMinerLoop(Repo):
             mock.patch.object(agent_miner, "answers_round", lambda *a, **k: False),
             mock.patch.object(agent_miner, "outcome", lambda *a, **k: ("submit", {"digest": "d"})),
             mock.patch.object(agent_miner, "send", send),
+            # the agent CLI's own checks: no CLI here, and a test never calls a model
+            mock.patch.object(agent_miner, "agent_launchable", lambda _argv: ""),
+            mock.patch.object(agent_miner, "probe_agent", lambda *_a, **_k: ""),
             mock.patch("sys.stdout", io.StringIO()) as out,
         ):
             os.environ.pop(au.ENV, None)
