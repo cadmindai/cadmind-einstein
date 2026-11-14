@@ -361,9 +361,9 @@ class TestGenesisSybils(unittest.TestCase):
         self.assertIn("per coldkey among delivered", rule)
 
     def test_delivered_genesis_before_any_delivery_is_never_empty(self) -> None:
-        """An empty vector under Null consensus sprays emission over every registered UID: before the
-        first delivery, equal shares PER COLDKEY among the admitted, reachable miners -- so the nine
-        sybils of one owner still share one share."""
+        """An empty vector under Null consensus sprays emission over every registered UID: before
+        the first delivery, equal shares PER COLDKEY among the admitted, reachable miners -- so the
+        nine sybils of one owner still share one share."""
         cold = {self.HONEST: "owner-h", **dict.fromkeys(self.SYBILS, "owner-s")}
         vec, rule = vector(
             {}, self.uids, owner_hotkey="", admitted=self.adm, reachable=self.adm, coldkeys=cold
