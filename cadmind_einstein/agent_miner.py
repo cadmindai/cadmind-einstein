@@ -306,7 +306,12 @@ questions rule says, and deliver (DONE). A client's \
 "you may quit if it is impossible" does not change that. `misses` is only for what can be neither \
 built nor bought: a bought part in a printed holder is buildable. Firmware and software are out \
 of scope: never write, ship, plan or test a program, and never make one a requirement, a decision \
-or a miss; the device is judged as hardware.
+or a miss; the device is judged as hardware. A function that needs a controller still gets its \
+hardware: the board, the sensor, the driver and the actuator are chosen, held and wired like any \
+other part, and where a bought part does the job by itself (a timer module, a radio receiver with \
+its speed controller) prefer it. A need the design is built to meet and Watt cannot prove \
+(strength under load, a seal) keeps its must, tested on what Watt reads, and says its limit in a \
+decision: it is not a miss.
 A device too big for one round (more parts, controls and tests than your time builds and guards): \
 decide at the walk-through to split it into sub-projects (`watt describe subproject`). This \
 project \
