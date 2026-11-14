@@ -340,6 +340,29 @@ def _status_of(run: Mapping[str, Any]) -> dict[str, Any]:
     return dict(((run.get("data") or {}).get("status")) or {})
 
 
+def _full_draw(status: Mapping[str, Any]) -> bool:
+    """Whether a status's guard record is a full guard: every mutant built, in the digest's order
+    (``seed digest``, ``sampled N of N``), or a record from before the guard sampled (no draw
+    named). A full guard has no draw to re-roll: the validator's own run of it reads the same
+    mutants with the same tests, so it repeats the verdict (owner 2026-11-14: the validator no
+    longer runs it). The record is the platform's: a miner cannot write ``verify/`` and its code
+    runs confined, opening no file (Watt's ``wattrt.confine``)."""
+    if "guard_draw" not in status:
+        return False
+    draw = status.get("guard_draw")
+    if draw is None:
+        return True
+    if not isinstance(draw, dict):
+        return False
+    n = draw.get("sampled")
+    return (
+        draw.get("seed") == "digest"
+        and isinstance(n, list | tuple)
+        and len(n) == 2
+        and n[0] == n[1]
+    )
+
+
 def _survivors(guard: Any) -> str:
     """The must requirements a refused guard run names unguarded, unproven, read or excused, for the
     verdict's words: the unguarded ones from its ``survivors``, every one from its per-requirement
@@ -3574,7 +3597,10 @@ class Desk:
            delivers, or the record's verdict stands. Then ``watt check --as-delivered`` (Watt's
            check of the tree as a delivery carries it, without ``.watt/`` and ``build/``): a design
            that passes only with its local records fails here (:meth:`_as_delivered`).
-        2. ``watt report --mutate`` on the fork, the validator's own run (the guard, and the
+        2. When the miner's record is a full guard (`_full_draw`: every mutant, the digest's order),
+           ``watt report`` without ``--mutate``: the delivery's files only, and step 3 checks the
+           record is still a full guard of this digest (owner 2026-11-14). Otherwise
+           ``watt report --mutate`` on the fork, the validator's own run (the guard, and the
            delivery's files made from the design it guards, in one run) (the operator's lane: the
            bench seeds its draw with a key the miners' lane never sees, so the mutants it builds
            are not the ones the miner's record drew). The fork's guard outcomes and build are
@@ -3610,6 +3636,9 @@ class Desk:
         """a miner's record that is not deliverable, gated only to reproduce the host refusal the
         miner reported: the verdict, unless the validator's own run delivers or is refused too"""
         checked = False
+        full = False
+        """the miner's record is a full guard (every mutant, the digest's order): the validator's
+        run makes the delivery's files only, no guard of its own (owner 2026-11-14)"""
         if resume and a is not None and a.gate_digest:
             # the miner's record said deliverable (or the miner reported a host refusal) when this
             # run was started, at this digest
@@ -3642,6 +3671,7 @@ class Desk:
                 if failed is not None:
                     return failed
                 checked = True
+                full = _full_draw(before)
         # the guard and the delivery's files in ONE run (`watt report --mutate`): one machine start,
         # and the files are made from the very design this run guards (2026-10-16)
         stop = threading.Event()
@@ -3654,7 +3684,9 @@ class Desk:
                 with self._mut():
                     a.gate_run = str(run_id)
                     a.gate_digest, a.gate_started_ms = digest, self.now_ms()
-            self._event("gate-start", jid, run=str(run_id), fork=fork, digest=digest)
+            self._event(
+                "gate-start", jid, run=str(run_id), fork=fork, digest=digest, mutate=not full
+            )
 
         try:
             run: dict[str, Any] | None = None
@@ -3675,7 +3707,7 @@ class Desk:
                 run = self.platform.run(
                     fork,
                     "report",
-                    {"mutate": True},
+                    {} if full else {"mutate": True},
                     budget_s=self.gate_run_s,
                     on_run=started,
                     stop=stop,
@@ -3721,6 +3753,29 @@ class Desk:
         data = run.get("data")
         guard = (data.get("guard") if isinstance(data, dict) else None) or {}
         drawn = (guard.get("sampled") or {}).get("seed") if isinstance(guard, dict) else None
+        if not guard and run.get("ok") and not unproven:
+            # the files only (a full record, or a resumed run that was one): the miner's full guard
+            # stands when the record still says so at this digest
+            after = self._status(fork)
+            if (
+                not after.get("deliverable")
+                or str(after.get("digest") or "") != digest
+                or not _full_draw(after)
+            ):
+                verdict["error"] = (
+                    "the guard record is not a full guard of this design "
+                    f"(digest {after.get('digest')}, draw {after.get('guard_draw')})"
+                )
+                return verdict
+            if not checked:
+                failed = self._as_delivered(fork, verdict)
+                if failed is not None:
+                    return failed
+            return {
+                "deliverable": True,
+                "stage": str(after.get("stage") or "deliverable"),
+                "digest": digest,
+            }
         if not run.get("ok") or not isinstance(guard, dict) or not guard or guard.get("scope"):
             limit = stopped or str(run.get("limit") or "")
             verdict["stage"] = "test"

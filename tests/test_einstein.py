@@ -220,7 +220,11 @@ class FakePlatform:
             guard = {"digest": digest, "sampled": {"seed": "sha256:validator"}, "survivors": []}
             return {"state": "done", "ok": True, "data": {"guard": guard}}
         stage = "deliverable" if w["deliverable"] else w.get("stage", "check")
-        draw = {"sampled": [3, 9], "seed": w.get("draw") or "sha256:miner"}
+        draw = (
+            {"sampled": [9, 9], "seed": "digest"}
+            if w.get("draw") == "digest"
+            else {"sampled": [3, 9], "seed": w.get("draw") or "sha256:miner"}
+        )
         return {
             "state": "done",
             "ok": True,
@@ -254,16 +258,18 @@ class FakePlatform:
         deliverable: bool,
         compute_ms: int = 60_000,
         weak: bool = False,
+        full: bool = False,
     ) -> None:
         """``deliverable``: the miner's own guard record says so; ``weak``: only because its draw
-        was lucky (a re-rolled draw), so the validator's own draw refuses it."""
+        was lucky (a re-rolled draw), so the validator's own draw refuses it; ``full``: the record
+        is a full guard (every mutant, in the digest's order)."""
         assert not self.ws[ws]["frozen"]
         self.ws[ws].update(
             files={**self.ws[ws]["files"], **files},
             deliverable=deliverable,
             compute_ms=compute_ms,
             weak=weak,
-            draw="sha256:miner",
+            draw="digest" if full else "sha256:miner",
         )
 
 
@@ -924,12 +930,14 @@ class TestGateDraw(unittest.TestCase):
     poll = TestDesk.poll
     assigned = TestDesk.assigned
 
-    def submit(self, job: str, *, weak: bool, deliverable: bool = True) -> tuple[str, str]:
+    def submit(
+        self, job: str, *, weak: bool, deliverable: bool = True, full: bool = False
+    ) -> tuple[str, str]:
         self.poll(A, B, C)
         self.enqueue({"job": job, "brief": "A wall hook."})
         hk, w = self.assigned()
         self.desk.accept(hk, job)
-        self.p.work(w["workspace"], GOOD, deliverable=deliverable, weak=weak)
+        self.p.work(w["workspace"], GOOD, deliverable=deliverable, weak=weak, full=full)
         self.desk.submit(hk, job, w["workspace"], "d")
         return hk, w["workspace"]
 
@@ -976,6 +984,41 @@ class TestGateDraw(unittest.TestCase):
         self.assertEqual(self.p.ws[fork]["draw"], "sha256:validator")  # the record is ours
         self.assertEqual(self.p.ws[ws]["draw"], "sha256:miner")  # the miner's is untouched
         self.assertEqual(self.p.forks, 1)
+
+    def test_a_full_guard_record_is_not_guarded_again_only_reported(self) -> None:
+        """Owner 2026-11-14: a full guard (every mutant, the digest's order) has no draw to re-roll,
+        and the validator's own run of it repeats the verdict at twice the time; its run makes the
+        delivery's files only."""
+        real, asked = self.p.run, []
+
+        def seen(ws: str, command: str, args: Any = None, **kw: Any) -> dict[str, Any]:
+            asked.append((command, dict(args or {})))
+            return real(ws, command, args, **kw)
+
+        self.p.run = seen  # type: ignore[method-assign]
+        hk, ws = self.submit("f1", weak=False, full=True)
+        st = wait_state(self.desk, "f1", ("done",))
+        self.assertEqual((st["result"]["label"], st["result"]["hotkey"]), ("delivered", hk))
+        self.assertEqual(self.gate_runs(ws), ["status", "check", "report", "status"])
+        self.assertIn(("report", {}), asked)
+        self.assertFalse(any(c == "report" and a.get("mutate") for c, a in asked))
+
+    def test_a_files_only_run_whose_record_is_no_longer_full_is_refused(self) -> None:
+        real = self.p.run
+
+        def resampled(ws: str, command: str, args: Any = None, **kw: Any) -> dict[str, Any]:
+            got = real(ws, command, args, **kw)
+            if command == "report" and not (args or {}).get("mutate"):
+                self.p.ws[ws]["draw"] = "sha256:other"  # the record now names a sampled draw
+            return got
+
+        self.p.run = resampled  # type: ignore[method-assign]
+        self.submit("f2", weak=False, full=True)
+        st = wait_state(self.desk, "f2", ("queued", "done"))
+        self.assertEqual(st["result"]["label"], "not finished")
+        a = self.desk.jobs["f2"].attempts[0]
+        self.assertEqual(a.kind, "gate")
+        self.assertIn("not a full guard of this design", a.outcome)
 
     def test_a_record_the_validators_run_did_not_write_is_refused(self) -> None:
         real = self.p.run

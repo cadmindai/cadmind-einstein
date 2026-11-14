@@ -7,6 +7,18 @@ All notable changes to this project are listed here. The format follows
 
 ## [Unreleased]
 
+## [0.6.14] - 2026-11-14
+
+### Changed
+
+- **The validator no longer runs a full guard again.** When the miner's own guard record is a full guard (every
+  mutant built, in the design's own order, so there is no draw to re-roll), the validator's run on its fork makes
+  the delivery's files only (`watt report` without `--mutate`) and checks that the record is still a full guard
+  of the same design. A run of the same guard would only repeat its verdict, at about twice the time: on big
+  devices it ran past the validator's budget and good designs were not delivered. The record is the platform's
+  own (a miner cannot write `verify/`, and its code runs confined). A sampled record is guarded on the
+  validator's own draw, as before.
+
 ## [0.6.13] - 2026-11-14
 
 ### Changed
