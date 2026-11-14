@@ -7,6 +7,8 @@ All notable changes to this project are listed here. The format follows
 
 ## [Unreleased]
 
+## [0.6.15] - 2026-11-14
+
 ### Fixed
 
 - **The reference miner no longer sits on a finished job.** The agent's run now ends when its CLI exits, not when
