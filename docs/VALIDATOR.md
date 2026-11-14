@@ -3,11 +3,11 @@
 Einstein's weights are set by one validator (the einstein validator, which routes client jobs and runs the Watt
 gate). Other validators take part by **staking** and by **voting on the quality of delivered devices**: a vote is
 your vision model's evaluation of one delivered device against its brief, by CADmind's published device judge
-(`cadmind-judge/1.3c`). Votes score nobody: a miner's points come from its clients alone ([Scoring and
+(`cadmind-judge/1.3d`). Votes score nobody: a miner's points come from its clients alone ([Scoring and
 routing](#scoring-and-routing)), and Watt's checks alone decide what is delivered. This page is the
 public protocol: the review bundle, the judge and its prompt, the vote, how votes are averaged, what they cost and
 how a validator's reliability is measured. The code is [`cadmind_einstein/judge.py`](../cadmind_einstein/judge.py)
-(the prompt: [`judge_prompt_1.3c.md`](../cadmind_einstein/judge_prompt_1.3c.md)) and
+(the prompt: [`judge_prompt_1.3d.md`](../cadmind_einstein/judge_prompt_1.3d.md)) and
 [`cadmind_einstein/review.py`](../cadmind_einstein/review.py); the design is
 [`../DESIGN.md`](../DESIGN.md) section 13.
 
@@ -105,7 +105,7 @@ client's words alone.
 `cadmind_einstein.review.read_bundle` checks a bundle before anything is sent to a model: every image against
 `images.sha256`, the image-set digest, and the fact sheet and client's words against the manifest.
 
-## The judge (`cadmind-judge/1.3c`)
+## The judge (`cadmind-judge/1.3d`)
 
 One sample is **one conversation of two turns** with the model:
 
@@ -143,6 +143,10 @@ adds to each part its own latest vote on it (`judged`: the value, the deciding s
 kept nudges), found by the part's digest. A function proved inside a part counts as shown at the assembly that places
 the part as its contract says; a part's own failing line counts against the assembly. Judges before 1.3c never see it.
 
+**Firmware and software are out of scope** (1.3d). The device is judged as hardware: its parts, their wiring and
+contacts. A part that needs a program, a program that is missing or not included, or a need only software could meet
+is never a line, a nudge or a failing ruling, and never moves the score. 1.3d is 1.3c's prompt plus that one rule.
+
 **A failing main line reaches the client.** When a vote's deciding sample rules a `main` line `fails`, the validator
 sends it to the platform (`POST /api/engine/einstein/jobs/{job}/finding`, its queue key: `{finding: {id, line, quote,
 nudge, value, judge_version}}`), which shows it to the client as a notice; it refuses and gates nothing.
@@ -168,9 +172,9 @@ is not in the digest, so votes of any sample count name the same one; a vote's p
 **A change to the judge needs the subnet owner's approval** and is released as a new digest (and, for a real change, a
 new version).
 
-`cadmind-judge/1.3c-tools` (the same prompt with read-only Watt instruments on the delivered model, one sample) is for
-CADmind's own pipeline; **a validator never runs a `-tools` judge**: `--judge 1.3c-tools` is refused at start.
-Judge `1.3b` (1.3c without the parts) is still accepted, to roll back to; so are `1.3` and `1.2b`, each with its own prompt and digest, and neither has Watt's refusal cap or
+`cadmind-judge/1.3d-tools` (the same prompt with read-only Watt instruments on the delivered model, one sample) is for
+CADmind's own pipeline; **a validator never runs a `-tools` judge**: `--judge 1.3d-tools` is refused at start.
+Judge `1.3c` (1.3d without the firmware rule) and `1.3b` (1.3c without the parts) are still accepted, to roll back to; so are `1.3` and `1.2b`, each with its own prompt and digest, and neither has Watt's refusal cap or
 reads `assembly`.
 
 ### The reply
@@ -298,13 +302,13 @@ cadmind-review BUNDLE.zip --model openai:<model> --key-file ~/.config/cadmind-ei
 # or anthropic:<model> with an Anthropic key
 ```
 
-It checks the bundle, runs `cadmind-judge/1.3c` (`rate`, three samples; `--effort`, default `high`, is the model's
+It checks the bundle, runs `cadmind-judge/1.3d` (`rate`, three samples; `--effort`, default `high`, is the model's
 reasoning effort) with your model and prints the vote (unsigned). Any model may vote: the minimum capability is enforced by calibration, not by a list. It must take 17 to
 21 images of 1024 px in a two-turn conversation, return strict JSON and hold a 64k context. The model a vote names
 is what the validator says it used: it is observed, not verified.
 
 On the einstein validator the same code runs from the daemon: `--votes shadow|off` (`shadow` is the default;
-`counted` and `live` are accepted as its names), `--judge 1.3c` (the default; `1.3b`, `1.3` and `1.2b` are still accepted, the `-tools` judges are
+`counted` and `live` are accepted as its names), `--judge 1.3d` (the default; `1.3c`, `1.3b`, `1.3` and `1.2b` are still accepted, the `-tools` judges are
 refused), `--judge-backend openrouter|claude-cli`, `--review-model`, `--review-key-file`, `--review-base-url`,
 `--review-samples` (1), `--review-effort` (`high`) and a daily spend cap, `--review-daily-usd`, with
 `--review-usd-per-mtok-in/out/cached` (the provider's prices); past the cap no call is made that day and an ALERT is
@@ -323,7 +327,7 @@ and set no output-token limit; each waits up to 600 s and is retried twice by th
 `--review-daily-usd` to your delivery volume.
 
 ```bash
---votes shadow --judge 1.3c --judge-backend openrouter \
+--votes shadow --judge 1.3d --judge-backend openrouter \
 --review-model openai:anthropic/claude-opus-5.5 --review-key-file ~/.config/cadmind-einstein/review.key \
 --review-effort high --review-samples 1 --review-daily-usd 40
 ```

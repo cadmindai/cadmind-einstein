@@ -295,7 +295,10 @@ part an open client decision whose option leaves it out (misses = ["<need>"]). W
 be asked, it stays open and you deliver the rest (DONE). When the client asked not to be asked, \
 you decide it yourself, once you have checked that no option you can build keeps the need, as the \
 questions rule says, and deliver (DONE). A client's \
-"you may quit if it is impossible" does not change that.
+"you may quit if it is impossible" does not change that. `misses` is only for what can be neither \
+built nor bought: a bought part in a printed holder is buildable. Firmware and software are out \
+of scope: never write, ship, plan or test a program, and never make one a requirement, a decision \
+or a miss; the device is judged as hardware.
 A device too big for one round (more parts, controls and tests than your time builds and guards): \
 decide at the walk-through to split it into sub-projects (`watt describe subproject`). This \
 project \
@@ -690,6 +693,45 @@ REJECT_LAUNCH = (
     "The builder's agent program could not start on the miner's machine, so this job goes to "
     "another builder."
 )
+INSTANT_EXIT_S = 60.0
+"""A job's first agent run that fails (a non-zero exit, no ``DONE``/``REJECT``) within this many
+seconds never worked at all -- not logged in, no API key in the miner's environment, a wrong model
+id, no credit left: it is handled as a launch failure (the job handed back at once), never resumed
+until the deadline with an empty project."""
+PROBE_PROMPT = "Reply with the single word OK and nothing else."
+"""What the startup check asks the agent (:func:`probe_agent`)."""
+PROBE_TIMEOUT_S = 180.0
+
+
+def output_tail(out: str, err: str, n: int = 300) -> str:
+    """The end of a run's error output, or of its normal output when the error output is empty
+    (Claude Code's CLI prints its own errors -- a login, a key, a model, a limit -- on stdout)."""
+    tail = " ".join(err.split())[-n:]
+    if tail:
+        return f"stderr: {tail}"
+    tail = " ".join(out.split())[-n:]
+    return f"stdout: {tail}" if tail else "stderr: (none), stdout: (none)"
+
+
+def probe_agent(
+    argv: list[str], *, cwd: Path, stdin: str | None, env: Mapping[str, str] | None
+) -> str:
+    """Why the agent does not answer a trivial prompt ('' when it does): run before the miner takes
+    any job, so a setup that cannot build (not logged in, no key in this environment, a wrong model
+    id, no credit) never takes a client's job."""
+    try:
+        run = AgentRun(argv, cwd=cwd, stdin=stdin, env=env)
+    except OSError as e:
+        return f"{type(e).__name__}: {e}"
+    out, err, timed_out = run.wait(PROBE_TIMEOUT_S)
+    code = run.proc.returncode
+    if timed_out:
+        return f"no answer within {PROBE_TIMEOUT_S:.0f} s"
+    if code != 0:
+        return f"the agent exited {code}; {output_tail(out, err)}"
+    if "OK" not in out.upper():
+        return f"the agent answered something else; {output_tail(out, '')}"
+    return ""
 
 
 def agent_launchable(argv: list[str]) -> str:
@@ -731,8 +773,11 @@ def build(
     exit code and error output are logged and kept in the record. ``env``: the agent's environment
     (:func:`agent_env`; None: the miner's own)."""
 
+    last_run: dict[str, Any] = {}
+
     def one(argv: list[str], stdin_: str | None, timeout: float) -> tuple[str, str, bool, bool]:
         nonlocal record
+        t0 = time.monotonic()
         try:
             run = AgentRun(argv, cwd=cwd, stdin=stdin_, env=env)
         except OSError as e:  # the program, or its working directory, is not there
@@ -745,14 +790,18 @@ def build(
         code = getattr(getattr(run, "proc", None), "returncode", None)
         code = code if isinstance(code, int) else None
         if (code is not None and code != 0) or dead(out):
-            tail = " ".join(err.split())[-300:]
             why = f"; {dead(out)}" if dead(out) else ""
-            log(f"{job}: agent run exit {code}{why}; stderr: {tail or '(none)'}")
+            log(f"{job}: agent run exit {code}{why}; {output_tail(out, err)}")
         record += _record(out, err, code, timed_out)
+        last_run.update(code=code, seconds=time.monotonic() - t0, tail=output_tail(out, err))
         return out, err, timed_out, run.stopped.is_set() and not timed_out
 
     record = ""
     text, _, timed_out, cancelled = one(session.first(cmd) if session else cmd, stdin, timeout_s)
+    code, seconds = last_run.get("code"), float(last_run.get("seconds") or 0.0)
+    if code not in (None, 0) and seconds < INSTANT_EXIT_S and not cancelled and not ended(text):
+        # it never worked at all: hand the job back now, don't resume it to the deadline
+        raise AgentLaunchError(f"the agent exited {code} after {seconds:.0f} s; {last_run['tail']}")
     got = Build(text, "", timed_out=timed_out, cancelled=cancelled)
     last = text
     for _ in range(MAX_RESUMES):
@@ -1238,6 +1287,11 @@ def parser() -> argparse.ArgumentParser:
     ap.add_argument("--prompt-file", type=Path, help="a prompt template replacing the built-in one")
     ap.add_argument("--max-jobs", type=int, default=0, help="0: run forever")
     ap.add_argument(
+        "--no-agent-probe",
+        action="store_true",
+        help="skip the startup check that the agent answers a test prompt (a few tokens)",
+    )
+    ap.add_argument(
         "--contact",
         default="",
         help="a short note for the subnet team with your key request (how to reach you)",
@@ -1489,6 +1543,26 @@ def main(argv: list[str] | None = None) -> int:
             "--agent-command) and start it again"
         )
         return 2
+    if not a.no_agent_probe:
+        probe_file = a.state / "probe.txt"
+        _write_private(probe_file, PROBE_PROMPT)
+        why_not = probe_agent(
+            agent_argv(
+                a, prompt=PROBE_PROMPT, prompt_file=probe_file, mcp_file=mcp_file, ws="", job=""
+            ),
+            cwd=work_dir,
+            stdin=PROBE_PROMPT if a.agent_command else None,
+            env=agent_env(a),
+        )
+        if why_not:
+            log(
+                f"cannot start: the agent does not answer a test prompt ({why_not}). Check, as the "
+                "user and with the environment this miner runs with, that the agent CLI is logged "
+                "in or has its API key, that the model id is right and that it has credit; then "
+                "start the miner again (--no-agent-probe skips this check)"
+            )
+            return 2
+        log("agent check: the agent answers")
 
     if not take():
         return 1

@@ -849,6 +849,70 @@ class TestAgentLaunch(unittest.TestCase):
             self.assertIn("not executable", agent_miner.agent_launchable([f.name]))
         self.assertEqual(agent_miner.agent_launchable([]), "no agent command")
 
+    def _build(self, script: str, d: str, logs: list[str]) -> agent_miner.Build:
+        import sys as _sys
+
+        return agent_miner.build(
+            [_sys.executable, "-c", script],
+            session=None,
+            cwd=Path(d),
+            stdin=None,
+            timeout_s=30,
+            deadline_ms=int((time.time() + 3600) * 1000),
+            watch=lambda _r: None,
+            log=logs.append,
+            job="j1",
+        )
+
+    def test_an_agent_that_fails_at_once_is_a_launch_error_naming_its_stdout(self) -> None:
+        """An agent CLI that exits 1 in a second (its reason on stdout, stderr empty)
+        is handed back at once, and the log says the reason instead of 'stderr: (none)'."""
+        logs: list[str] = []
+        script = "import sys; print('Invalid API key - please log in'); sys.exit(1)"
+        with (
+            tempfile.TemporaryDirectory() as d,
+            self.assertRaises(agent_miner.AgentLaunchError) as e,
+        ):
+            self._build(script, d, logs)
+        self.assertIn("Invalid API key", str(e.exception))
+        self.assertIn("stdout: Invalid API key", logs[0])
+
+    def test_a_quick_successful_ending_is_not_a_launch_error(self) -> None:
+        logs: list[str] = []
+        with tempfile.TemporaryDirectory() as d:
+            got = self._build("print('REJECT not-capable: out of scope')", d, logs)
+        self.assertIn("REJECT", got.text)
+
+    def test_the_output_tail_prefers_stderr_then_stdout(self) -> None:
+        self.assertEqual(agent_miner.output_tail("o", "e"), "stderr: e")
+        self.assertEqual(agent_miner.output_tail("out  text", ""), "stdout: out text")
+        self.assertEqual(agent_miner.output_tail("", ""), "stderr: (none), stdout: (none)")
+
+    def test_the_startup_probe_names_why_the_agent_cannot_answer(self) -> None:
+        import sys as _sys
+
+        with tempfile.TemporaryDirectory() as d:
+            ok = agent_miner.probe_agent(
+                [_sys.executable, "-c", "print('OK')"], cwd=Path(d), stdin=None, env=None
+            )
+            bad = agent_miner.probe_agent(
+                [
+                    _sys.executable,
+                    "-c",
+                    "import sys; print('Credit balance is too low'); sys.exit(1)",
+                ],
+                cwd=Path(d),
+                stdin=None,
+                env=None,
+            )
+            missing = agent_miner.probe_agent(
+                ["/nonexistent/claude"], cwd=Path(d), stdin=None, env=None
+            )
+        self.assertEqual(ok, "")
+        self.assertIn("exited 1", bad)
+        self.assertIn("Credit balance is too low", bad)
+        self.assertIn("FileNotFoundError", missing)
+
     def test_a_program_that_cannot_start_is_a_launch_error(self) -> None:
         with tempfile.TemporaryDirectory() as d, self.assertRaises(agent_miner.AgentLaunchError):
             agent_miner.build(

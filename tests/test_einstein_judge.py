@@ -269,14 +269,25 @@ class TestVersionsAndDigests(unittest.TestCase):
     def test_two_versions_two_digests_and_any_change_moves_one(self) -> None:
         self.assertEqual(
             set(jm.VERSIONS),
-            {"1.2b", "1.2b-tools", "1.3", "1.3-tools", "1.3b", "1.3b-tools", "1.3c", "1.3c-tools"},
+            {
+                "1.2b",
+                "1.2b-tools",
+                "1.3",
+                "1.3-tools",
+                "1.3b",
+                "1.3b-tools",
+                "1.3c",
+                "1.3c-tools",
+                "1.3d",
+                "1.3d-tools",
+            },
         )
         base, tools = jm.Judge("1.2b"), jm.Judge("1.2b-tools")
         self.assertEqual(
             (base.version, tools.version), ("cadmind-judge/1.2b", "cadmind-judge/1.2b-tools")
         )
         self.assertNotEqual(base.digest(), tools.digest())
-        self.assertEqual(jm.Judge("1.3c").digest(), jm.Judge().digest())  # default since 0.5.17
+        self.assertEqual(jm.Judge("1.3d").digest(), jm.Judge().digest())  # the default
         # the tool budget is part of the tools judge (it is in the prompt), not of 1.2b
         self.assertNotEqual(tools.digest(), jm.Judge("1.2b-tools", tool_budget=8).digest())
         self.assertEqual(base.digest(), jm.Judge("1.2b", tool_budget=8).digest())
@@ -290,7 +301,7 @@ class TestVersionsAndDigests(unittest.TestCase):
             self.assertNotEqual(before, jm.Judge().digest())
         finally:
             jm.V_MAP[1] = old
-        self.assertEqual(jm.Judge("1.3c").digest(), jm.Judge().digest())  # default since 0.5.17
+        self.assertEqual(jm.Judge("1.3d").digest(), jm.Judge().digest())  # the default
         with self.assertRaises(ValueError):
             jm.Judge("1.1")
 
@@ -312,6 +323,8 @@ RELEASED_DIGESTS = {
     "1.2b-tools": "sha256:d1186b9ee354e5dd2290c674b0cf5ded50c565d64d89a178a3a8ffabab2e1edf",
     "1.3": "sha256:0f9ee439704d29808150feb58689a9fbe35a5cedb9574028d29f6ae19e2cd18f",
     "1.3b": "sha256:8803a031601b5f4e3f5743064a2b3d5d649c6a35d4c43d17b5d3bec4a4efb23d",
+    "1.3c": "sha256:a87a7d19cc45dace94dbef13145ba6cb935527cb41e3f1109ae54f8c91b40d78",
+    "1.3d": "sha256:43fb91726eb775525a2e410d4ee5bcb7bc3d4a72892efa20ed41cc4328ea6a57",
 }
 """The validators' released judges: adding a version must not move these."""
 
@@ -445,16 +458,27 @@ class TestJudge13(unittest.TestCase):
             self.assertEqual(jm.judge_digest(name), digest)
         self.assertEqual(
             jm.RELEASED,
-            ("1.2b", "1.2b-tools", "1.3", "1.3-tools", "1.3b", "1.3b-tools", "1.3c", "1.3c-tools"),
+            (
+                "1.2b",
+                "1.2b-tools",
+                "1.3",
+                "1.3-tools",
+                "1.3b",
+                "1.3b-tools",
+                "1.3c",
+                "1.3c-tools",
+                "1.3d",
+                "1.3d-tools",
+            ),
         )
-        self.assertEqual(jm.VALIDATOR_VERSION, "1.3c")
+        self.assertEqual(jm.VALIDATOR_VERSION, "1.3d")
 
     def test_its_own_prompt_file_and_digest(self) -> None:
         new, tools = jm.Judge("1.3"), jm.Judge("1.3-tools")
         self.assertEqual(new.version, "cadmind-judge/1.3")
         self.assertEqual(jm.VERSIONS["1.3"].prompt, "judge_prompt_1.3.md")
         digests = {jm.judge_digest(v) for v in jm.VERSIONS}
-        self.assertEqual(len(digests), 8)
+        self.assertEqual(len(digests), 10)
         self.assertNotEqual(tools.digest(), jm.Judge("1.3-tools", tool_budget=8).digest())
         self.assertEqual(set(jm.sections("1.3")), set(jm.SECTIONS))
         self.assertIn("NOT RELEASED", jm.prompt_text("1.3"))
@@ -898,3 +922,32 @@ class TestTransports(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestJudge13d(unittest.TestCase):
+    """1.3d: 1.3c plus one rule, firmware and software out of scope; the validators' judge."""
+
+    def test_one_rule_added_to_1_3c_and_its_own_digest(self) -> None:
+        old = (jm.PROMPT_DIR / "judge_prompt_1.3c.md").read_text()
+        new = (jm.PROMPT_DIR / "judge_prompt_1.3d.md").read_text()
+        self.assertEqual(jm.VERSIONS["1.3d"].prompt, "judge_prompt_1.3d.md")
+        self.assertEqual(replace_fields(jm.VERSIONS["1.3d"]), replace_fields(jm.VERSIONS["1.3c"]))
+        rule = jm.Judge("1.3d").system_prompt()
+        self.assertIn("Firmware, software and programs are out of scope", rule)
+        self.assertNotIn("Firmware, software and programs", jm.Judge("1.3c").system_prompt())
+        # the sections are 1.3c's, word for word, but for the one paragraph
+        d, c = jm.sections("1.3d"), jm.sections("1.3c")
+        self.assertEqual(
+            {k: v for k, v in d.items() if k != "system"},
+            {k: v for k, v in c.items() if k != "system"},
+        )
+        [added] = [x for x in d["system"].split("\n\n") if x.startswith("Out of scope.")]
+        self.assertEqual(d["system"].replace("\n\n" + added, ""), c["system"])
+        self.assertNotEqual(jm.judge_digest("1.3d"), jm.judge_digest("1.3c"))
+        self.assertIn("1.3c's prompt", new)
+        self.assertNotIn("out of scope, never", old)
+        self.assertEqual(jm.for_validator("1.3c").name, "1.3c")  # still selectable
+
+
+def replace_fields(v: jm.Version) -> tuple:
+    return (v.tools, v.samples, v.min_samples, v.nudge_keep, v.assumptions, v.watt_today, v.parts)

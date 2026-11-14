@@ -559,7 +559,7 @@ line it cannot tell caps it at 2. From 1.3b, so is **Watt's refusal**: a fact sh
 version for a reason in the device (`function.today`: `deliverable` false and a `blocking.code`) caps it at 1; a change
 of Watt's guard rules, or Watt not being reachable, caps nothing. Replies are checked strictly; a malformed one is unavailable, never a score.
 
-**Versions, switched by configuration** (`--judge`, `Judge(version=...)`). The validators' is `cadmind-judge/1.3b`
+**Versions, switched by configuration** (`--judge`, `Judge(version=...)`). The validators' is `cadmind-judge/1.3d`
 (`judge.VALIDATOR_VERSION`):
 
 | version | tools | samples | aggregation | who runs it |
@@ -567,8 +567,10 @@ of Watt's guard rules, or Watt not being reachable, caps nothing. Replies are ch
 | `cadmind-judge/1.2b` | none | 3 (at most 2 retries, at least 2 valid) | the **lower median** score; a nudge kept when 2 of 3 samples raise it (one grouping call); verdicts by strict majority | validators until 0.5.1; still accepted |
 | `cadmind-judge/1.2b-tools` | read-only Watt instruments (`entities`, `inspect`, `measure`), at most 12 calls (configurable), locked until turn 1 is answered, output scrubbed | 1, taken as it is (no median, no grouping) | the sample's own capped score, valid nudges and verdicts | CADmind's own pipeline, never a validator |
 | `cadmind-judge/1.3` | none | as 1.2b | as 1.2b; adds the fact sheet's `assumptions` and the rules on it (an assumption counts only when avoidable or the design is fragile to it) | validators until 0.5.5; still accepted |
-| `cadmind-judge/1.3b` | none | as 1.2b: a validator asks for `--review-samples`, 1 by default, and may set more (at least 2 valid, or 1 when one was asked) | as 1.2b, and a vote of one sample keeps that sample's valid nudges; adds Watt's refusal cap and the fact sheet's `assembly`, from which mounting and cables are ruled, not from the pictures | **validators** |
-| `cadmind-judge/1.3-tools`, `1.3b-tools` | as 1.2b-tools | 1 | as 1.2b-tools, on that version's prompt | never a validator |
+| `cadmind-judge/1.3b` | none | as 1.2b: a validator asks for `--review-samples`, 1 by default, and may set more (at least 2 valid, or 1 when one was asked) | as 1.2b, and a vote of one sample keeps that sample's valid nudges; adds Watt's refusal cap and the fact sheet's `assembly`, from which mounting and cables are ruled, not from the pictures | validators until 0.5.17; still accepted |
+| `cadmind-judge/1.3c` | none | as 1.3b | as 1.3b; adds each vendored part's own evidence (the fact sheet's `subprojects`) | validators until 1.3d; still accepted |
+| `cadmind-judge/1.3d` | none | as 1.3b | as 1.3c; adds one rule: firmware, software and programs are out of scope, never a defect and never a point (the device is judged as hardware) | **validators**; the miner's self-review |
+| `cadmind-judge/1.3-tools`, `1.3b-tools`, `1.3c-tools`, `1.3d-tools` | as 1.2b-tools | 1 | as 1.2b-tools, on that version's prompt | never a validator |
 
 The tools version reads the delivered project in a Watt workspace through an agent key. Its read-only rule is
 enforced by **our** client only (`judge_tools.ReadOnlyWatt` sends exactly four requests: write a request file under

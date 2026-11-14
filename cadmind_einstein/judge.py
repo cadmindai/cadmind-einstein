@@ -27,6 +27,10 @@ judged calls :func:`judge`, so one prompt, one version and one digest control th
                     places it as its contract says (its own prompt, ``judge_prompt_1.3c.md``).
                     The validators' judge since 0.5.17.
 ``1.3c-tools``      the same with the instruments.
+``1.3d``            1.3c plus one rule: firmware, software and programs are out of scope, never a
+                    defect and never a point; the device is judged as hardware (its own prompt,
+                    ``judge_prompt_1.3d.md``). The validators' judge and the self-review's default.
+``1.3d-tools``      the same with the instruments.
 ==================  ==========================================================================
 
 **Four modes**, one core; only the end of turn 2 differs:
@@ -108,7 +112,7 @@ PROMPT_FILE = PROMPT_DIR / "judge_prompt.md"
 """1.2b's prompt (and 1.2b-tools'); a later version names its own file (:attr:`Version.prompt`)"""
 
 MODES = ("rate", "nudge", "check", "final")
-VALIDATOR_VERSION = "1.3c"
+VALIDATOR_VERSION = "1.3d"
 """the one version a validator runs"""
 TOOL_BUDGET = 12
 NUDGE_KEEP = 2
@@ -223,11 +227,26 @@ VERSIONS["1.3c"] = replace(VERSIONS["1.3b"], name="1.3c", prompt="judge_prompt_1
 VERSIONS["1.3c-tools"] = replace(
     VERSIONS["1.3b-tools"], name="1.3c-tools", prompt="judge_prompt_1.3c.md", parts=True
 )
-RELEASED = ("1.2b", "1.2b-tools", "1.3", "1.3-tools", "1.3b", "1.3b-tools", "1.3c", "1.3c-tools")
+VERSIONS["1.3d"] = replace(VERSIONS["1.3c"], name="1.3d", prompt="judge_prompt_1.3d.md")
+VERSIONS["1.3d-tools"] = replace(
+    VERSIONS["1.3c-tools"], name="1.3d-tools", prompt="judge_prompt_1.3d.md"
+)
+RELEASED = (
+    "1.2b",
+    "1.2b-tools",
+    "1.3",
+    "1.3-tools",
+    "1.3b",
+    "1.3b-tools",
+    "1.3c",
+    "1.3c-tools",
+    "1.3d",
+    "1.3d-tools",
+)
 """The versions the subnet owner approved. Any other is for offline re-judging only: a validator
 refuses it (:func:`for_validator`) until its release adds it here."""
 JUDGE_VERSION = VERSIONS[VALIDATOR_VERSION].label
-"""the validators' judge, ``cadmind-judge/1.3c``"""
+"""the validators' judge, ``cadmind-judge/1.3d``"""
 
 
 class ValidatorJudgeError(ValueError):

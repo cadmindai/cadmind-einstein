@@ -7,6 +7,23 @@ All notable changes to this project are listed here. The format follows
 
 ## [Unreleased]
 
+## [0.6.12] - 2026-11-14
+
+### Changed
+
+- **A broken agent never holds a client's job.** The reference miner runs its agent once on a test prompt at
+  startup and stops, with the agent's own words, when it does not answer (`--no-agent-probe` skips it). A job's
+  first agent run that fails within 60 seconds (not logged in, no key in the miner's environment, a wrong model id,
+  no credit) is handled as a launch failure: the job is handed back to another builder at once instead of being
+  resumed to its deadline with an empty project, and 3 in a row stop the miner. A failed run's log line shows the
+  end of its normal output when its error output is empty (Claude Code prints those errors on stdout).
+- **Judge `cadmind-judge/1.3d`: firmware and software are out of scope.** 1.3d is 1.3c's prompt plus one rule:
+  firmware, software and programs are never a defect and never a point; the device is judged as hardware (its parts,
+  their wiring and contacts). Its own prompt, `judge_prompt_1.3d.md`; 1.3c's prompt and digest are unchanged, and
+  `--judge 1.3c` is still accepted. 1.3d is the default for the validators' vote and the miner's self-review.
+- **Reference miner prompt:** `misses` is only for what can be neither built nor bought, and firmware and software
+  are never written, shipped, planned or tested, nor made a requirement, a decision or a miss.
+
 ## [0.6.11] - 2026-11-14
 
 ### Added
