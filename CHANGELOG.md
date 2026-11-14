@@ -7,6 +7,15 @@ All notable changes to this project are listed here. The format follows
 
 ## [Unreleased]
 
+### Fixed
+
+- **The reference miner no longer sits on a finished job.** The agent's run now ends when its CLI exits, not when
+  its output closes: a process the agent left running (a background command, a server) kept the output open, and
+  the miner waited on it until the builder's time ran out, so a job finished in 45 minutes was handed in hours
+  later. After the CLI exits, what it left running is stopped within 30 seconds. A CLI that wrote its ending
+  (`DONE`, `REJECT`, `HOST_REFUSED`) and does not exit within 60 seconds is stopped too, and the job goes on to
+  its submit.
+
 ## [0.6.14] - 2026-11-14
 
 ### Changed

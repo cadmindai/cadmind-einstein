@@ -206,6 +206,61 @@ class TestCancelledJob(unittest.TestCase):
             with self.assertRaises(ProcessLookupError):
                 os.kill(child, 0)  # the agent's own children went with it
 
+    def test_the_agent_ends_when_its_cli_exits_though_a_child_holds_its_output(self) -> None:
+        """Owner 2026-11-14: a miner sat on finished jobs for 2h45 -- the CLI had ended, but a
+        process it left running kept its output open, and the miner read on until its timeout."""
+        with tempfile.TemporaryDirectory() as d:
+            marker = Path(d) / "child.pid"
+            run = AgentRun(
+                ["sh", "-c", f"sleep 60 & echo $! > {marker}; echo 'DONE ag-1'; exit 0"],
+                cwd=Path(d),
+                stdin=None,
+                grace_s=1.0,
+                drain_s=0.5,
+            )
+            t0 = time.monotonic()
+            out, _err, timed_out = run.wait(30)
+            self.assertLess(time.monotonic() - t0, 10)
+            self.assertFalse(timed_out)
+            self.assertFalse(run.stopped.is_set())  # not a cancel: the job goes on
+            self.assertIn("DONE ag-1", out)
+            self.assertEqual(run.proc.returncode, 0)
+            time.sleep(0.2)
+            with self.assertRaises(ProcessLookupError):
+                os.kill(int(marker.read_text()), 0)  # what it left running is stopped
+
+    def test_an_agent_that_wrote_its_ending_and_hangs_is_stopped(self) -> None:
+        with tempfile.TemporaryDirectory() as d:
+            run = AgentRun(
+                ["sh", "-c", "echo 'DONE ag-1'; sleep 60"],
+                cwd=Path(d),
+                stdin=None,
+                grace_s=1.0,
+                drain_s=0.5,
+                ended_s=0.5,
+            )
+            t0 = time.monotonic()
+            out, _err, timed_out = run.wait(30)
+            self.assertLess(time.monotonic() - t0, 10)
+            self.assertFalse(timed_out)
+            self.assertTrue(run.ended_early)
+            self.assertFalse(run.stopped.is_set())
+            self.assertIn("DONE ag-1", out)
+
+    def test_a_working_agent_is_not_stopped_early_and_reads_its_stdin(self) -> None:
+        with tempfile.TemporaryDirectory() as d:
+            run = AgentRun(
+                ["sh", "-c", 'read x; sleep 1; echo "got $x"'],
+                cwd=Path(d),
+                stdin="hello\n",
+                drain_s=0.5,
+                ended_s=0.2,
+            )
+            out, _err, timed_out = run.wait(30)
+            self.assertFalse(timed_out)
+            self.assertFalse(run.ended_early)
+            self.assertIn("got hello", out)
+
     def test_a_timeout_stops_it_too(self) -> None:
         with tempfile.TemporaryDirectory() as d:
             run = AgentRun(["sleep", "30"], cwd=Path(d), stdin=None, grace_s=1.0)

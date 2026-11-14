@@ -215,6 +215,14 @@ one in any parent directory), auto-memory is neither read nor written, and every
 with the session instead of behind a tool search (a builder spent 133 round trips over 91 jobs
 searching for its Watt tools, 2026-11-10)."""
 KILL_GRACE_S = 10.0
+EXIT_DRAIN_S = 30.0
+"""After the agent CLI exits, how long its output may still take to close: a process it left
+running (a background command, a server) holds the output open, and the miner would wait on it
+until the job's time ran out (owner 2026-11-14: a miner sat on finished jobs for 2h45). Past it,
+what is left of the agent's process group is stopped."""
+ENDED_EXIT_S = 60.0
+"""After the agent's output holds its ending (``DONE``, ``REJECT``, ``HOST_REFUSED``), how long its
+CLI has to exit on its own before the miner stops it and goes on with the job."""
 
 PROMPT = """You are a CADmind einstein miner. Build this client's device in the Watt workspace \
 `{ws}` (made from the brief), with the {server} MCP tools, the local `fetch_to_workspace` tool \
@@ -541,15 +549,19 @@ class AgentRun:
         stdin: str | None,
         env: Mapping[str, str] | None = None,
         grace_s: float = KILL_GRACE_S,
+        drain_s: float = EXIT_DRAIN_S,
+        ended_s: float = ENDED_EXIT_S,
     ) -> None:
         self.grace_s, self.stopped = grace_s, threading.Event()
+        self.drain_s, self.ended_s = drain_s, ended_s
+        self.ended_early = False
+        """the miner stopped the agent after its ending was written (it did not exit on its own)"""
         self._stdin = stdin
         self.proc = subprocess.Popen(  # noqa: S603 -- the operator's own configured agent CLI
             cmd,
             stdin=subprocess.PIPE if stdin is not None else subprocess.DEVNULL,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
-            text=True,
             cwd=cwd,
             env=None if env is None else dict(env),
             start_new_session=True,
@@ -559,9 +571,8 @@ class AgentRun:
         with contextlib.suppress(ProcessLookupError, PermissionError):
             os.killpg(self.proc.pid, sig)
 
-    def stop(self) -> None:
-        """Stop the agent (from another thread): its output so far is still read by ``wait``."""
-        self.stopped.set()
+    def _end(self) -> None:
+        """SIGTERM to the group, SIGKILL after ``grace_s`` if the CLI is still there."""
         self._signal(signal.SIGTERM)
 
         def hard() -> None:
@@ -572,16 +583,74 @@ class AgentRun:
 
         threading.Thread(target=hard, daemon=True).start()
 
+    def stop(self) -> None:
+        """Stop the agent (from another thread): its output so far is still read by ``wait``."""
+        self.stopped.set()
+        self._end()
+
     def wait(self, timeout: float) -> tuple[str, str, bool]:
         """(stdout, stderr, timed_out): the agent's output once it ends, or at ``timeout`` (it is
-        then stopped). Its exit code is ``proc.returncode`` after."""
-        try:
-            out, err = self.proc.communicate(self._stdin, timeout=timeout)
-            return out or "", err or "", False
-        except subprocess.TimeoutExpired:
-            self.stop()
-            out, err = self.proc.communicate()
-            return out or "", err or "", True
+        then stopped). Its exit code is ``proc.returncode`` after.
+
+        The agent's end is its CLI's exit, not the close of its output: a process the agent left
+        running holds the output open, so after the CLI exits the output is read for at most
+        ``drain_s`` more, then the rest of the group is stopped. A CLI that wrote its ending line
+        and does not exit within ``ended_s`` is stopped too (``ended_early``)."""
+        got: dict[str, list[bytes]] = {"out": [], "err": []}
+
+        def read(pipe: Any, into: list[bytes]) -> None:
+            with contextlib.suppress(OSError, ValueError):
+                while chunk := os.read(pipe.fileno(), 65536):
+                    into.append(chunk)
+
+        readers = [
+            threading.Thread(target=read, args=(self.proc.stdout, got["out"]), daemon=True),
+            threading.Thread(target=read, args=(self.proc.stderr, got["err"]), daemon=True),
+        ]
+        for t in readers:
+            t.start()
+        if self.proc.stdin is not None:
+
+            def feed() -> None:
+                with contextlib.suppress(OSError, ValueError):
+                    if self._stdin:
+                        self.proc.stdin.write(self._stdin.encode("utf-8"))
+                    self.proc.stdin.close()
+
+            threading.Thread(target=feed, daemon=True).start()
+
+        def text(key: str) -> str:
+            return b"".join(got[key]).decode("utf-8", errors="replace")
+
+        end, timed_out, said_at = time.monotonic() + max(0.0, timeout), False, 0.0
+        while self.proc.poll() is None:
+            now = time.monotonic()
+            if now >= end:
+                timed_out = True
+                self.stop()
+                break
+            if not said_at and ended(text("out")):
+                said_at = now
+            if said_at and now - said_at >= self.ended_s:
+                self.ended_early = True
+                self._end()
+                break
+            with contextlib.suppress(subprocess.TimeoutExpired):
+                self.proc.wait(min(0.5, max(0.01, end - now)))
+        if self.stopped.is_set() or self.ended_early:
+            with contextlib.suppress(subprocess.TimeoutExpired):
+                self.proc.wait(self.grace_s + 5)
+        drain_end = time.monotonic() + self.drain_s
+        for t in readers:
+            t.join(max(0.0, drain_end - time.monotonic()))
+        if any(t.is_alive() for t in readers):
+            # the CLI is gone but something it started still holds its output open
+            self._signal(signal.SIGKILL)
+            for t in readers:
+                t.join(5)
+        with contextlib.suppress(subprocess.TimeoutExpired):
+            self.proc.wait(5)
+        return text("out"), text("err"), timed_out
 
 
 RESUME = """You stopped with {minutes} minutes left. There is no hand-over: an unfinished project \
@@ -789,7 +858,12 @@ def build(
             watch(None)
         code = getattr(getattr(run, "proc", None), "returncode", None)
         code = code if isinstance(code, int) else None
-        if (code is not None and code != 0) or dead(out):
+        if getattr(run, "ended_early", False) is True:
+            log(
+                f"{job}: the agent wrote its ending but did not exit within "
+                f"{run.ended_s:g} s; stopped, the job goes on"
+            )
+        elif (code is not None and code != 0) or dead(out):
             why = f"; {dead(out)}" if dead(out) else ""
             log(f"{job}: agent run exit {code}{why}; {output_tail(out, err)}")
         record += _record(out, err, code, timed_out)
