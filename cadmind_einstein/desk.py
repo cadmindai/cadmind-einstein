@@ -1345,7 +1345,7 @@ class Desk:
 
     def admit(self, hotkey: str, reason: str) -> dict[str, Any]:
         """The operator admits ``hotkey`` without (another) entry test: a miner whose test was
-        failed by the subnet's own fault (owner 2026-11-12: an entry-test workspace that did not
+        failed by the subnet's own fault (an entry-test workspace that did not
         say no-questions). Only an approved, keyed hotkey that is not disabled; the entry-test
         failures it holds are taken back (they were not its own). Logged and persisted; answers
         what changed."""
@@ -1592,7 +1592,7 @@ class Desk:
             return rows
 
     def _waitlist(self) -> dict[str, dict[str, Any]]:
-        """Inside the lock: the waitlist (owner 2026-11-13: the subnet is full, new miners wait in
+        """Inside the lock: the waitlist (the subnet is full, new miners wait in
         line), computed afresh from the pending key requests on every read -- nothing of it is
         stored. Empty under ``auto`` approval (nobody waits).
 
@@ -1655,7 +1655,7 @@ class Desk:
 
     def waitlist_places(self) -> list[tuple[str, int]]:
         """The places in line, ``(hotkey, position)`` from the front: the public Network page's
-        waitlist (owner 2026-11-13: "just UIDs and their place"). Duplicates hold no place and are
+        waitlist (UIDs and their place only). Duplicates hold no place and are
         not listed; nothing else of a request (its note, address or coldkey) is."""
         with self._lock:
             line = self._waitlist()
@@ -1768,7 +1768,7 @@ class Desk:
         return out
 
     def release(self, job_id: str, reason: str) -> dict[str, Any]:
-        """The operator takes a client job back from the miner working it (owner 2026-11-13: a miner
+        """The operator takes a client job back from the miner working it (a miner
         locked out of its own key held a client's job with no way to work it): the attempt ends
         without scoring anyone (``released``, uncounted), the miner is told to stop as for a cancel,
         and the job goes back to the queue for a miner that has not tried it, which gets the whole
@@ -1801,7 +1801,7 @@ class Desk:
         return out
 
     def void(self, job_id: str, reason: str) -> dict[str, Any]:
-        """The operator voids every rejection of a client job (owner 2026-11-13: a miner rightly
+        """The operator voids every rejection of a client job (a miner rightly
         declined briefs that said nothing to build, and each still scored 0): each counts for
         nothing from now on -- out of its miner's record and weight -- and is taken out of the
         rejection counts (telemetry, :meth:`enforce`; one another miner had overturned is no longer
@@ -2291,7 +2291,7 @@ class Desk:
             if m.admitted:
                 return {"admitted": True}
             now = self.now_ms()
-            # On hold the entry test is still given (owner 2026-11-12): a miner is ready on the day
+            # On hold the entry test is still given: a miner is ready on the day
             # the subnet opens; client jobs and weight stay held.
             if now - m.admission_ms < 86_400_000:
                 live = [

@@ -201,8 +201,7 @@ validator: freeze on submit, fork, read Watt's verdict (the gate), copy check, s
   is then not a second one. A job ends declined or out of reach only on opinions from `--second-opinion-coldkeys`
   (2) distinct coldkeys, so hotkeys of one owner cannot end a hard job between them.
 
-- Every attempt that does not deliver -- a timeout, a copy, a rejection, a gate failure -- scores 0 at once (owner
-  2026-11-06; earlier releases held a rejection or a gate failure until another miner passed the job). A rejection
+- Every attempt that does not deliver -- a timeout, a copy, a rejection, a gate failure -- scores 0 at once (earlier releases held a rejection or a gate failure until another miner passed the job). A rejection
   also sends its miner to the back of the router's line (section 6), and one another coldkey's miner overturns by
   delivering the job counts toward the abuse limits (section 11).
 - **A confirmed decline is neutral** (0.6.9). A job that ends declined -- every substantive attempt a rejection,
@@ -530,7 +529,7 @@ another miner's jobs.
 
 A device can pass every check it wrote and still not serve its brief. A **vote** is one validator's model evaluation
 of one delivered version against its brief. It is recorded, published, shown to the miner and archived for
-calibration and the practice comparison; **it scores nobody** (owner 2026-11-06: scores, weights and routing never
+calibration and the practice comparison; **it scores nobody** (scores, weights and routing never
 read votes), and delivery, charging, reassignment and the gate never read them either.
 
 **The review bundle.** The platform renders one bundle per delivered version, hashes it and serves the same bytes
@@ -621,7 +620,7 @@ score is reported, not judged.
 
 **Rollout.** Our validator votes on every delivery (`--votes shadow`, the default; `counted` and `live`, older modes
 that scored the vote from 0.4.3 to 0.5.11, are names of it now): the votes are signed, published, shown to the miner
-and archived for calibration, and they never enter a score, a weight or the router (owner 2026-11-06). Third-party
+and archived for calibration, and they never enter a score, a weight or the router. Third-party
 voting routes come after. Each validator pays for its
 own model calls; ours are capped per day (`--review-daily-usd`, counting OpenRouter's reported cost per request, an
 ALERT when reached; a three-sample vote costs about

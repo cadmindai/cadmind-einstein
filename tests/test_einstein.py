@@ -308,7 +308,7 @@ QUALITY_REFUND = {"kind": "refund", "quality": True}
 
 
 class TestTheRule(unittest.TestCase):
-    """The owner's rule (2026-11-06), replayed one line at a time."""
+    """The scoring rule, replayed one line at a time."""
 
     def test_an_unrated_delivery_is_half_a_point(self) -> None:
         self.assertEqual(points(), 0.5)
@@ -606,7 +606,7 @@ class TestDesk(unittest.TestCase):
         self.assertEqual(self.desk.telemetry()[r1]["rejected"], 0)
 
     def test_needs_client_is_no_rejection(self) -> None:
-        """Owner 2026-10-24: no questions -- the builder assumes, records and delivers; a need is
+        """No questions -- the builder assumes, records and delivers; a need is
         never a reason to decline a job."""
         self.poll(A, B, C)
         self.enqueue(

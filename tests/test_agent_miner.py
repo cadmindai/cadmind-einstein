@@ -525,7 +525,7 @@ class TestNoHandOver(unittest.TestCase):
             (kind, body["category"], body["message"]), ("reject", "not-allowed", "a weapon")
         )
         self.assertEqual(outcome("admission-1", "w", "REJECT not-allowed: x")[0], "submit")
-        # no questions: the builder assumes and records (owner 2026-10-24); no needs-client
+        # no questions: the builder assumes and records; no needs-client
         self.assertFalse(agent_miner.ended("REJECT needs-client: charge it? options: a: no"))
 
     def test_a_reject_message_is_kept_whole(self) -> None:

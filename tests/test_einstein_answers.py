@@ -243,7 +243,7 @@ class TestCheck(unittest.TestCase):
         self.assertEqual(check(exported({"spec/decisions.toml": OPEN})), "")
 
     def test_a_missed_need_recorded_as_the_builders_own_is_delivered(self) -> None:
-        """Owner 2026-10-24: no questions -- the builder assumes and records. A no-questions job's
+        """No questions -- the builder assumes and records. A no-questions job's
         need no option keeps is the builder's own decided decision with `misses` (Watt's W0240
         accepts it on such a job), and passes the gate; left open, it is an open client decision."""
         files = {"spec/needs.toml": NEEDS, "spec/decisions.toml": TRADED}

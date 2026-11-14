@@ -255,7 +255,7 @@ class TestKeyApproval(_Case):
 
 
 class TestWaitlist(_Case):
-    """The waitlist (0.6.10, owner 2026-11-13): first come, first served, one place per coldkey; a
+    """The waitlist (0.6.10): first come, first served, one place per coldkey; a
     duplicate holds no place and everyone behind it moves up."""
 
     def setUp(self) -> None:
@@ -800,7 +800,7 @@ class TestHold(_Case):
         self.assertEqual(self.desk.work(A)["job"], "c1")
 
     def test_on_hold_the_entry_test_is_still_given_and_admits(self) -> None:
-        """Owner 2026-11-12: miners take the test during the hold, ready for the day it opens."""
+        """Miners take the test during the hold, ready for the day it opens."""
         self.desk.hold = True
         self.desk.approve(B)
         self.key(B)
@@ -831,7 +831,7 @@ class TestHold(_Case):
 
 
 class TestOperatorAdmit(_Case):
-    """Owner 2026-11-12: an entry test failed by our own fault; the operator admits by hand."""
+    """An entry test failed by our own fault; the operator admits by hand."""
 
     def test_the_entry_test_workspace_says_no_questions(self) -> None:
         self.desk.approve(A)

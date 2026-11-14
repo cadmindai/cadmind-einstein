@@ -675,8 +675,7 @@ Proposed as **0.5.0**: the vote protocol and the value scale change. A change to
 owner's approval (DESIGN.md section 13).
 
 ### Added
-- **CADmind's device judge** (`cadmind_einstein/judge.py`, the prompt `judge_prompt.md` as package data; owner
-  decision 2026-10-24). One core, four modes (`rate`, `nudge`, `check`, `final`), one entry point `judge(mode,
+- **CADmind's device judge** (`cadmind_einstein/judge.py`, the prompt `judge_prompt.md` as package data). One core, four modes (`rate`, `nudge`, `check`, `final`), one entry point `judge(mode,
   inputs, model, version=...)`. One sample is one two-turn conversation: a **blind turn 1** (the client's words and
   photos only: use steps and 5-8 "useless if" lines, 1-4 of them the main job), then the pictures and the fact sheet
   (rulings, at most 3 nudges, a score 0-3). The **main-job cap** is in the prompt and applied mechanically. Two
@@ -730,7 +729,7 @@ owner's approval (DESIGN.md section 13).
 ### Removed
 - **Rubric 3** (R1-R5, `FUNCTION_CAP`, `SYSTEM_PROMPT`, `REPLY_SCHEMA`, `parse_sample`, `sample_cap`,
   `capped_value`, `ask_samples`, `rubric_digest`, `user_text`): replaced by the device judge.
-- **The `needs-client` rejection** (owner 2026-10-24: "no questions: the miner assumes and records"). On a job
+- **The `needs-client` rejection** (no questions: the miner assumes and records). On a job
   whose client asked not to be asked questions, a need no option keeps is the builder's own decided decision with
   `misses` (Watt's W0240 accepts it on such a job) and the job is delivered: the gate no longer refuses it, the
   desk takes `not-allowed` and `not-capable` only, and the reference miner's prompt says assume, record and deliver.
