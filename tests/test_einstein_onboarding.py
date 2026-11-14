@@ -306,7 +306,9 @@ class TestWaitlist(_Case):
         uids = {A: 7, B: 8, w0: 9}
         stats = MinerStats(self.desk)
         stats.uids = lambda: uids  # type: ignore[method-assign]
-        self.assertEqual(stats.network()["waitlist"], [{"uid": 7, "position": 1}, {"uid": 9, "position": 2}])
+        self.assertEqual(
+            stats.network()["waitlist"], [{"uid": 7, "position": 1}, {"uid": 9, "position": 2}]
+        )
 
     def test_an_approval_or_refusal_closes_the_gap(self) -> None:
         self.cold[B] = "cold-a"
@@ -531,7 +533,7 @@ class TestRevoke(_Case):
             self.desk.admission(holder)
 
     def test_release_takes_a_client_job_back_and_another_miner_gets_a_whole_deadline(self) -> None:
-        """Owner 2026-11-13: the operator takes a job back from a miner that cannot work it; the miner keeps its key."""
+        """The operator takes a job back from a miner that cannot work it; it keeps its key."""
         self.desk.work(A)
         self.desk.work(B)
         self.p.queue.append({"job": "r2", "brief": "A wall hook."})

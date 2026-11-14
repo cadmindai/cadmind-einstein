@@ -131,7 +131,17 @@ HOST_BLOCKED = "host_blocked"
 the design) refused a Watt run's result (Watt's ``host_refused``): the round ends "blocked by the
 platform", its project kept, uncharged, uncounted, and nobody is scored
 (:meth:`Desk._host_blocked`)"""
-UNCOUNTED = ("dereg", "disabled", "revoked", "released", "stale", "ours", "lost", NO_CHANGE, HOST_BLOCKED)
+UNCOUNTED = (
+    "dereg",
+    "disabled",
+    "revoked",
+    "released",
+    "stale",
+    "ours",
+    "lost",
+    NO_CHANGE,
+    HOST_BLOCKED,
+)
 """attempt kinds that do not count toward a job's attempt cap and score nobody: the miner left the
 subnet, was disabled for abuse, or had its key revoked by the operator while it held the job
 (``dereg``, ``disabled``, ``revoked``); the first
@@ -1769,7 +1779,12 @@ class Desk:
         with self._mut():
             job = self.jobs.get(str(job_id or ""))
             a = job.current if job else None
-            if job is None or a is None or job.kind != "client" or job.state not in ("assigned", "working"):
+            if (
+                job is None
+                or a is None
+                or job.kind != "client"
+                or job.state not in ("assigned", "working")
+            ):
                 raise DeskError("no client job being worked by that id", 404)
             m = self.miners.get(a.hotkey)
             if m is None or m.job != job.job:
@@ -1777,7 +1792,11 @@ class Desk:
             m.cancelled_job, m.cancelled_ms, m.after_cancel = job.job, self.now_ms(), True
             self._free_job(m, f"taken back by the operator: {why}", "released")
             self.log(f"job {job.job} released from {a.hotkey} by the operator: {why}")
-            out = {"job": job.job, "released_from": a.hotkey, "state": self.status(job.job)["state"]}
+            out = {
+                "job": job.job,
+                "released_from": a.hotkey,
+                "state": self.status(job.job)["state"],
+            }
         self.tick()
         return out
 

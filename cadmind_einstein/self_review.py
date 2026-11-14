@@ -1,6 +1,6 @@
-"""The reference miner's self-review round (``--self-review on``; off by default): after the builder's
-``DONE`` and before the submit, the validators' own judge looks at the built device, and the
-points it upholds go back to the builder as a correction.
+"""The reference miner's self-review round (``--self-review on``; off by default): after the
+builder's ``DONE`` and before the submit, the validators' own judge looks at the built device, and
+the points it upholds go back to the builder as a correction.
 
 The round, inside the job's deadline:
 
