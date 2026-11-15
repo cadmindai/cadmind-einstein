@@ -203,8 +203,8 @@ repeatable and no operator skill, memory or ``CLAUDE.md`` can add instructions t
 BASELINE_MODEL = "claude-sonnet-5-5"
 BASELINE_EFFORT = "high"
 """CADmind's baseline (docs/MINER.md, "The baseline"): Claude Code running Sonnet 5.5 alone at
-effort high, the setup CADmind's own miners run. A miner may change both; the quality this setup
-delivers today is the bar a miner is held to."""
+effort high, the setup CADmind's test miners ran on testnet before mainnet. A miner may change
+both; the quality this setup delivers today is the bar a miner is held to."""
 ISOLATION_ENV: dict[str, str] = {
     "CLAUDE_CODE_DISABLE_CLAUDE_MDS": "1",
     "CLAUDE_CODE_DISABLE_AUTO_MEMORY": "1",

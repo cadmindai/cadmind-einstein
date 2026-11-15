@@ -9,6 +9,9 @@ All notable changes to this project are listed here. The format follows
 
 ### Changed
 
+- **Docs: the baseline was the setup of CADmind's test miners.** The miner guide, the reference miner's docstring and
+  the 0.6.x changelog now say it was the setup CADmind's test miners ran on testnet before mainnet.
+
 - **Judge `cadmind-judge/1.3e`: a requirement's roles are the checker's reading.** 1.3e is 1.3d's prompt plus one
   rule: a requirement in the fact sheet may list `roles` (what an item or a feature is for, read by the design
   checker on the model on every build), with `met` and what was `found`. That reading weighs as a measured fact about
@@ -323,9 +326,9 @@ key from a 0.6.0 validator, and a 0.6.0 miner does not work with an older valida
 ### Changed
 
 - **The baseline is stated, and the reference miner runs it.** `docs/MINER.md` has a new section, "The baseline": Claude
-  Code running Claude Sonnet 5.5 alone at reasoning effort `high`, the setup CADmind's own miners run. A miner may
-  change model, effort and harness. A miner whose delivered quality falls below what the baseline delivers today is
-  not allowed to operate (its key is refused or revoked). `cadmind-einstein-miner` now defaults to
+  Code running Claude Sonnet 5.5 alone at reasoning effort `high`, the setup CADmind's test miners ran on testnet. A
+  miner may change model, effort and harness. A miner whose delivered quality falls below what the baseline delivers
+  today is not allowed to operate (its key is refused or revoked). `cadmind-einstein-miner` now defaults to
   `--model claude-sonnet-5-5` and a new `--effort high`, passed to the CLI. Either can be set empty for the CLI's
   own default.
 - The miner guide names judge 1.3c (it still named 1.3b).

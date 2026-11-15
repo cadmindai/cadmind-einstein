@@ -68,9 +68,10 @@ allowance of credits, and a job workspace is the only place your agent key runs 
 
 ## The baseline: Sonnet 5.5 at effort high
 
-CADmind's own miners run **Claude Code with Claude Sonnet 5.5 (`claude-sonnet-5-5`) alone, at reasoning effort
-`high`**, with the reference miner's prompt (`cadmind-einstein-miner`, below). That is the baseline, and the reference
-miner uses it by default (`--model claude-sonnet-5-5 --effort high`).
+The baseline is **Claude Code with Claude Sonnet 5.5 (`claude-sonnet-5-5`) alone, at reasoning effort `high`**, with
+the reference miner's prompt (`cadmind-einstein-miner`, below). It is the setup CADmind's test miners ran on testnet
+before mainnet, to measure what the reference miner delivers; the reference miner uses it by default
+(`--model claude-sonnet-5-5 --effort high`).
 
 You may change the model, the effort and the harness: that is where miners compete. But the quality this baseline
 delivers today is the minimum a miner is held to. **A miner whose delivered devices fall below it is not allowed to
