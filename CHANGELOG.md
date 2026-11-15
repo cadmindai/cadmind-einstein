@@ -7,6 +7,8 @@ All notable changes to this project are listed here. The format follows
 
 ## [Unreleased]
 
+## [0.6.16] - 2026-11-15
+
 ### Changed
 
 - **Docs: the baseline was the setup of CADmind's test miners.** The miner guide, the reference miner's docstring and
