@@ -280,6 +280,8 @@ class TestVersionsAndDigests(unittest.TestCase):
                 "1.3c-tools",
                 "1.3d",
                 "1.3d-tools",
+                "1.3e",
+                "1.3e-tools",
             },
         )
         base, tools = jm.Judge("1.2b"), jm.Judge("1.2b-tools")
@@ -287,7 +289,7 @@ class TestVersionsAndDigests(unittest.TestCase):
             (base.version, tools.version), ("cadmind-judge/1.2b", "cadmind-judge/1.2b-tools")
         )
         self.assertNotEqual(base.digest(), tools.digest())
-        self.assertEqual(jm.Judge("1.3d").digest(), jm.Judge().digest())  # the default
+        self.assertEqual(jm.Judge("1.3e").digest(), jm.Judge().digest())  # the default
         # the tool budget is part of the tools judge (it is in the prompt), not of 1.2b
         self.assertNotEqual(tools.digest(), jm.Judge("1.2b-tools", tool_budget=8).digest())
         self.assertEqual(base.digest(), jm.Judge("1.2b", tool_budget=8).digest())
@@ -301,7 +303,7 @@ class TestVersionsAndDigests(unittest.TestCase):
             self.assertNotEqual(before, jm.Judge().digest())
         finally:
             jm.V_MAP[1] = old
-        self.assertEqual(jm.Judge("1.3d").digest(), jm.Judge().digest())  # the default
+        self.assertEqual(jm.Judge("1.3e").digest(), jm.Judge().digest())  # the default
         with self.assertRaises(ValueError):
             jm.Judge("1.1")
 
@@ -469,16 +471,18 @@ class TestJudge13(unittest.TestCase):
                 "1.3c-tools",
                 "1.3d",
                 "1.3d-tools",
+                "1.3e",
+                "1.3e-tools",
             ),
         )
-        self.assertEqual(jm.VALIDATOR_VERSION, "1.3d")
+        self.assertEqual(jm.VALIDATOR_VERSION, "1.3e")
 
     def test_its_own_prompt_file_and_digest(self) -> None:
         new, tools = jm.Judge("1.3"), jm.Judge("1.3-tools")
         self.assertEqual(new.version, "cadmind-judge/1.3")
         self.assertEqual(jm.VERSIONS["1.3"].prompt, "judge_prompt_1.3.md")
         digests = {jm.judge_digest(v) for v in jm.VERSIONS}
-        self.assertEqual(len(digests), 10)
+        self.assertEqual(len(digests), 12)
         self.assertNotEqual(tools.digest(), jm.Judge("1.3-tools", tool_budget=8).digest())
         self.assertEqual(set(jm.sections("1.3")), set(jm.SECTIONS))
         self.assertIn("NOT RELEASED", jm.prompt_text("1.3"))
@@ -947,6 +951,35 @@ class TestJudge13d(unittest.TestCase):
         self.assertIn("1.3c's prompt", new)
         self.assertNotIn("out of scope, never", old)
         self.assertEqual(jm.for_validator("1.3c").name, "1.3c")  # still selectable
+
+
+class TestJudge13e(unittest.TestCase):
+    """1.3e: 1.3d plus one rule, a requirement's roles are the checker's reading (validators)."""
+
+    def test_one_rule_added_to_1_3d_and_its_own_digest(self) -> None:
+        new = (jm.PROMPT_DIR / "judge_prompt_1.3e.md").read_text()
+        self.assertEqual(jm.VERSIONS["1.3e"].prompt, "judge_prompt_1.3e.md")
+        self.assertEqual(replace_fields(jm.VERSIONS["1.3e"]), replace_fields(jm.VERSIONS["1.3d"]))
+        rule = jm.Judge("1.3e").system_prompt()
+        self.assertIn("Roles. A requirement in the fact sheet may list `roles`", rule)
+        self.assertNotIn("Roles. A requirement", jm.Judge("1.3d").system_prompt())
+        # the sections are 1.3d's, word for word, but for the paragraph and the `built_for` clause
+        e, d = jm.sections("1.3e"), jm.sections("1.3d")
+        self.assertEqual(
+            {k: v for k, v in e.items() if k != "system"},
+            {k: v for k, v in d.items() if k != "system"},
+        )
+        [added] = [x for x in e["system"].split("\n\n") if x.startswith("Roles.")]
+        back = (
+            e["system"]
+            .replace("\n\n" + added, "")
+            .replace("single, and is absent when the facts hold no size)", "single)")
+        )
+        self.assertEqual(back, d["system"])
+        self.assertNotEqual(jm.judge_digest("1.3e"), jm.judge_digest("1.3d"))
+        self.assertIn("1.3d's prompt", new)
+        self.assertEqual(jm.for_validator("1.3d").name, "1.3d")  # still selectable
+        self.assertEqual(jm.for_validator(jm.VALIDATOR_VERSION).name, "1.3e")
 
 
 def replace_fields(v: jm.Version) -> tuple:

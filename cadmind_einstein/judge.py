@@ -29,8 +29,14 @@ judged calls :func:`judge`, so one prompt, one version and one digest control th
 ``1.3c-tools``      the same with the instruments.
 ``1.3d``            1.3c plus one rule: firmware, software and programs are out of scope, never a
                     defect and never a point; the device is judged as hardware (its own prompt,
-                    ``judge_prompt_1.3d.md``). The validators' judge and the self-review's default.
+                    ``judge_prompt_1.3d.md``). The validators' judge until 1.3e.
 ``1.3d-tools``      the same with the instruments.
+``1.3e``            1.3d plus one rule: a requirement's ``roles`` (what the design checker read
+                    on the model for what an item is for) weigh as measured facts about the
+                    model as declared, and ``built_for`` absent means no size was assumed (its
+                    own prompt, ``judge_prompt_1.3e.md``). The validators' judge and the
+                    self-review's default.
+``1.3e-tools``      the same with the instruments.
 ==================  ==========================================================================
 
 **Four modes**, one core; only the end of turn 2 differs:
@@ -112,7 +118,7 @@ PROMPT_FILE = PROMPT_DIR / "judge_prompt.md"
 """1.2b's prompt (and 1.2b-tools'); a later version names its own file (:attr:`Version.prompt`)"""
 
 MODES = ("rate", "nudge", "check", "final")
-VALIDATOR_VERSION = "1.3d"
+VALIDATOR_VERSION = "1.3e"
 """the one version a validator runs"""
 TOOL_BUDGET = 12
 NUDGE_KEEP = 2
@@ -231,6 +237,10 @@ VERSIONS["1.3d"] = replace(VERSIONS["1.3c"], name="1.3d", prompt="judge_prompt_1
 VERSIONS["1.3d-tools"] = replace(
     VERSIONS["1.3c-tools"], name="1.3d-tools", prompt="judge_prompt_1.3d.md"
 )
+VERSIONS["1.3e"] = replace(VERSIONS["1.3d"], name="1.3e", prompt="judge_prompt_1.3e.md")
+VERSIONS["1.3e-tools"] = replace(
+    VERSIONS["1.3d-tools"], name="1.3e-tools", prompt="judge_prompt_1.3e.md"
+)
 RELEASED = (
     "1.2b",
     "1.2b-tools",
@@ -242,11 +252,13 @@ RELEASED = (
     "1.3c-tools",
     "1.3d",
     "1.3d-tools",
+    "1.3e",
+    "1.3e-tools",
 )
 """The versions the subnet owner approved. Any other is for offline re-judging only: a validator
 refuses it (:func:`for_validator`) until its release adds it here."""
 JUDGE_VERSION = VERSIONS[VALIDATOR_VERSION].label
-"""the validators' judge, ``cadmind-judge/1.3d``"""
+"""the validators' judge, ``cadmind-judge/1.3e``"""
 
 
 class ValidatorJudgeError(ValueError):

@@ -7,6 +7,17 @@ All notable changes to this project are listed here. The format follows
 
 ## [Unreleased]
 
+### Changed
+
+- **Judge `cadmind-judge/1.3e`: a requirement's roles are the checker's reading.** 1.3e is 1.3d's prompt plus one
+  rule: a requirement in the fact sheet may list `roles` (what an item or a feature is for, read by the design
+  checker on the model on every build), with `met` and what was `found`. That reading weighs as a measured fact about
+  the model as declared: `met` false on what a line asks makes it fail unless the pictures show another way; `met`
+  true counts only as far as the role's target, direction and range are the ones the need names. A requirement with no
+  role is not a flaw on that account. `built_for` absent means no size was assumed. Its own prompt,
+  `judge_prompt_1.3e.md`; 1.3d's prompt and digest are unchanged, and `--judge 1.3d` is still accepted. 1.3e is the
+  default for the validators' vote and the miner's self-review.
+
 ## [0.6.15] - 2026-11-14
 
 ### Fixed
