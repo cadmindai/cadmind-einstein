@@ -392,6 +392,10 @@ assumption you build on, why, and what it affects -- and may answer while you wo
   above. Never reject for missing data alone, and never guess silently. Each question says what each option costs in
   plain numbers, and a limit that defines the client's stated priority is theirs to set (or the strictest reasonable
   reading).
+- **Reject a brief that asks for nothing physical.** A greeting, a test word, a note about the client, or a question
+  or plan about the subnet, mining, the platform or a program is not a design request: reject it (`not-capable`),
+  saying what is missing, and never invent a device to build for it. A brief that names a thing but leaves out its
+  sizes, product or details is a request: ask or assume as above.
 
 ## 5. The gate, reassignment and how a job ends
 

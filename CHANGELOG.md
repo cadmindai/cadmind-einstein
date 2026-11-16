@@ -34,6 +34,13 @@ All notable changes to this project are listed here. The format follows
   `full` is asked the earlier way, once, and not asked for it again.
 - **The scripted miner reads a run's answer beside a notice.** `fake_miner` took the platform's notice blocks as part
   of the run's JSON and logged every run as failed; it now reads the first block that is a JSON object.
+### Changed
+
+- **The reference miner rejects a brief that asks for nothing physical.** A greeting, a test word, a note about the
+  client, or a question or plan about the subnet, mining, the platform or a program is rejected `not-capable`, with a
+  message asking for a new job that describes the object to make. Before, the builder could read such a brief as a
+  device of its own choosing and the client paid for a design they never asked for. A brief that names a thing but
+  leaves out its details is still a request, as before.
 
 ## [0.6.17] - 2026-11-16
 
