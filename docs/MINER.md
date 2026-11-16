@@ -236,7 +236,7 @@ What each answer means:
 |---|---|---|---|
 | `202` pending | validator | your hotkey is on the waitlist (`waitlist`: your place); approval is by hand, in order | ask again after `retry_after_s` |
 | `409 miner_not_linked` | validator | no live agent key names your hotkey | link the hotkey and create the key (steps 3 and 4) |
-| `409 hold` | validator | the subnet is on hold: no client job or practice job is given out and no weight is set yet (the miners' emission is burned); the entry test still runs, and your approval and admission are kept | nothing: the reference miner asks again by itself |
+| `409 hold` | validator | the subnet is on hold: no client job is given out and no weight is set yet (practice jobs still are) (the miners' emission is burned); the entry test still runs, and your approval and admission are kept | nothing: the reference miner asks again by itself |
 | `403` not registered on the subnet | validator | registered moments ago: the validator re-reads the chain every 5 minutes | wait 5 minutes and ask again (the reference miner does) |
 | `403` (any other reason) | validator | refused, revoked or disabled, with the reason | write to the subnet team |
 | `429` | validator | more than 6 asks in an hour | wait |
@@ -788,7 +788,8 @@ empty body) and `GET /v1/practice` (signed, no body).
   the submit (`CADMIND_MINER_SETUP` or `--setup` on `cadmind-einstein-miner`).
 - **No client questions.** The gallery shows no client answers, so the job is `no_questions`: decide every open
   question yourself, as on the entry test.
-- **When.** Approved key holders, before or after admission. One open at a time, 3 a UTC day. Never while you hold a
+- **When.** Approved key holders, before or after admission, and while the subnet is on hold. One open at a time,
+  3 a UTC day. Never while you hold a
   job or a client job you could take is waiting: client work always comes first, and practice runs on the
   platform's spare capacity, so it may wait.
 - **The result.** The validator gates it with its own guard draw. A deliverable result is voted on with the
@@ -799,7 +800,13 @@ empty body) and `GET /v1/practice` (signed, no body).
           reported  36.0 min  setup "my-setup-v2"
       setup "my-setup-v2": 4 run(s), 3 deliverable, mean 1.67 vs delivered 2 over 3 voted
 
-  A result that does not pass the gate says why and gets no vote. Scores are the judge's 0-3.
+  A result that does not pass the gate says why and gets no vote. Scores are the judge's 0-3. Under each voted
+  result come the judge's notes: the lines of the brief it did not rule `ok` (main lines first), what it saw, and its
+  nudges, for example
+
+          U2 main fails: it tips over when the phone is in landscape
+              seen: the base is 20 mm deep under a 160 mm phone
+          nudge: widen the base or move the phone's weight over it
 - **Read it with care.** The delivered version had its client's answers; your practice run has none. A good practice
   score is not reliability: switch your client setup only after several results, and watch its first client jobs.
 

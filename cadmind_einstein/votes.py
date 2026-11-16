@@ -458,9 +458,10 @@ class Reviewer:
         """One vote's samples on a ready bundle (``got``: the platform's answer naming it), made
         exactly as a delivery's vote is -- the same judge, prompt, rubric and sample count -- and
         recorded nowhere: a practice result and its reference (:mod:`.practice`). Answers
-        ``{score, value, scores, samples, image_set}`` (``score``: the 0-3 the vote's value is
-        made from). Raises ``ValueError`` when the bundle is unreadable or not the one named, or
-        too few samples are valid; anything the model raises goes through."""
+        ``{score, value, scores, samples, image_set, notes}`` (``score``: the 0-3 the vote's value
+        is made from; ``notes``: :func:`practice_notes`). Raises ``ValueError`` when the bundle is
+        unreadable or not the one named, or too few samples are valid; anything the model raises
+        goes through."""
         data = self.platform.fetch_bundle(str(got.get("bundle_url") or ""), MAX_BUNDLE_BYTES)
         try:
             bundle = read_bundle(data)
@@ -500,6 +501,7 @@ class Reviewer:
             "scores": scores,
             "samples": len(samples),
             "image_set": bundle.image_set,
+            "notes": practice_notes({"samples": samples}),
         }
 
     def judge(self) -> dict[str, Any]:
@@ -695,6 +697,41 @@ def main_failure(vote: Mapping[str, Any]) -> dict[str, Any] | None:
         "nudge": str((nudge or {}).get("text") or "")[:FINDING_CHARS],
         "value": vote.get("value"),
         "judge_version": str(vote.get("judge_version") or ""),
+    }
+
+
+NOTES_MAX = 8
+"""lines a practice result's notes keep (the main ones first)"""
+
+
+def practice_notes(vote: Mapping[str, Any]) -> dict[str, Any]:
+    """What the judge said of a practice result, for its miner (docs/MINER.md "Trying a new
+    setup"): the deciding sample's lines of the brief it did not rule ``ok`` -- ``{id, line,
+    main, verdict, seen}``, the main lines first, at most :data:`NOTES_MAX` -- and its nudges'
+    text. Practice is never scored, so the judge's reasons are given in full; a client delivery's
+    finding stays :func:`main_failure`. Empty lists when no sample decided."""
+    sample = deciding_sample(vote)
+    if sample is None:
+        return {"lines": [], "nudges": []}
+    bad = [u for u in _lines(sample) if u["verdict"] and u["verdict"] != "ok"]
+    bad.sort(key=lambda u: not u["main"])
+    nudges = [
+        str(n.get("text") or "")[:FINDING_CHARS]
+        for n in sample.get("nudges") or []
+        if isinstance(n, Mapping) and not n.get("void") and n.get("text")
+    ]
+    return {
+        "lines": [
+            {
+                "id": u["id"],
+                "line": u["line"][:FINDING_CHARS],
+                "main": u["main"],
+                "verdict": u["verdict"],
+                "seen": u["seen"][:FINDING_CHARS],
+            }
+            for u in bad[:NOTES_MAX]
+        ],
+        "nudges": nudges[:NOTES_MAX],
     }
 
 

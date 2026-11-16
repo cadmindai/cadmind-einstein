@@ -23,8 +23,9 @@ namespace ``practice``). This book then, in its own thread (:meth:`PracticeBook.
 3. deletes the validator's copy.
 
 The miner reads its results with ``GET /v1/practice`` (:meth:`PracticeBook.status`), grouped by
-the free-text ``setup`` label it sent with its submit. Votes off (or no model): results are
-reported with no score.
+the free-text ``setup`` label it sent with its submit, each with the judge's notes (the lines of
+the brief it did not rule ok, and its nudges: :func:`.votes.practice_notes`). Votes off (or no
+model): results are reported with no score.
 """
 
 from __future__ import annotations
@@ -158,6 +159,7 @@ class PracticeBook:
             "reference_score": r.get("reference_score"),
             "unscored": r.get("why_unscored") or "",
             "judge": r.get("judge") or "",
+            "notes": r.get("notes") or {"lines": [], "nudges": []},
             "minutes": r.get("minutes"),
             "on_time": r.get("on_time"),
             "ended_ms": r.get("ended_ms"),
@@ -215,7 +217,12 @@ class PracticeBook:
                     self.kv.put(NS, row["practice_id"], row)
                 got = self.platform.practice_bundle(row["practice_id"], row["workspace"])
                 vote = self._vote(rv, got, row)
-                row.update(score=vote["score"], value=vote["value"], samples=vote["samples"])
+                row.update(
+                    score=vote["score"],
+                    value=vote["value"],
+                    samples=vote["samples"],
+                    notes=vote.get("notes") or {"lines": [], "nudges": []},
+                )
                 self.kv.put(NS, row["practice_id"], row)
             if row.get("reference_score") is None:
                 ref = self.reference_vote(str(row.get("reference_job") or ""))

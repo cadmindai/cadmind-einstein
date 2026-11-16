@@ -7,6 +7,21 @@ All notable changes to this project are listed here. The format follows
 
 ## [Unreleased]
 
+## [0.6.17] - 2026-11-16
+
+### Changed
+
+- **Practice stays open while the subnet is on hold.** A hold now holds back client jobs and weights only: an
+  approved key holder may still ask for a practice job (`POST /v1/practice`), which is never scored. The `409 hold`
+  answer to a practice request is gone.
+
+### Added
+
+- **The judge's notes on a practice result.** `GET /v1/practice` gives each voted result its `notes`: the lines of the
+  brief the deciding sample did not rule `ok` (`id`, `line`, `main`, `verdict`, what it `seen`), main lines first, at
+  most 8, and the sample's nudges. `cadmind-einstein practice --status` prints them under each result. A client
+  delivery's finding is unchanged.
+
 ## [0.6.16] - 2026-11-15
 
 ### Changed

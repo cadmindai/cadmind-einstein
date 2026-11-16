@@ -29,7 +29,7 @@ from cadmind_einstein.models import Prices, Spend
 from cadmind_einstein.platform import PlatformError
 from cadmind_einstein.scoring import HOUR_MS, Ledger
 from cadmind_einstein.service import serve
-from cadmind_einstein.votes import Reviewer
+from cadmind_einstein.votes import Reviewer, practice_notes
 
 
 class PracticePlatform(BundlePlatform):
@@ -145,6 +145,26 @@ class Rig(unittest.TestCase):
 
 
 class TestPractice(Rig):
+    def test_practice_stays_open_while_the_subnet_is_on_hold(self) -> None:
+        # owner 2026-11-16: the hold holds back client jobs and weights, never practice
+        self.desk.hold = True
+        pid = self.practise(A, setup="on-hold")
+        st = self.desk.practice_status(A)
+        self.drain()
+        st = self.desk.practice_status(A)
+        self.assertEqual([r["practice"] for r in st["results"]], [pid])
+        self.assertEqual(st["results"][0]["setup"], "on-hold")
+        self.assertIn(pid, self.p.reports)
+
+    def test_the_miner_reads_the_judges_notes(self) -> None:
+        pid = self.practise(A)
+        self.drain()
+        r = self.desk.practice_status(A)["results"][0]
+        self.assertEqual(r["practice"], pid)
+        self.assertEqual(set(r["notes"]), {"lines", "nudges"})
+        for ln in r["notes"]["lines"]:
+            self.assertNotEqual(ln["verdict"], "ok")
+
     def test_end_to_end_voted_beside_the_delivered_version_and_never_scored(self) -> None:
         pid = self.practise(A, setup="  model b  v2 ")
         # never routed to anyone else, granted on the practice lane
@@ -431,3 +451,61 @@ def test_the_submit_carries_the_setup_label() -> None:
 
 if __name__ == "__main__":
     unittest.main()
+
+
+def test_practice_notes_keep_the_lines_not_ruled_ok_main_first() -> None:
+    sample = {
+        "score": 1,
+        "derived": {
+            "useless_if": [
+                {"id": "U1", "line": "it does not hold a phone", "main": False, "quote": ""},
+                {"id": "U2", "line": "it tips over", "main": True, "quote": ""},
+                {"id": "U3", "line": "it scratches the desk", "main": False, "quote": ""},
+            ]
+        },
+        "lines": [
+            {"id": "U1", "verdict": "cannot_tell", "seen": ""},
+            {"id": "U2", "verdict": "fails", "seen": "the base is 20 mm deep"},
+            {"id": "U3", "verdict": "ok", "seen": "felt pads"},
+        ],
+        "nudges": [{"text": "widen the base"}, {"text": "void", "void": True}],
+    }
+    got = practice_notes({"samples": [sample]})
+    assert [(n["id"], n["verdict"], n["main"]) for n in got["lines"]] == [
+        ("U2", "fails", True),
+        ("U1", "cannot_tell", False),
+    ]
+    assert got["lines"][0]["seen"] == "the base is 20 mm deep"
+    assert got["nudges"] == ["widen the base"]
+    assert practice_notes({"samples": []}) == {"lines": [], "nudges": []}
+
+
+def test_the_status_lines_show_the_notes() -> None:
+    got = {
+        "results": [
+            {
+                "practice": "practice-1",
+                "title": "a rack",
+                "deliverable": True,
+                "score": 1,
+                "reference_score": 2,
+                "state": "reported",
+                "notes": {
+                    "lines": [
+                        {
+                            "id": "U2",
+                            "main": True,
+                            "verdict": "fails",
+                            "line": "it tips over",
+                            "seen": "a 20 mm base",
+                        }
+                    ],
+                    "nudges": ["widen the base"],
+                },
+            }
+        ]
+    }
+    text = "\n".join(practice_lines(got))
+    assert "U2 main fails: it tips over" in text
+    assert "seen: a 20 mm base" in text
+    assert "nudge: widen the base" in text

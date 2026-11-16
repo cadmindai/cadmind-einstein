@@ -2365,7 +2365,7 @@ class Desk:
         It is never in the ledger, points, weights or routing; its result is voted on beside the
         delivered version and reported (:mod:`.practice`). An approved key holder, admitted or
         not; one open at a time, ``practice_per_day`` a UTC day, and none while the miner holds a
-        job or a client job it could take is queued."""
+        job or a client job it could take is queued. Open while the subnet is on hold."""
         now = self.now_ms()
         with self._mut():
             m = self._miner(hotkey)
@@ -2379,8 +2379,8 @@ class Desk:
             live = [j for j in mine if j.state != "done"]
             if live:
                 return self._practice_view(live[-1])
-            if self.hold:
-                raise DeskError(HOLD_MESSAGE, 409, "hold")
+            # practice stays open on hold (owner 2026-11-16): it is never scored, and the hold
+            # holds back client jobs and weights only
             if m.job:
                 raise DeskError("you hold a job: practice once it is over", 409)
             if self._client_job_for(m) is not None:

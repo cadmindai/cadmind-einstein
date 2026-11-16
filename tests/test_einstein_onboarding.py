@@ -778,12 +778,9 @@ class TestHold(_Case):
         self.assertEqual([j["job"] for j in self.p.queue], ["c1"])  # left in the platform's queue
         self.assertEqual(self.desk.work(A)["job"], None)
         self.assertEqual(self.desk.capacity()["active_miners"], 0)
-        # a newly approved miner gets no practice job; its approval stays
+        # a newly approved miner keeps its approval (it may practise: test_einstein_practice.py)
         self.desk.approve(B)
         self.assertIn("key_id", self.key(B))
-        with self.assertRaises(DeskError) as caught:
-            self.desk.practice(B)
-        self.assertEqual((caught.exception.status, caught.exception.code), (409, "hold"))
         with tempfile.TemporaryDirectory() as d:
             rep = self.report(True, d)
             self.assertEqual((rep["vector"], rep["rule"], rep["hold"]), ([], HOLD_RULE, True))

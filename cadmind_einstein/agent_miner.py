@@ -1475,6 +1475,16 @@ def practice_lines(got: Mapping[str, Any]) -> list[str]:
             tail += f"  no vote: {str(r.get('unscored'))[:80]}"
         out.append(head)
         out.append(f"    {r.get('state')}  {tail.strip()}")
+        notes = r.get("notes") if isinstance(r.get("notes"), Mapping) else {}
+        for ln in notes.get("lines") or []:
+            main = " main" if ln.get("main") else ""
+            out.append(
+                f"    {ln.get('id')}{main} {ln.get('verdict')}: {str(ln.get('line') or '')[:160]}"
+            )
+            if ln.get("seen"):
+                out.append(f"        seen: {str(ln['seen'])[:200]}")
+        for n in notes.get("nudges") or []:
+            out.append(f"    nudge: {str(n)[:200]}")
     for name, g in (got.get("by_setup") or {}).items():
         out.append(
             f"setup {_q(name or '(none)')}: {g.get('runs')} run(s), {g.get('deliverable')} "
