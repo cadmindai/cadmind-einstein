@@ -9,6 +9,26 @@ All notable changes to this project are listed here. The format follows
 
 ### Fixed
 
+- **A refused grant no longer loops.** A grant the platform refused put the job straight back in the queue,
+  silently, and the next tick picked the same miner again: a miner at its quota of open job workspaces (429
+  `miner_job_quota`) or a revision whose seed workspace was gone (404) was asked about 30 times a minute for hours,
+  which spent the validator's own per-minute rate and starved its judging (the gate's retries got 429 in turn).
+  Now a refusal about the miner (`miner_job_quota`, `hotkey_network`; `agent_suspended` and `miner_not_linked` as
+  before) holds that miner off for 10 minutes and the job goes to another miner on the next tick; a refusal about
+  the job backs that job off (30 s, doubling to 10 minutes, persisted); one that can never succeed (400, 404 or 410
+  not about the miner) ends the job "didn't finish" at its third, not charged, nobody scored, the platform told
+  with the reason. Grant calls are bounded to 12 a minute, all jobs together (`Desk(grant_per_min=...)`), and none
+  is made for a minute after a 429 on the validator's own rate. Each refusal kind (a job's or a miner's platform
+  code) is logged at its first occurrence, then at most every 10 minutes with the count since.
+- **A grant lost to a restart no longer holds a miner's place.** A restart while a grant was in flight re-queued
+  the job, and the workspace the platform had made -- its id never learned -- stayed open, holding one of the
+  miner's two open job workspaces; granted the same job again, the miner reached its quota and every later grant
+  was refused. The job now records whom it is being granted to, and after a restart that miner's open job
+  workspaces are frozen on the platform (`close_grants`) before it is offered any job. A miner refused at its
+  quota while this validator holds none of its live work is swept the same way (those workspaces are grants
+  nobody tracks), and its hold lifts at once when the sweep freed something. A job that ends, however it ends
+  (delivered by another miner, cancelled, failed), has every workspace granted for it frozen, once.
+
 - **A round that rebuilds an earlier version of its own project is no copy.** The copy check subtracted only the
   seed's features (the last version), so a round asked to undo what the last round changed -- an honest builder
   handing in what an earlier version had -- was judged a copy of that earlier version's output, by another hotkey,

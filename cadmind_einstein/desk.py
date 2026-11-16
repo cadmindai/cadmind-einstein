@@ -60,8 +60,17 @@ so a slow claim or a slow grant never lets a lease lapse.
 **Durability.** With a :class:`~.store.Store` every mutation is one SQLite transaction (the ledger's
 writes included). A restart reloads jobs, attempts, held failures, miners, admission, telemetry,
 the copy window and the results still to send, then recovers what was in flight: a grant cut off
-mid-call goes back to the queue, an attempt being worked keeps its workspace and its absolute
+mid-call goes back to the queue (its miner's open job workspaces swept first: the grant may
+have been made with its answer lost), an attempt being worked keeps its workspace and its absolute
 deadline, and an attempt being judged is judged again (its workspace is frozen; judging reads it).
+A job that ends, however it ends, has every workspace granted for it frozen on the platform.
+
+**Refused grants.** A grant the platform refuses never loops: a refusal about the miner (its quota
+of open job workspaces, its network) holds that miner off and the job goes to another; one about
+the job backs that job off (30 s, doubling to 10 min), and one that can never succeed (a revision
+whose seed is gone) ends it "didn't finish" after a few tries. Grants are bounded per minute, all
+jobs together, so the judging keeps the key's headroom; refusals are logged once per kind, then
+throttled (:meth:`Desk._grant_refused`).
 
 **Abuse.** :meth:`enforce` (the daemon calls it every tick) disables a miner -- its open job
 workspaces frozen on the platform, its admission dropped, its job sent to another miner unscored, no
@@ -204,6 +213,34 @@ OUTBOX_ALERT_EVERY_S = 1800.0
 """a result refused for this long is logged as an ALERT (its job and the platform's words), at most
 this often per job"""
 """how long a miner whose job was cancelled gets no new job (time to stop its agent)"""
+MINER_QUOTA = "miner_job_quota"
+"""the platform's code for a grant refused because the miner holds its cap of open job workspaces"""
+HOTKEY_NETWORK = "hotkey_network"
+MINER_REFUSALS = (MINER_QUOTA, SUSPENDED, NOT_LINKED, HOTKEY_NETWORK)
+"""grant refusals about the MINER, not the job: the miner is held off (:data:`MINER_COOL_S`) and
+the job goes to another miner on the next tick (:meth:`Desk._grant_refused`)"""
+GRANT_RETRY_S = 30.0
+GRANT_RETRY_MAX_S = 600.0
+"""a job whose grant the platform refused for the job's (or the platform's) sake is not offered
+again for this long, doubling with each refusal up to the cap"""
+GRANT_PERMANENT_TRIES = 3
+"""grants refused as never able to succeed -- a 400, 404 or 410 that is not about the miner (a
+revision whose seed workspace is gone) -- before the job ends "didn't finish", nobody scored"""
+MINER_COOL_S = 600.0
+"""a miner the platform refused a grant for its own sake (its quota of open job workspaces, its
+network) is offered no job for this long"""
+GRANT_LOG_EVERY_S = 600.0
+"""one log line per refusal kind (a job's, or a miner's, platform code) at its first refusal, then
+at most this often, with the count since"""
+GRANT_PER_MIN = 12
+"""grant calls per minute, all jobs together (a token bucket of this size): the validator's
+workspaces key has a per-minute rate on the platform, and its judging must keep headroom"""
+GRANT_RATE_PAUSE_S = 60.0
+"""a grant answered 429 for the validator's own rate (any 429 not about the miner): no grant at
+all for this long"""
+SWEEP_RETRY_S = 30.0
+"""a sweep of a miner's open job workspaces the platform did not take is asked again after this
+long, doubling up to :data:`GRANT_RETRY_MAX_S`"""
 KEY_APPROVAL = ("manual", "auto")
 """How a registered hotkey's agent key is taken here (:meth:`Desk.agent_key`): ``manual`` -- only
 once the operator approved it (:meth:`Desk.approve`), its asks recorded as pending until then -- or
@@ -578,6 +615,13 @@ class Job:
     practice: dict[str, Any] = field(default_factory=dict)
     """a practice job's ``title`` and ``reference_job`` (the delivered version of the brief, voted
     beside the miner's result), from the platform's practice brief. Empty on every other job."""
+    granting: str = ""
+    """the hotkey a grant is being made for while the job is ``assigning`` ('' otherwise): after a
+    restart that cut the grant off, that miner's open job workspaces are swept
+    (:meth:`Desk._recover`)"""
+    closed: bool = False
+    """the job ended and every workspace granted for it was frozen on the platform
+    (:meth:`Desk._close_ended`)"""
 
     @property
     def current(self) -> Attempt | None:
@@ -709,6 +753,8 @@ def _job_from(row: Mapping[str, Any]) -> Job:
     # older records carry an effort, and held failures (``pending``): both are gone
     r = {k: v for k, v in row.items() if k not in ("effort", "pending")}
     r["attempts"] = [Attempt(**a) for a in r.get("attempts") or []]
+    if "closed" not in r and r.get("state") == "done":
+        r["closed"] = True  # ended before the close at the end: not swept again
     return Job(**r)
 
 
@@ -821,6 +867,7 @@ class Desk:
         judge: Callable[[], Mapping[str, Any]] | None = None,
         practice_per_day: int = 0,
         sync_s: float = SYNC_S,
+        grant_per_min: int = GRANT_PER_MIN,
     ) -> None:
         from .practice import PRACTICE_PER_DAY, PracticeBook  # noqa: PLC0415 -- it reads votes
 
@@ -885,6 +932,23 @@ class Desk:
         self._revoke: list[str] = []
         """deregistered, disabled or revoked hotkeys whose open job workspaces the platform has
         not yet been told to freeze"""
+        self.grant_per_min = grant_per_min
+        self._grant_retry: dict[str, dict[str, Any]] = {}
+        """per job whose grant the platform refused for the job's sake: ``{tries, permanent,
+        first_ms, next_ms, status, code, error}`` -- when it is offered again (persisted)"""
+        self._sweep: dict[str, dict[str, Any]] = {}
+        """per hotkey, a sweep of its open job workspaces to ask the platform for (``{why, tries,
+        next_ms}``): a grant to it a restart cut off, or a quota refusal while this validator
+        holds none of its live work. The miner gets no job until it is done (persisted)"""
+        self._miner_cool: dict[str, int] = {}
+        """per hotkey the platform refused a grant for its own sake: when it may be offered a job"""
+        self._grant_said: dict[str, dict[str, int]] = {}
+        """per refusal kind, when it was last logged and how many since (the log's throttle)"""
+        self._grant_tokens = float(max(1, grant_per_min))
+        self._grant_tokens_ms = 0
+        self._grant_pause_ms = 0
+        """no grant before this (the platform answered a grant 429 for the validator's rate)"""
+        self._sweeping = threading.Lock()
         self.rng = rng or random.Random()  # noqa: S311 -- routing, not a secret
         self.clock = clock
         self.excluded = {h for h in excluded if h}
@@ -939,10 +1003,26 @@ class Desk:
         with self._lock:
             if self.store is None:
                 yield
+                self._close_ended()
                 return
             with self.store.tx():
                 yield
+                self._close_ended()
                 self._persist()
+
+    def _close_ended(self) -> None:
+        """At the end of a mutation: every job that ended in it has each workspace granted for it
+        frozen on the platform (its attempts' workspaces: whichever path ended the job, a miner's
+        workspace left open would hold one of its few open job workspaces there for nothing), and
+        its grant back-off is dropped. Each job once (``closed``); a freeze the platform refuses
+        is not asked again (the workspace is frozen or gone)."""
+        for job in self.jobs.values():
+            if job.state != "done" or job.closed:
+                continue
+            job.closed = True
+            self._grant_retry.pop(job.job, None)
+            for ws in dict.fromkeys(a.workspace for a in job.attempts if a.workspace):
+                self._spawn(self._freeze_quietly, ws)
 
     def _rows(self) -> Iterator[tuple[str, str, Any]]:
         for j in self.jobs.values():
@@ -966,6 +1046,8 @@ class Desk:
                 "outbox": self._outbox,
                 "outbox_retry": {k: v for k, v in self._outbox_retry.items() if k in self._outbox},
                 "revoke": self._revoke,
+                "grant_retry": self._grant_retry,
+                "sweep": self._sweep,
                 "copied": self.copied,
                 "failed": self.failed,
                 "delivered": self.delivered,
@@ -1029,6 +1111,14 @@ class Desk:
             if isinstance(v, dict) and k in self._outbox
         }
         self._revoke = list(meta.get("revoke") or [])
+        self._grant_retry = {
+            str(k): dict(v)
+            for k, v in (meta.get("grant_retry") or {}).items()
+            if isinstance(v, dict) and k in self.jobs
+        }
+        self._sweep = {
+            str(k): dict(v) for k, v in (meta.get("sweep") or {}).items() if isinstance(v, dict)
+        }
         self.copied = dict(meta.get("copied") or {})
         self.failed = dict(meta.get("failed") or {})
         self.delivered = dict(meta.get("delivered") or {})
@@ -1065,11 +1155,19 @@ class Desk:
         judged holds no miner (it was freed at its submit); one judged at its deadline holds its
         miner until the verdict, as before the restart."""
         with self._mut():
+            held = {m.job: m.hotkey for m in self.miners.values() if m.job}
             for m in self.miners.values():
                 m.job = ""
             for job in self.jobs.values():
                 if job.state == "assigning":
-                    job.state = "queued"
+                    # The grant may have been made on the platform with its answer lost: a
+                    # workspace this validator never learned of, holding one of the miner's few
+                    # open job workspaces for nothing. The miner's open job workspaces are swept
+                    # before it gets any job again (it held no other: one job per miner).
+                    grantee = job.granting or held.get(job.job, "")
+                    if grantee:
+                        self._queue_sweep(grantee, "a grant cut off by a restart")
+                    job.state, job.granting = "queued", ""
                 elif job.state in ("assigned", "working", "judging") and job.attempts:
                     last = job.attempts[-1]
                     if job.state == "judging" and last.submitted_ms:
@@ -2304,7 +2402,7 @@ class Desk:
                 old.calibration = _calibration_of(body.get("calibration"))
                 old.credit = self._credit_checked(job_id, body.get("remix_credit"))
                 old.lineage = _lineage_of(body.get("lineage"))
-                old.state, old.result = "queued", {}
+                old.state, old.result, old.closed = "queued", {}, False
                 old.queued_ms = self.now_ms()
                 if job_id in self._outbox:
                     self._outbox.remove(job_id)
@@ -2769,9 +2867,16 @@ class Desk:
             and m.blocked_until_ms <= now
             and now - m.last_seen_ms <= ALIVE_S * 1000
             and now - m.cancelled_ms >= self.cancel_cooloff_s * 1000
+            and not self._held_off(m.hotkey, now)
             and m.hotkey not in tried
             and self.coldkey(m.hotkey, cmap) not in opinions
         ]
+
+    def _held_off(self, hotkey: str, now: int) -> bool:
+        """Whether ``hotkey`` gets no job now for what its grants met: the platform refused one
+        for the miner's own sake a moment ago (:data:`MINER_COOL_S`), or a sweep of its open job
+        workspaces is still to be made (:meth:`_sweep_grants`)."""
+        return self._miner_cool.get(hotkey, 0) > now or hotkey in self._sweep
 
     @staticmethod
     def _tried(job: Job) -> set[str]:
@@ -2955,17 +3060,22 @@ class Desk:
                 key=lambda j: (j.kind == "practice", j.created_ms),
             )
             plan: list[tuple[Job, Miner]] = []
-            for job in queued:
+            now = self.now_ms()
+            for job in queued if now >= self._grant_pause_ms else ():
                 if (spare if job.kind == "practice" else inflight) >= self.max_inflight:
                     continue
                 if self.hold and job.kind == "client":
                     continue  # on hold, no client job is handed to a miner
+                if int(self._grant_retry.get(job.job, {}).get("next_ms", 0)) > now:
+                    continue  # its grant was refused a moment ago: offered again later
                 m = self.route(job)
                 if m is None:
                     continue
+                if not self._grant_token(now):
+                    break  # the grants' rate, all jobs together: the rest on a later tick
                 if not self._beside(job):
                     m.job = job.job
-                job.state = "assigning"
+                job.state, job.granting = "assigning", m.hotkey
                 plan.append((job, m))
                 spare += 1
                 if job.kind != "practice":
@@ -2986,8 +3096,11 @@ class Desk:
         self._spawn_flush()
         with self._lock:
             revoke = bool(self._revoke)
+            sweep = any(int(r.get("next_ms", 0)) <= now for r in self._sweep.values())
         if revoke:
             self._spawn(self._close_grants)
+        if sweep:
+            self._spawn(self._sweep_grants)
 
     def _want(self, now: int) -> int:
         """How many jobs to claim now: one per free admitted miner, after the held jobs, within
@@ -3005,6 +3118,7 @@ class Desk:
             and m.blocked_until_ms <= now
             and now - m.last_seen_ms <= ALIVE_S * 1000
             and now - m.cancelled_ms >= self.cancel_cooloff_s * 1000
+            and not self._held_off(m.hotkey, now)
         )
         return max(0, min(free - held, self.max_inflight - inflight - held))
 
@@ -3335,6 +3449,231 @@ class Desk:
             f"({answer.get('label') or 'no label'}); its scores withdrawn"
         )
 
+    # -- refused grants ----------------------------------------------------------------------------
+
+    def _grant_token(self, now: int) -> bool:
+        """Inside a mutation: one grant call from the bucket of :attr:`grant_per_min` a minute
+        (all jobs together), or False when it is empty: the validator's workspaces key keeps its
+        headroom for judging however many grants are refused."""
+        rate = max(1, self.grant_per_min)
+        if self._grant_tokens_ms:
+            gained = (now - self._grant_tokens_ms) / 60_000 * rate
+            self._grant_tokens = min(float(rate), self._grant_tokens + max(0.0, gained))
+        self._grant_tokens_ms = now
+        if self._grant_tokens < 1.0:
+            return False
+        self._grant_tokens -= 1.0
+        return True
+
+    def _live_grants(self, hotkey: str) -> bool:
+        """Inside the lock: whether this validator holds a live grant of ``hotkey``'s -- one being
+        made, an attempt assigned or worked, or one judged at its deadline (its miner's
+        workspace) -- so a sweep of the miner's open job workspaces would cut live work."""
+        for j in self.jobs.values():
+            last = j.attempts[-1] if j.attempts else None
+            if j.state == "assigning" and j.granting == hotkey:
+                return True
+            if last is None or last.hotkey != hotkey:
+                continue
+            if j.state in ("assigned", "working"):
+                return True
+            if j.state == "judging" and not last.submitted_ms:
+                return True
+        return False
+
+    def _queue_sweep(self, hotkey: str, why: str) -> None:
+        """Inside a mutation: ``hotkey``'s open job workspaces are to be frozen on the platform
+        (:meth:`_sweep_grants`); it gets no job until then."""
+        self._sweep.setdefault(hotkey, {"why": why, "tries": 0, "next_ms": 0})
+
+    def _sweep_grants(self) -> None:
+        """Freeze the open job workspaces of each miner queued for a sweep (the platform's
+        ``close_grants``), once this validator holds no live grant of its: workspaces granted for
+        work the validator no longer tracks (a grant cut off by a restart, whose id it never
+        learned). A sweep the platform did not take is asked again later (:data:`SWEEP_RETRY_S`,
+        doubling). The miner gets no job until it is done; a quota hold lifts at once when the
+        sweep freed something."""
+        if not self._sweeping.acquire(blocking=False):
+            return
+        try:
+            now = self.now_ms()
+            with self._lock:
+                due = [
+                    (hk, str(r.get("why") or ""))
+                    for hk, r in self._sweep.items()
+                    if int(r.get("next_ms", 0)) <= now and not self._live_grants(hk)
+                ]
+            for hk, why in due:
+                try:
+                    out = self.platform.close_grants(hk)
+                except PlatformError as e:
+                    if e.status != 404:  # nothing of that hotkey there is a sweep done
+                        with self._mut():
+                            row = self._sweep.get(hk)
+                            if row is not None:
+                                row["tries"] = int(row.get("tries", 0)) + 1
+                                delay = min(
+                                    GRANT_RETRY_MAX_S,
+                                    SWEEP_RETRY_S * 2 ** min(row["tries"] - 1, 30),
+                                )
+                                row["next_ms"] = now + int(delay * 1000)
+                        self._say(
+                            f"sweep:{hk}:{e.code or e.status}",
+                            f"miner {hk[:10]}: the sweep of its open job workspaces was refused "
+                            f"({e.status} {e.code or 'no code'}: {str(e)[:200]}); "
+                            "asked again later",
+                        )
+                        continue
+                    out = {}
+                frozen = [str(w) for w in (out.get("frozen") or [])]
+                with self._mut():
+                    self._sweep.pop(hk, None)
+                    if frozen:
+                        self._miner_cool.pop(hk, None)
+                self.log(
+                    f"miner {hk[:10]}: {len(frozen)} open job workspace(s) frozen on the platform "
+                    f"({why})"
+                )
+        finally:
+            self._sweeping.release()
+
+    def _say(self, key: str, line: str) -> None:
+        """Log ``line`` the first time ``key`` happens, then at most every
+        :data:`GRANT_LOG_EVERY_S`, saying how many times it happened since the last line."""
+        now = self.now_ms()
+        with self._lock:
+            row = self._grant_said.get(key)
+            if row is not None and now - row["said_ms"] < GRANT_LOG_EVERY_S * 1000:
+                row["n"] += 1
+                return
+            if len(self._grant_said) > 2000:  # forget the kinds not seen for a day
+                day = now - 86_400_000
+                self._grant_said = {k: v for k, v in self._grant_said.items() if v["said_ms"] > day}
+            n = row["n"] if row is not None else 0
+            self._grant_said[key] = {"said_ms": now, "n": 0}
+        since = f" [{n} more since the last line]" if n else ""
+        self.log(line + since)
+
+    @staticmethod
+    def _grant_refusal(e: PlatformError) -> str:
+        """``miner`` (about the miner: :data:`MINER_REFUSALS`), ``permanent`` (the platform can
+        never make this job's workspace: a 400, 404 or 410 that is not the validator's own side
+        -- a revision's seed workspace swept away) or ``transient`` (its rate, its load, a
+        timeout: asked again later)."""
+        if e.code in MINER_REFUSALS:
+            return "miner"
+        if not e.ours and e.status in (400, 404, 410):
+            return "permanent"
+        return "transient"
+
+    def _grant_refused(self, job: Job, m: Miner, e: PlatformError) -> None:
+        """The platform refused the grant of ``job`` to ``m``. The job goes back to the queue,
+        and never straight back to the same refusal:
+
+        - **about the miner** (:data:`MINER_REFUSALS`): a suspended miner is blocked and an
+          unlinked one loses its key here, as before; one at its quota of open job workspaces, or
+          of another network, is offered no job for :data:`MINER_COOL_S`. The job goes to another
+          miner on the next tick. A miner at its quota while this validator holds none of its
+          live work holds workspaces nobody tracks (a grant whose answer was lost): they are
+          swept (:meth:`_sweep_grants`).
+        - **about the job**: it is not offered again for :data:`GRANT_RETRY_S`, doubling up to
+          :data:`GRANT_RETRY_MAX_S`; a 429 (the validator's own rate) also stops every grant for
+          :data:`GRANT_RATE_PAUSE_S`. A refusal that can never succeed (:meth:`_grant_refusal`)
+          ends a client job "didn't finish" at its :data:`GRANT_PERMANENT_TRIES`-th: nobody
+          scored, the platform told.
+
+        One log line per refusal kind, throttled (:meth:`_say`)."""
+        if e.code == SUSPENDED:
+            self._suspended(m.hotkey)
+        kind = self._grant_refusal(e)
+        now = self.now_ms()
+        words = " ".join(str(e).split())[:200]
+        head = (
+            f"job {job.job}: grant to {m.hotkey[:10]} refused ({e.status} {e.code or 'no code'}: "
+            f"{words})"
+        )
+        ended = 0
+        with self._mut():
+            if e.code == NOT_LINKED:  # its key is gone there: not available until it asks
+                m.key_id = ""
+            if m.job == job.job:
+                m.job = ""
+            job.granting = ""
+            if job.state == "assigning":
+                job.state = "queued"
+            if kind == "miner":
+                then = "the job goes to another miner"
+                if e.code in (MINER_QUOTA, HOTKEY_NETWORK):
+                    self._miner_cool[m.hotkey] = now + int(MINER_COOL_S * 1000)
+                    then = f"the miner gets no job for {MINER_COOL_S / 60:g} min; " + then
+                if e.code == MINER_QUOTA and not self._live_grants(m.hotkey):
+                    self._queue_sweep(
+                        m.hotkey, "at its quota while this validator holds none of its live work"
+                    )
+                    then += "; its open job workspaces are swept (none is live work here)"
+                key = f"miner:{m.hotkey}:{e.code}"
+            else:
+                row = self._grant_retry.setdefault(
+                    job.job, {"tries": 0, "permanent": 0, "first_ms": now}
+                )
+                row["tries"] = int(row.get("tries", 0)) + 1
+                if kind == "permanent":
+                    row["permanent"] = int(row.get("permanent", 0)) + 1
+                delay = min(GRANT_RETRY_MAX_S, GRANT_RETRY_S * 2 ** min(row["tries"] - 1, 30))
+                row["next_ms"] = now + int(delay * 1000)
+                row.update(status=e.status, code=e.code, error=str(e)[:300])
+                if e.status == 429:
+                    pause = now + int(GRANT_RATE_PAUSE_S * 1000)
+                    self._grant_pause_ms = max(self._grant_pause_ms, pause)
+                permanent = int(row.get("permanent", 0))
+                if (
+                    kind == "permanent"
+                    and permanent >= GRANT_PERMANENT_TRIES
+                    and job.kind == "client"
+                    and job.state == "queued"
+                ):
+                    self._end_ungrantable(job, e)
+                    ended = permanent
+                then = f"offered again in {delay:.0f} s (refusal {row['tries']})"
+                if kind == "permanent":
+                    then += f", a permanent one ({permanent} of {GRANT_PERMANENT_TRIES})"
+                key = f"job:{job.job}:{e.code or e.status}"
+        if ended:
+            self.log(
+                f"ALERT: {head}: the platform cannot make this job's workspace ({ended} refusals): "
+                "it ends didn't finish, not charged, nobody scored"
+            )
+            return
+        self._say(key, f"{head}; {then}")
+        if kind == "miner" and m.hotkey in self._sweep:
+            self._spawn(self._sweep_grants)
+
+    def _end_ungrantable(self, job: Job, e: PlatformError) -> None:
+        """Inside a mutation: no grant of ``job`` can succeed (its seed workspace is gone, ...).
+        It ends "didn't finish", not charged, nobody scored (its earlier attempts keep what they
+        scored as they ended), and the platform is told with the reason."""
+        why = (
+            "the platform cannot make this job's workspace "
+            f"({e.status} {e.code or 'no code'}: {' '.join(str(e).split())[:300]})"
+        )
+        job.state = "done"
+        job.result = {
+            "label": "didn't finish",
+            "charge": False,
+            "review": False,
+            "why": why,
+            "messages": [
+                {"category": x.category, "message": x.message}
+                for x in job.attempts
+                if x.kind == "reject"
+            ],
+            "hotkey": "",
+            "workspace": "",
+            "attempts": len(job.attempts),
+        }
+        self._outbox.append(job.job)
+        self._event("ended", job.job, label="didn't finish", ungrantable=e.code or str(e.status))
+
     def _assign(self, job: Job, m: Miner) -> None:
         reference = ""
         try:
@@ -3355,18 +3694,12 @@ class Desk:
                     m.hotkey, brief=job.brief, seed=job.seed, name=job.job, **no_q
                 )
         except PlatformError as e:
-            if e.code == SUSPENDED:
-                self._suspended(m.hotkey)
-            with self._mut():
-                if e.code == NOT_LINKED:  # its key is gone there: not available until it asks
-                    m.key_id = ""
-                if m.job == job.job:
-                    m.job = ""
-                if job.state == "assigning":
-                    job.state = "queued"
+            self._grant_refused(job, m, e)
             return
         now = self.now_ms()
         with self._mut():
+            job.granting = ""
+            self._grant_retry.pop(job.job, None)
             held = bool(m.key_id) if self._beside(job) else m.job == job.job
             if job.state != "assigning" or not held:
                 # cancelled, or the miner left, while the workspace was being made
