@@ -7,6 +7,8 @@ All notable changes to this project are listed here. The format follows
 
 ## [Unreleased]
 
+## [0.6.19] - 2026-11-16
+
 ### Fixed
 
 - **A sweep of a miner's grants closes only one job's, and only this validator's.** The sweeps after a restart
