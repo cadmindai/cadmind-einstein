@@ -48,7 +48,7 @@ import threading
 import time
 import urllib.error
 import urllib.request
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Iterable, Mapping
 from typing import Any
 from urllib.parse import quote
 
@@ -67,6 +67,26 @@ class PlatformError(Exception):
         self.status, self.code, self.ours, self.held = status, code, ours, held
         self.detail: dict[str, Any] = {}
         """the platform's whole answer to a refused call (e.g. a refusal's ``parts``)"""
+
+
+class Granted(str):
+    """A granted workspace's id, as the grant answered it. ``existing``: the platform answered a
+    grant of the same job to the same miner that this operator already held open (an answer lost
+    to a restart or a timeout) -- that workspace, never a second one."""
+
+    existing: bool = False
+
+    def __new__(cls, ws: str, *, existing: bool = False) -> Granted:
+        out = super().__new__(cls, ws)
+        out.existing = existing
+        return out
+
+
+SEED_NOT_FOUND = "seed_not_found"
+"""the platform's code for a grant whose seed workspace is gone (or was never there): permanent"""
+JOB_CLOSE_UNSUPPORTED = (400, 422)
+"""what a platform that does not take a job-scoped close may answer one (besides answering it
+without ``job``, as the whole-hotkey close it did)"""
 
 
 class RoleFrozenError(PlatformError):
@@ -90,6 +110,11 @@ POLL_BACKOFF_S = 2.0
 """a failed poll of a run is asked again this many times (2, 4, then 8 s apart) before it fails"""
 ALERT_EVERY_S = 300.0
 """the same ALERT is logged at most this often"""
+
+
+def _granted(out: Mapping[str, Any]) -> Granted:
+    """A grant's answer: its workspace, and whether it was one already open (``existing``)."""
+    return Granted(str(out["workspace"]), existing=out.get("existing") is True)
 
 
 def _wait(end: float) -> int:
@@ -316,6 +341,15 @@ class OperatorClient:
             self._call("POST", "/api/agent/subnet/keys/disable", {"hotkey": hotkey}, role=KEYS)
         )
 
+    def close_job_grants(self, hotkey: str, job: str, keep: Iterable[str] = ()) -> dict[str, Any]:
+        """Freeze only ``job``'s open grants to ``hotkey`` made by this operator, but the workspaces
+        in ``keep`` (``{"hotkey", "job", "frozen": [ws, ...]}``): another job's grants, and another
+        operator's, stay open. A platform from before job-scoped closes answers without ``job``
+        -- it froze EVERY open job workspace of the hotkey -- or 400/422
+        (:data:`JOB_CLOSE_UNSUPPORTED`); the caller sends one only where that is safe."""
+        body = {"hotkey": hotkey, "job": job, "keep": [str(w) for w in keep]}
+        return dict(self._call("POST", "/api/agent/subnet/keys/disable", body, role=KEYS))
+
     def grant(
         self,
         hotkey: str,
@@ -332,9 +366,7 @@ class OperatorClient:
         if no_questions:
             body["no_questions"] = True
         body.update({"seed": seed} if seed else {"brief": brief})
-        return str(
-            self._call("POST", "/api/agent/subnet/workspaces", body, timeout=320)["workspace"]
-        )
+        return _granted(self._call("POST", "/api/agent/subnet/workspaces", body, timeout=320))
 
     def grant_continuation(
         self, hotkey: str, *, seed: str, base: str = "", name: str = "job"
@@ -352,15 +384,13 @@ class OperatorClient:
         if base:
             body["base"] = base
         out = self._call("POST", "/api/agent/subnet/workspaces", body, timeout=320)
-        return str(out["workspace"]), str(out.get("reference") or "")
+        return _granted(out), str(out.get("reference") or "")
 
     def grant_practice(self, hotkey: str, *, brief: str, name: str) -> str:
         """A practice job's workspace (``name`` the practice id the platform handed out for this
         hotkey): on the platform's practice lane and its own quota, never a client grant's."""
         body = {"hotkey": hotkey, "name": name, "brief": brief, "practice": True}
-        return str(
-            self._call("POST", "/api/agent/subnet/workspaces", body, timeout=320)["workspace"]
-        )
+        return _granted(self._call("POST", "/api/agent/subnet/workspaces", body, timeout=320))
 
     def state(self, ws: str) -> dict[str, Any]:
         return dict(self._call("GET", f"/api/agent/subnet/workspaces/{self._ws(ws)}"))

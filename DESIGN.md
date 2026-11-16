@@ -397,16 +397,22 @@ points and what decided them, each miner's weight and average, the admitted and 
 - All validator state (jobs, attempts, miners, admission, telemetry, outcomes and signals, the copy
   window, results not yet taken by the platform, hotkeys whose workspaces are still to freeze, the last hour closed, commitments) lives in
   one SQLite file (WAL, `synchronous=FULL`). A desk mutation and the ledger writes it causes share one transaction.
-  A restart -- mid-job or mid-hour -- loses nothing: a grant cut off mid-call is re-queued (its miner's open job
-  workspaces frozen on the platform first, since the grant may have been made with its answer lost), a working
+  A restart -- mid-job or mid-hour -- loses nothing: a grant cut off mid-call is re-queued (that job's grants to its
+  miner closed on the platform first, since the grant may have been made with its answer lost), a working
   attempt keeps its workspace and absolute deadline, a judging attempt is judged again (re-attached to the guard
-  run it had started), and an hour missed while down is closed. A job that ends, however it ends, has every
-  workspace granted for it frozen.
+  run it had started), and an hour missed while down is closed. A job that ends, however it ends, has its grants
+  closed.
+- **Closing grants is job-scoped.** The validator closes one job's open grants to one miner that it made, its live
+  attempts kept (`keys/disable {hotkey, job, keep}`): after a restart cut a grant off, when a job ends, and at a
+  quota refusal (the jobs it holds no live work of that miner on). Another job's grants, and another validator's,
+  stay open. A platform that does not take a job-scoped close (it answers without `job`, or 400/422) gets the old
+  whole-hotkey close, and only while the miner holds no live work here; the validator says so once. A grant whose
+  answer was lost comes back from the platform as the same workspace (`existing`) and is used.
 - **A refused grant never loops.** A refusal about the miner (its quota of open job workspaces, its network) holds
   that miner off for 10 minutes and the job goes to another miner; a miner at its quota while the validator holds
-  none of its live work has its open job workspaces frozen (grants nobody tracks). A refusal about the job backs
-  that job off (30 s, doubling to 10 minutes); one that can never succeed (a 400/404/410 not about the miner: a
-  revision whose seed workspace is gone) ends the job "didn't finish" after 3 tries, not charged, nobody scored.
+  none of its live work on a job has that job's grants closed (grants nobody tracks). A refusal about the job backs
+  that job off (30 s, doubling to 10 minutes); one that can never succeed (`seed_not_found`, or a 400/404/410 not
+  about the miner: a revision whose seed workspace is gone) ends the job "didn't finish" after 3 tries, not charged, nobody scored.
   Grant calls are bounded (12 a minute, all jobs together; none for a minute after a 429 on the validator's own
   rate), so the judging keeps the key's headroom. Each refusal kind is logged once, then at most every 10 minutes
   with a count.

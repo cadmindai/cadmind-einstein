@@ -9,6 +9,17 @@ All notable changes to this project are listed here. The format follows
 
 ### Fixed
 
+- **A sweep of a miner's grants closes only one job's, and only this validator's.** The sweeps after a restart
+  mid-grant, at a quota refusal and when a job ends froze every open job workspace of the miner -- another
+  validator's grants to it included. Each is now job-scoped (the platform's `keys/disable {hotkey, job, keep}`):
+  that job's open grants to the miner made by this operator, the attempts live here kept. At a quota refusal it
+  closes the jobs the miner holds no live work on here: those whose grant to it may have been made with the answer
+  lost (a restart, a timeout, a gateway error, remembered per miner), then the open jobs, 20 at most. Only a
+  platform that does not take a job-scoped close (it answers without `job`, or 400/422) gets the whole-hotkey
+  close, and only while the miner holds no live work here; the validator logs that once. A grant answered
+  `existing` (the platform's open workspace of the same job for the same miner, its answer lost before) is used
+  as the attempt's workspace; one that is an earlier attempt's is frozen and the job offered again. A grant
+  refused `seed_not_found` is permanent (a bare 404 from an older platform still is).
 - **A refused grant no longer loops.** A grant the platform refused put the job straight back in the queue,
   silently, and the next tick picked the same miner again: a miner at its quota of open job workspaces (429
   `miner_job_quota`) or a revision whose seed workspace was gone (404) was asked about 30 times a minute for hours,
