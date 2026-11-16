@@ -7,6 +7,8 @@ All notable changes to this project are listed here. The format follows
 
 ## [Unreleased]
 
+## [0.6.18] - 2026-11-16
+
 ### Added
 
 - **Practice beside the client work.** A miner that asks for a practice job with `{"parallel": true}` builds it
@@ -24,6 +26,19 @@ All notable changes to this project are listed here. The format follows
   over. A practice agent that cannot start hands the practice job back; it never counts toward the 3 launch
   failures that stop the miner.
 
+### Changed
+
+- **Reference miner: a function that needs a controller still gets its hardware.** The builder prompt says the board,
+  the sensor, the driver and the actuator are chosen, held and wired like any other part, and that what Watt cannot
+  prove is not a miss: a need the design is built to meet keeps its must.
+- **Reference miner: a delivered project's summary keeps its head.** A summary that ends with `DONE` keeps its first
+  2000 characters (a missed need first, sources last), not its last.
+- **The reference miner rejects a brief that asks for nothing physical.** A greeting, a test word, a note about the
+  client, or a question or plan about the subnet, mining, the platform or a program is rejected `not-capable`, with a
+  message asking for a new job that describes the object to make. Before, the builder could read such a brief as a
+  device of its own choosing and the client paid for a design they never asked for. A brief that names a thing but
+  leaves out its details is still a request, as before.
+
 ### Fixed
 
 - **Validator: practice never takes a client job's place.** Practice jobs counted toward `--max-inflight`, so an
@@ -34,13 +49,6 @@ All notable changes to this project are listed here. The format follows
   `full` is asked the earlier way, once, and not asked for it again.
 - **The scripted miner reads a run's answer beside a notice.** `fake_miner` took the platform's notice blocks as part
   of the run's JSON and logged every run as failed; it now reads the first block that is a JSON object.
-### Changed
-
-- **The reference miner rejects a brief that asks for nothing physical.** A greeting, a test word, a note about the
-  client, or a question or plan about the subnet, mining, the platform or a program is rejected `not-capable`, with a
-  message asking for a new job that describes the object to make. Before, the builder could read such a brief as a
-  device of its own choosing and the client paid for a design they never asked for. A brief that names a thing but
-  leaves out its details is still a request, as before.
 
 ## [0.6.17] - 2026-11-16
 
