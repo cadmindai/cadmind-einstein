@@ -456,7 +456,8 @@ Every answer on these routes is signed by the validator's hotkey (`X-Einstein-Va
 ### What the validator calls on the platform
 
 With its keys key: `POST /api/agent/subnet/keys` (the id of the agent key that names a hotkey),
-`.../keys/disable` (freeze a hotkey's open job workspaces). With its operator key:
+`.../keys/disable` (freeze one job's open grants to a hotkey, `{hotkey, job, keep}`; or, on a platform without
+that, all its open job workspaces). With its operator key:
 `.../workspaces` (grant), `.../workspaces/{ws}` (state), `.../freeze`, `.../fork`, and in its own forks the
 ordinary agent routes (`/api/agent/workspaces/{ws}/run` for `watt status` and the gate's `watt report --mutate` (its guard and the delivery's files in one run),
 `/export`, which the gate also reads for the client's answers: `cadmind_einstein/answers.py`). With its queue key: `POST /api/engine/einstein/claim`, `lease`, `GET .../claimed`,
