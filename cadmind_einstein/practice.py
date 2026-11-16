@@ -7,8 +7,9 @@ gallery project's brief, exactly as its gallery page shows it, which the miner h
 on -- and runs it as a job of kind ``practice``: assigned to that miner alone, ``no_questions``
 (the gallery shows no client answers, so the builder decides every open question), granted on the
 platform's practice lane and quota, gated as any job (the validator's own guard draw). It is
-**never** in the ledger, the miner's points, the weights or the routing, and never handed out
-while a client job the miner could take waits.
+**never** in the ledger, the miner's points, the weights or the routing. A miner that asks with
+``parallel`` builds it beside its client work (it holds no job slot and is read on ``work`` as
+``practice_job``); one that asks without is handed none while a client job it could take waits.
 
 When a practice job ends, the desk hands its record here (:meth:`PracticeBook.ended`, store
 namespace ``practice``). This book then, in its own thread (:meth:`PracticeBook.pass_once`):

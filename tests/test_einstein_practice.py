@@ -330,6 +330,222 @@ class TestPractice(Rig):
         self.assertEqual(self.p.asked_brief, [])
 
 
+class TestPracticeBeside(Rig):
+    """A practice job the miner asks to build beside its client work (``parallel``): it holds no
+    job slot, so the miner practises while it serves, and serves while it practises."""
+
+    def client_job(self, job: str = "j1") -> dict[str, Any]:
+        """A client job arrives while only A is alive: A is given it and accepts."""
+        self.clock.t += 120
+        self.p.queue.append({"job": job, "brief": "A wall hook."})
+        self.desk.work(A)
+        self.tick()
+        w = self.desk.work(A)
+        self.assertEqual(w["job"], job)
+        self.desk.accept(A, job)
+        return w
+
+    def test_a_miner_at_work_practises_beside_its_client_job(self) -> None:
+        w = self.client_job()
+        with self.assertRaises(DeskError) as e:  # the plain request waits for the job's end
+            self.desk.practice(A)
+        self.assertEqual(e.exception.status, 409)
+        pid = self.desk.practice(A, parallel=True)["practice"]
+        self.assertTrue(self.desk.wait_idle())
+        got = self.desk.work(A)
+        self.assertEqual(got["job"], "j1", "its client job stays its job")
+        side = got["practice_job"]
+        self.assertEqual(
+            (side["job"], side["practice"], side["no_questions"], side["accepted"]),
+            (pid, True, True, False),
+        )
+        self.assertEqual(self.p.practice_grants, [{"hotkey": A, "name": pid}])
+        self.desk.accept(A, pid)
+        self.assertTrue(self.desk.work(A)["practice_job"]["accepted"])
+        # the practice result is handed over first: the client job is still A's, untouched
+        self.p.work(side["workspace"], GOOD, deliverable=True)
+        self.desk.submit(A, pid, side["workspace"], "d", setup="s2")
+        wait_state(self.desk, pid, ("done",))
+        self.assertTrue(self.desk.wait_idle())
+        got = self.desk.work(A)
+        self.assertEqual((got["job"], got["accepted"]), ("j1", True))
+        self.assertNotIn("practice_job", got)
+        self.assertEqual(self.desk.status("j1")["state"], "working")
+        self.assertEqual(self.ledger.outcomes, [], "practice is never scored")
+        self.assertEqual(self.desk.assigned, {A: 1}, "only the client job is counted")
+        # and the client job is delivered as ever
+        self.p.work(w["workspace"], GOOD, deliverable=True)
+        self.desk.submit(A, "j1", w["workspace"], "d")
+        wait_state(self.desk, "j1", ("done",))
+        self.assertEqual([o.job for o in self.ledger.outcomes], ["j1"])
+
+    def test_a_miner_practising_beside_is_still_given_client_jobs(self) -> None:
+        for h in (A, B, C):
+            self.desk.work(h)
+        pid = self.desk.practice(A, parallel=True)["practice"]
+        self.assertTrue(self.desk.wait_idle())
+        got = self.desk.work(A)
+        self.assertIsNone(got["job"], "a practice job built beside is never the miner's job")
+        self.assertEqual(got["practice_job"]["job"], pid)
+        self.desk.accept(A, pid)
+        self.assertEqual(self.desk.miners[A].job, "")
+        self.client_job()
+        got = self.desk.work(A)
+        self.assertEqual((got["job"], got["practice_job"]["job"]), ("j1", pid))
+        # a client job waiting does not stop the request either
+        self.desk.reject(A, pid, "not-capable", "no")
+        self.desk.create({"job": "j2", "brief": "A shelf."})
+        self.assertTrue(self.desk.practice(A, parallel=True)["practice"].startswith("practice-"))
+        self.assertEqual(self.desk.rejected, {}, "practice is in no telemetry")
+
+    def test_one_open_at_a_time_and_the_daily_cap_still_hold(self) -> None:
+        for h in (A, B, C):
+            self.desk.work(h)
+        first = self.desk.practice(A, parallel=True)["practice"]
+        self.assertEqual(self.desk.practice(A, parallel=True)["practice"], first)
+        self.assertEqual(self.desk.practice(A)["practice"], first)
+        for _ in range(self.per_day):
+            pid = self.desk.practice(A, parallel=True)["practice"]
+            self.desk.wait_idle()
+            self.desk.reject(A, pid, "not-capable", "no")
+            self.desk.work(A)
+        with self.assertRaises(DeskError) as e:
+            self.desk.practice(A, parallel=True)
+        self.assertEqual(e.exception.status, 429)
+
+    def test_a_missed_accept_or_a_disable_ends_it_and_leaves_the_client_job_rules_alone(
+        self,
+    ) -> None:
+        for h in (A, B, C):
+            self.desk.work(h)
+        pid = self.desk.practice(A, parallel=True)["practice"]
+        self.assertTrue(self.desk.wait_idle())
+        self.clock.t += 600  # never accepted
+        self.tick()
+        self.assertEqual(self.desk.status(pid)["state"], "done")
+        self.assertEqual(self.ledger.outcomes, [])
+        self.desk.work(A)
+        pid = self.desk.practice(A, parallel=True)["practice"]
+        self.assertTrue(self.desk.wait_idle())
+        self.desk.accept(A, pid)
+        ws = self.desk.work(A)["practice_job"]["workspace"]
+        self.desk.disable(A, reason="test")
+        self.assertTrue(self.desk.wait_idle())
+        self.assertEqual(self.desk.status(pid)["state"], "done")
+        self.assertTrue(self.p.ws[ws]["frozen"])
+        self.assertEqual(self.ledger.outcomes, [])
+
+    def test_a_restart_keeps_the_job_slot_free(self) -> None:
+        for h in (A, B, C):
+            self.desk.work(h)
+        pid = self.desk.practice(A, parallel=True)["practice"]
+        self.assertTrue(self.desk.wait_idle())
+        self.desk.accept(A, pid)
+        self.desk._recover()
+        self.assertEqual(self.desk.miners[A].job, "")
+        self.assertEqual(self.desk.work(A)["practice_job"]["job"], pid)
+
+    def beside(self, hk: str = A, *, accept: bool = True) -> tuple[str, str]:
+        """``hk`` (every miner alive) asks to practise beside; answers its id and workspace."""
+        for h in (A, B, C):
+            self.desk.work(h)
+        pid = self.desk.practice(hk, parallel=True)["practice"]
+        self.assertTrue(self.desk.wait_idle())
+        side = self.desk.work(hk)["practice_job"]
+        if accept:
+            self.desk.accept(hk, pid)
+        return pid, side["workspace"]
+
+    def test_a_take_back_of_the_client_job_leaves_the_practice_alone(self) -> None:
+        self.client_job()
+        pid, _ = self.beside()
+        for h in (B, C):
+            self.desk.work(h)
+        self.desk.release("j1", "the miner cannot work it")
+        self.assertTrue(self.desk.wait_idle())
+        got = self.desk.work(A)
+        self.assertEqual(got["cancelled"], "j1", "told to stop the client job")
+        self.assertEqual(got["practice_job"]["job"], pid, "the practice job is still A's")
+        self.assertEqual(self.desk.status(pid)["state"], "working")
+        self.tick()
+        st = self.desk.status("j1")
+        self.assertEqual(st["state"], "assigned")
+        self.assertNotEqual(self.desk.jobs["j1"].current.hotkey, A)
+        # a practice accept does not end what the take-back told A (stop the client job)
+        self.assertEqual(self.desk.work(A)["cancelled"], "j1")
+        self.assertEqual(self.ledger.outcomes, [])
+
+    def test_a_revoke_or_a_deregistration_ends_it(self) -> None:
+        pid, ws = self.beside()
+        self.desk.revoke(A, "test")
+        self.assertTrue(self.desk.wait_idle())
+        self.assertEqual(self.desk.status(pid)["state"], "done")
+        self.assertTrue(self.p.ws[ws]["frozen"])
+        pid, ws = self.beside(B)
+        self.desk.sync_registered([A, C])
+        self.assertTrue(self.desk.wait_idle())
+        self.assertEqual(self.desk.status(pid)["state"], "done")
+        self.assertTrue(self.p.ws[ws]["frozen"])
+        self.assertEqual(self.ledger.outcomes, [])
+
+    def test_a_submitted_one_is_judged_whatever_the_miner_does_next(self) -> None:
+        pid, ws = self.beside()
+        self.p.work(ws, GOOD, deliverable=True)
+        block = threading.Event()
+        real = self.p.fork
+
+        def slow(*a: Any, **k: Any) -> Any:  # the gate is still copying the result
+            block.wait(5)
+            return real(*a, **k)
+
+        self.p.fork = slow  # type: ignore[method-assign]
+        self.desk.submit(A, pid, ws, "d", setup="s2")
+        self.desk.disable(A, reason="test")
+        self.assertEqual(self.desk.status(pid)["state"], "judging")
+        block.set()
+        wait_state(self.desk, pid, ("done",))
+        self.assertTrue(self.desk.jobs[pid].result["deliverable"])
+
+    def test_practice_never_takes_a_place_a_client_job_could_use(self) -> None:
+        self.desk.max_inflight = 1
+        pid, _ = self.beside()
+        self.assertEqual(self.desk.status(pid)["state"], "working")
+        self.assertEqual(self.desk._want(self.desk.now_ms()), 1, "its one place is free")
+        # a client job is handed out though the practice job fills the one place
+        for h in (A, B, C):
+            self.desk.work(h)
+        self.desk.create({"job": "j1", "brief": "A wall hook."})
+        self.tick()
+        self.assertEqual(self.desk.status("j1")["state"], "assigned")
+        # and a practice job waits while client work fills every place
+        self.desk.submit(A, pid, self.desk.work(A)["practice_job"]["workspace"], "d")
+        wait_state(self.desk, pid, ("done",))
+        holder = self.desk.jobs["j1"].current.hotkey
+        other = next(h for h in (A, B, C) if h != holder)
+        for h in (A, B, C):
+            self.desk.work(h)
+        second = self.desk.practice(other, parallel=True)["practice"]
+        self.assertTrue(self.desk.wait_idle())
+        self.tick()
+        self.assertEqual(self.desk.status(second)["state"], "queued")
+
+    def test_on_hold_it_is_handed_out_and_no_client_job_is(self) -> None:
+        self.desk.hold = True
+        self.desk.create({"job": "j1", "brief": "A wall hook."})
+        pid, _ = self.beside()
+        self.assertEqual(self.desk.status(pid)["state"], "working")
+        self.tick()
+        self.assertEqual(self.desk.status("j1")["state"], "queued")
+
+    def test_capacity_counts_a_miner_practising_beside_as_free(self) -> None:
+        for h in (A, B, C):
+            self.desk.work(h)
+        before = self.desk.capacity()
+        self.beside()
+        self.assertEqual(self.desk.capacity(), before)
+        self.assertEqual(self.desk._want(self.desk.now_ms()), 3)
+
+
 class TestRefusedBuild(Rig):
     """The platform refuses a delivered result for what the builder did."""
 
@@ -427,6 +643,14 @@ class TestPracticeService(unittest.TestCase):
             code, st = signed(alice, base, "/v1/practice", {}, VALIDATOR.ss58_address, method="GET")
             self.assertEqual(code, 200, st)
             self.assertEqual([o["practice"] for o in st["open"]], [got["practice"]])
+            self.assertNotIn("parallel", desk.jobs[got["practice"]].practice)
+            self.assertTrue(desk.wait_idle())
+            desk.reject(A, got["practice"], "not-capable", "no")  # over: another may be asked
+            code, side = signed(
+                alice, base, "/v1/practice", {"parallel": True}, VALIDATOR.ss58_address
+            )
+            self.assertEqual(code, 200, side)
+            self.assertIs(desk.jobs[side["practice"]].practice.get("parallel"), True)
             code, _ = signed(
                 Keypair.create_from_uri("//Eve"),
                 base,

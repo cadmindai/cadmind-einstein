@@ -114,7 +114,8 @@ validator: freeze on submit, fork, read Watt's verdict (the gate), copy check, s
   need: the builder assumes, records each assumption as its own decision (a need no option keeps included, with
   `misses`, which Watt's W0240 accepts on such a job) and delivers.
 - **Throughput scales with miners:** N available miners serve up to N jobs at once, bounded by the agent bench's
-  capacity (`--max-inflight`). A miner holds one job at a time.
+  capacity (`--max-inflight`). A miner holds one job at a time. Practice jobs hold none of `--max-inflight`: one
+  is handed out only after the queued client work and while the count with practice is under it.
 
 ## 4. The gate, reassignment and how a job ends
 
@@ -337,8 +338,13 @@ scratch, throwing the first builder's work away; after two or four tries the job
   result is voted on with the validators' judge, and so is the delivered version under today's judge (that vote
   cached per delivered job and judge digest); a result that fails the gate is reported with the gate's reason and no
   vote. The record goes to the platform for the operator and to the miner (`GET /v1/practice`, by `setup` label).
-  It is never in the ledger, points, weights or routing, never sent to another miner, never handed out while a
-  client job the miner could take waits, and at most 3 a UTC day per miner.
+  It is never in the ledger, points, weights or routing, never sent to another miner, and at most 3 a UTC day per
+  miner, one open at a time. A miner that asks with `parallel` builds it beside its client work, with a builder of
+  its own: the practice job holds no job slot, so it is handed out whatever else the miner holds, the miner is
+  routed client jobs as if it were not practising, and `work` names it apart (`practice_job`). A miner that asks
+  without it practises the earlier way: none is handed out while it holds a job or a client job it could take
+  waits, and it is given no client job until the practice job is over. A practice job built beside ends when its
+  miner is revoked, disabled or deregistered, never when the client job is cancelled or taken back.
 - **Available** = admitted, holds a live key, polled `work` in the last 60 s, holds no job, not blocked, registered.
 - **Router.** A client job goes to the miner its claim prefers (`prefer`: the builder of the version a later round
   continues) if it is available; else to the **best record** among the available miners -- points per job over the last 7 days, a miner with fewer

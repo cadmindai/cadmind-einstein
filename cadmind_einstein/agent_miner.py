@@ -54,7 +54,11 @@ and ends the round blocked by the platform: uncounted, scored for nobody, the pr
 Every submit carries the miner's ``setup`` label (``--setup``, else ``$CADMIND_MINER_SETUP``),
 by which the validator groups practice results. ``cadmind-einstein-miner practice [--status]``
 (also ``cadmind-einstein practice``; :func:`practice_main`) asks for a practice job on a public
-brief -- this running miner builds it like any job, never scored -- or prints the results.
+brief, never scored, or prints the results. It asks with ``parallel``: the validator hands the
+practice job out beside the client work (``practice_job`` on ``work``) and this running miner
+builds it with a second builder (:class:`Lane`: its own directory, prompt, deadline and cancel)
+while the first goes on with the client job; ``--one-at-a-time`` asks the earlier way, and the
+practice job is then built like any job.
 
 A submit or a reject the validator did not take (no answer, 429 or 5xx) is sent again with a
 backoff (:func:`send`).
@@ -120,6 +124,7 @@ from __future__ import annotations
 
 import argparse
 import contextlib
+import copy
 import functools
 import json
 import logging
@@ -541,6 +546,42 @@ def dropped(work: Any, job: str) -> bool:
     if not isinstance(work, Mapping) or "job" not in work:
         return False
     return work.get("cancelled") == job or work.get("job") != job
+
+
+def beside_job(work: Any) -> dict[str, Any] | None:
+    """The practice job the validator's ``work`` answer hands out beside the client work
+    (``practice_job``: a practice job asked for with ``parallel``), or None."""
+    view = work.get("practice_job") if isinstance(work, Mapping) else None
+    return dict(view) if isinstance(view, Mapping) and view.get("job") else None
+
+
+def dropped_beside(work: Any, job: str) -> bool:
+    """:func:`dropped` for the practice job built beside the client work: the ``work`` answer no
+    longer names it as the ``practice_job``. A failed poll (not a mapping) says nothing."""
+    if not isinstance(work, Mapping) or "job" not in work:
+        return False
+    return (beside_job(work) or {}).get("job") != job
+
+
+BESIDE_RETRY_S = 120.0
+"""A practice job built beside that just ended here is not started again for this long: its
+hand-over may not have reached the validator's ``work`` answer yet."""
+
+
+class Lane:
+    """One builder's own files and signals: the miner's client work has one, a practice job built
+    beside it has another (in the state directory's ``practice``), so two agents never share a
+    prompt file, a deadline file, an MCP config or a cancel."""
+
+    def __init__(self, a: argparse.Namespace) -> None:
+        self.a = a
+        self.busy, self.cancel = threading.Event(), threading.Event()
+        self.running: dict[str, Any] = {"job": "", "agent": None}
+        self.mcp_file = Path(a.state) / "watt-mcp.json"
+        self.work_dir = Path(a.state) / "empty"
+        self.work_dir.mkdir(parents=True, exist_ok=True)
+        self.thread: threading.Thread | None = None
+        self.ended: tuple[str, float] = ("", 0.0)
 
 
 class AgentRun:
@@ -1451,6 +1492,13 @@ def practice_parser() -> argparse.ArgumentParser:
     ap.add_argument("--validator", required=True, help="the validator's base URL")
     ap.add_argument("--validator-hotkey", required=True, help="the validator's SS58 hotkey")
     ap.add_argument("--status", action="store_true", help="your practice results so far")
+    ap.add_argument(
+        "--one-at-a-time",
+        action="store_true",
+        help="ask the old way: only while the miner holds no job and no client job waits for "
+        "it, and it is given no client job until the practice job is over (default: the "
+        "practice job is built beside the client work, by a second agent of the running miner)",
+    )
     ap.add_argument("--json", action="store_true", help="print the validator's answer as JSON")
     return ap
 
@@ -1526,7 +1574,8 @@ def practice_main(argv: list[str] | None = None) -> int:
     if a.status:
         code, got = signed(kp, a.validator, "/v1/practice", {}, a.validator_hotkey, method="GET")
     else:
-        code, got = signed(kp, a.validator, "/v1/practice", {}, a.validator_hotkey)
+        ask = {} if a.one_at_a_time else {"parallel": True}
+        code, got = signed(kp, a.validator, "/v1/practice", ask, a.validator_hotkey)
     if a.json or code != 200 or not isinstance(got, dict):
         sys.stdout.write(json.dumps({"status": code, "answer": got}, indent=1) + "\n")
         return 0 if code == 200 else 1
@@ -1535,7 +1584,12 @@ def practice_main(argv: list[str] | None = None) -> int:
     else:
         sys.stdout.write(
             f"practice {got.get('practice')} {_q(got.get('title'))}: {got.get('state')} -- the "
-            "running miner builds it like any job; nothing is scored\n"
+            + (
+                "running miner builds it like any job"
+                if a.one_at_a_time
+                else "running miner builds it beside its client work, with a second agent"
+            )
+            + "; nothing is scored\n"
         )
     return 0
 
@@ -1663,60 +1717,35 @@ def main(argv: list[str] | None = None) -> int:
     log(f"admission requested: {code} {adm.get('job') if isinstance(adm, dict) else adm}")
     checked = time.monotonic()
 
-    busy, stop, cancel = threading.Event(), threading.Event(), threading.Event()
-    running: dict[str, Any] = {"job": "", "agent": None}
+    # ``closing``: no second builder starts; ``halting``: the one at work is stopped too
+    stop, closing, halting = threading.Event(), threading.Event(), threading.Event()
+    lane = Lane(a)
+    # a practice job asked for beside the client work is built by a second builder, in its own
+    # files (the state directory's ``practice``), with the same agent key
+    beside = copy.copy(a)
+    beside.state, beside.agent_key_file = a.state / "practice", key_file
+    beside.state.mkdir(exist_ok=True)
+    beside.state.chmod(0o700)
+    side = Lane(beside)
+    side_lock = threading.Lock()
 
-    def heartbeat() -> None:
-        while not stop.is_set():
-            if busy.is_set():
-                # keep alive while the agent runs -- and stop it when its job is gone
-                code, w = call("/v1/jobs/work", {})
-                agent, job = running["agent"], running["job"]
-                if code == 200 and job and dropped(w, job) and not cancel.is_set():
-                    cancel.set()
-                    log(f"{job}: cancelled or no longer ours: stopping the agent")
-                stopped = getattr(agent, "stopped", None)
-                if cancel.is_set() and agent is not None and not (stopped and stopped.is_set()):
-                    agent.stop()
-            stop.wait(15)
+    def any_busy() -> bool:
+        return lane.busy.is_set() or side.busy.is_set()
 
-    threading.Thread(target=heartbeat, daemon=True).start()
-    if updater is not None:
-        updater.watch(busy.is_set, stop)  # checks during a job; applied only once it has ended
-    done = 0
-    launch_failures = 0
-    while not a.max_jobs or done < a.max_jobs:
-        code, work = call("/v1/jobs/work", {})
-        # the idle point: no job of ours is accepted (a job ended above, before this poll). A
-        # pending update is applied here and the miner restarts, before it accepts a job offered
-        # meanwhile; an accepted job (one resumed after a restart) is always built first
-        if (
-            updater is not None
-            and code == 200
-            and isinstance(work, dict)
-            and not (work.get("job") and work.get("accepted"))
-            and updater.between_jobs(job_waiting=bool(work.get("job")))
-        ):
-            stop.set()
-            return 0  # only an injected restart returns: the real one replaces this process
-        if code != 200 or not work.get("job"):
-            if code not in (0, 200):
-                log(f"work: {code} {work}")
-            if (
-                time.monotonic() - checked > KEY_CHECK_S
-            ):  # idle: does the validator still take our key, are we admitted?
-                checked = time.monotonic()
-                keep_admitted(call, take, log=log)
-            time.sleep(5)
-            continue
+    def run_job(work: Any, on: Lane, *, poll: Callable[[], Any]) -> str:
+        """Accept (if not yet), build, check and hand over one assignment on ``on``; ``poll``
+        reads that assignment again from the validator. Returns ``"skipped"`` (the accept was
+        refused: nothing built), ``"launch"`` (the agent could not start: the job was handed
+        back) or ``"built"`` (submitted, rejected, or cancelled meanwhile)."""
+        la = on.a
         job, ws, brief = work["job"], work["workspace"], work.get("brief") or ""
         if not work.get("accepted"):
             code, _ = call("/v1/jobs/accept", {"job": job})
             log(f"accepted {job} in {ws}: {code}")
             if code != 200:  # cancelled (410) or gone meanwhile: nothing to build
                 time.sleep(5)
-                continue
-            code, work = call("/v1/jobs/work", {})  # the deadline starts at accept
+                return "skipped"
+            work = poll()  # the deadline starts at accept
         deadline_ms = int(work.get("deadline_ms") or 0) if isinstance(work, dict) else 0
         minutes = max(10, int((deadline_ms / 1000 - time.time()) / 60) - 3) if deadline_ms else 25
         # with the self-review, the builder is told an earlier deadline, so the round has its time
@@ -1732,13 +1761,13 @@ def main(argv: list[str] | None = None) -> int:
                 "for the self-review"
             )
         # the job's own deadline for `time_left` (none written: it says no deadline is set)
-        deadline = deadline_file(a)
+        deadline = deadline_file(la)
         if deadline is not None:
             _write_private(deadline, str(told_ms) if deadline_ms else "")
         # and on each Watt request, so every `watt` answer says the minutes left
         _write_private(
-            mcp_file,
-            json.dumps(mcp_config(a, key_file.read_text().strip(), key_file, told_ms)),
+            on.mcp_file,
+            json.dumps(mcp_config(la, key_file.read_text().strip(), key_file, told_ms)),
         )
         deadline_utc = (
             time.strftime("%H:%M", time.gmtime(told_ms / 1000))
@@ -1755,16 +1784,16 @@ def main(argv: list[str] | None = None) -> int:
             questions=questions_rule(work if isinstance(work, dict) else {}, ws),
             no_questions="yes" if isinstance(work, dict) and work.get("no_questions") else "no",
         )
-        prompt_file = a.state / "prompt.txt"
+        prompt_file = la.state / "prompt.txt"
         _write_private(prompt_file, prompt)
         cmd = agent_argv(
-            a, prompt=prompt, prompt_file=prompt_file, mcp_file=mcp_file, ws=ws, job=job
+            la, prompt=prompt, prompt_file=prompt_file, mcp_file=on.mcp_file, ws=ws, job=job
         )
         t0 = time.time()
         out_file = logs / f"{job}.txt"
 
         def watch(agent: AgentRun | None) -> None:
-            running.update(agent=agent)
+            on.running.update(agent=agent)
 
         def real_deadline(path: Path | None = deadline, real: int = deadline_ms) -> None:
             if path is not None:
@@ -1775,23 +1804,26 @@ def main(argv: list[str] | None = None) -> int:
             overrun = threading.Timer(max(0.0, told_ms / 1000 - time.time()), real_deadline)
             overrun.daemon = True
             overrun.start()
+        cancel = on.cancel
         cancel.clear()
-        running.update(job=job, agent=None)
-        busy.set()
+        if on is side and halting.is_set():
+            cancel.set()  # the miner is stopping: the heartbeat stops this agent at once
+        on.running.update(job=job, agent=None)
+        on.busy.set()
         rnd: sr.SelfReview | None = None
         launch_error = ""
         try:
             got = build(
                 cmd,
-                session=session_for(a),
-                cwd=work_dir,
-                stdin=prompt if a.agent_command else None,
+                session=session_for(la),
+                cwd=on.work_dir,
+                stdin=prompt if la.agent_command else None,
                 timeout_s=minutes * 60,
                 deadline_ms=told_ms or deadline_ms,
                 watch=watch,
                 log=log,
                 job=job,
-                env=agent_env(a),
+                env=agent_env(la),
             )
             if overrun is not None:
                 overrun.cancel()
@@ -1803,19 +1835,19 @@ def main(argv: list[str] | None = None) -> int:
             agent_key = key_file.read_text().strip() if key_file.exists() else ""
             asked = not (isinstance(work, dict) and work.get("no_questions"))
             again = corrector(
-                a,
+                la,
                 got,
                 cmd=cmd,
                 prompt=prompt,
                 prompt_file=prompt_file,
-                mcp_file=mcp_file,
-                work_dir=work_dir,
+                mcp_file=on.mcp_file,
+                work_dir=on.work_dir,
                 ws=ws,
                 job=job,
                 watch=watch,
             )
             rnd = start_self_review(
-                a,
+                la,
                 got,
                 review_off=review_off,
                 job=job,
@@ -1845,25 +1877,15 @@ def main(argv: list[str] | None = None) -> int:
         finally:
             if overrun is not None:
                 overrun.cancel()
-            busy.clear()
-            running.update(job="", agent=None)
+            on.busy.clear()
+            on.running.update(job="", agent=None)
         if launch_error:
-            # hand the job back at once (another miner takes it), wait; stop after a few in a row
-            launch_failures += 1
+            # hand the job back at once (another miner takes it); the caller counts it
             log(f"{job}: the agent could not start ({launch_error}): handing the job back")
             reject = {"job": job, "category": "not-capable", "message": REJECT_LAUNCH}
             code, out = send(call, "/v1/jobs/reject", reject, log=log)
             log(f"rejected {job}: {code} {out}")
-            if launch_failures >= LAUNCH_FAILURES_MAX:
-                log(
-                    f"the agent could not start {launch_failures} times in a row: stopping. "
-                    "Fix the miner's agent setup and start it again"
-                )
-                stop.set()
-                return 2
-            time.sleep(LAUNCH_BACKOFF_S * 2 ** (launch_failures - 1))
-            continue
-        launch_failures = 0
+            return "launch"
         _write_private(out_file, got.record)
         review_file = logs / f"{job}.self-review.json"
         if rnd is not None:
@@ -1871,8 +1893,7 @@ def main(argv: list[str] | None = None) -> int:
             log(f"{job}: {rnd.line()}")
         if got.cancelled:
             log(f"{job}: the job was cancelled; nothing submitted")
-            done += 1
-            continue
+            return "built"
         kind, body = outcome(job, ws, got.text, setup=setup)
         if kind == "reject":
             code, out = send(call, "/v1/jobs/reject", body, log=log)
@@ -1895,9 +1916,129 @@ def main(argv: list[str] | None = None) -> int:
             rnd.final(after_submit=True)
             _write_private(review_file, json.dumps(rnd.summary(), indent=1, default=str))
             log(f"{job}: {rnd.line()}")
+        return "built"
+
+    def poll_side() -> Any:
+        _, w = call("/v1/jobs/work", {})
+        return beside_job(w) or {}
+
+    def build_beside(view: dict[str, Any]) -> None:
+        try:
+            run_job(view, side, poll=poll_side)
+        except Exception as e:  # noqa: BLE001 -- a practice job never stops the miner
+            log(f"{view.get('job')}: the practice builder stopped: {type(e).__name__}: {e}")
+        finally:
+            side.ended = (str(view.get("job") or ""), time.monotonic())
+            side.busy.clear()
+
+    def start_beside(w: Any) -> None:
+        """Start the second builder on a practice job the validator hands out beside the client
+        work (``practice_job`` on ``work``), unless it is already building one."""
+        view = beside_job(w)
+        if view is None or closing.is_set():
+            return
+        with side_lock:
+            if side.thread is not None and side.thread.is_alive():
+                return
+            last, at = side.ended
+            if last == view["job"] and time.monotonic() - at < BESIDE_RETRY_S:
+                return  # it just ended here (a hand-over not taken yet): not started twice
+            log(f"{view['job']}: a practice job beside the client work: a second builder takes it")
+            side.busy.set()  # before the thread runs: no update restarts the miner under it
+            side.thread = threading.Thread(
+                target=build_beside, args=(dict(view),), name="practice", daemon=True
+            )
+            side.thread.start()
+
+    def heartbeat() -> None:
+        while not stop.is_set():
+            if any_busy():
+                # keep alive while an agent runs -- and stop it when its job is gone
+                code, w = call("/v1/jobs/work", {})
+                if code == 200:
+                    start_beside(w)
+                for on, is_gone in ((lane, dropped), (side, dropped_beside)):
+                    agent, job = on.running["agent"], on.running["job"]
+                    if code == 200 and job and is_gone(w, job) and not on.cancel.is_set():
+                        on.cancel.set()
+                        log(f"{job}: cancelled or no longer ours: stopping the agent")
+                    stopped = getattr(agent, "stopped", None)
+                    if (
+                        on.cancel.is_set()
+                        and agent is not None
+                        and not (stopped and stopped.is_set())
+                    ):
+                        agent.stop()
+            stop.wait(15)
+
+    def finish(code: int, *, halt_side: bool = False) -> int:
+        """The miner stops: the practice builder hands its job over first (or, ``halt_side``,
+        is stopped), so no agent is left running without its miner."""
+        if halt_side:
+            halting.set()
+            side.cancel.set()
+            agent = side.running["agent"]
+            if agent is not None:
+                agent.stop()
+        with side_lock:
+            closing.set()  # no second builder starts from here on
+            thread = side.thread
+        if thread is not None:
+            thread.join()  # the heartbeat goes on meanwhile: it keeps the builder's job alive
+        stop.set()
+        return code
+
+    threading.Thread(target=heartbeat, daemon=True).start()
+    if updater is not None:
+        updater.watch(any_busy, stop)  # checks during a job; applied only once it has ended
+    done = 0
+    launch_failures = 0
+    while not a.max_jobs or done < a.max_jobs:
+        code, work = call("/v1/jobs/work", {})
+        # the idle point: no job of ours is accepted (a job ended above, before this poll) and no
+        # practice job is being built beside. A pending update is applied here and the miner
+        # restarts, before it accepts a job offered meanwhile; an accepted job (one resumed after
+        # a restart) is always built first
+        if (
+            updater is not None
+            and code == 200
+            and isinstance(work, dict)
+            and not (work.get("job") and work.get("accepted"))
+            and not side.busy.is_set()
+            and not (beside_job(work) or {}).get("accepted")
+            and updater.between_jobs(job_waiting=bool(work.get("job") or beside_job(work)))
+        ):
+            stop.set()
+            return 0  # only an injected restart returns: the real one replaces this process
+        if code == 200:
+            start_beside(work)
+        if code != 200 or not work.get("job"):
+            if code not in (0, 200):
+                log(f"work: {code} {work}")
+            if (
+                time.monotonic() - checked > KEY_CHECK_S
+            ):  # idle: does the validator still take our key, are we admitted?
+                checked = time.monotonic()
+                keep_admitted(call, take, log=log)
+            time.sleep(5)
+            continue
+        ran = run_job(work, lane, poll=lambda: call("/v1/jobs/work", {})[1])
+        if ran == "skipped":
+            continue
+        if ran == "launch":
+            # another miner takes the job; wait, and stop after a few in a row
+            launch_failures += 1
+            if launch_failures >= LAUNCH_FAILURES_MAX:
+                log(
+                    f"the agent could not start {launch_failures} times in a row: stopping. "
+                    "Fix the miner's agent setup and start it again"
+                )
+                return finish(2, halt_side=True)
+            time.sleep(LAUNCH_BACKOFF_S * 2 ** (launch_failures - 1))
+            continue
+        launch_failures = 0
         done += 1
-    stop.set()
-    return 0
+    return finish(0)
 
 
 if __name__ == "__main__":

@@ -283,13 +283,13 @@ All calls are signed POSTs to `$VALIDATOR_URL`.
 
 | Call | Body | Answer / rule |
 |---|---|---|
-| `/v1/jobs/work` | `{}` | `{job, workspace, brief, accepted, accept_by_ms, deadline_ms, no_questions, subprojects?}` (plus `continuation: true` and `base` for a round that continues an unfinished one, below) or `{job: null}`, plus `cancelled: <job>` when the client cancelled your last job. **Poll every few seconds.** Polling is how the validator knows you are alive: you are routed jobs only if you polled in the last 60 s. |
+| `/v1/jobs/work` | `{}` | `{job, workspace, brief, accepted, accept_by_ms, deadline_ms, no_questions, subprojects?}` (plus `continuation: true` and `base` for a round that continues an unfinished one, below) or `{job: null}`, plus `cancelled: <job>` when the client cancelled your last job. **Poll every few seconds.** Polling is how the validator knows you are alive: you are routed jobs only if you polled in the last 60 s. A practice job you asked to build beside your client work is not in `job`: it is in `practice_job`, an object with the same fields (see [Trying a new setup](#trying-a-new-setup)). |
 | `/v1/jobs/accept` | `{job}` | Within **2 minutes** of the assignment. Your deadline then starts: 240 minutes from your accept, for every job. |
 | `/v1/jobs/submit` | `{job, workspace, digest, summary?, setup?, host_refused?}` | When `watt status` in the workspace says `deliverable`. `digest` is the digest it reports. The workspace is frozen (read-only to you) at once. `summary` is your words for the client: on a delivered project, what you built and what you estimated or left open; on a project that is not deliverable (out of time), what still blocks delivery. An unfinished project earns nothing, so keep building until the deadline rather than handing over early. `setup` is your own short label for the setup that built it (model, prompt version); your practice results are grouped by it (see [Trying a new setup](#trying-a-new-setup)). `host_refused` (`{code, why}`, as the `watt` answer gave it): you stopped because the platform refused a run's result (see [A host block](#a-host-block-blocked-by-the-platform)). |
 | `/v1/jobs/reject` | `{job, category, message}` | Instead of building. `category` is `not-allowed` or `not-capable`, the two classes of the scope guide (`watt_guide` with `scope`). `message` is written for the client, and may run over several lines. |
 | `/v1/miners/receipt` | `{}` | Your recent jobs with their points, your weight (your points over 7 days) and your average (points per job), and your recent attempts that did not pass with why (`failures`). |
 | `/v1/miners/stats` | `{}` | Everything that affects your weight (see [Your stats](#your-stats)). |
-| `/v1/practice` | `{}` | A practice job, never scored (see [Trying a new setup](#trying-a-new-setup)); `GET /v1/practice`, signed with no body, shows your results. |
+| `/v1/practice` | `{}` or `{"parallel": true}` | A practice job, never scored (see [Trying a new setup](#trying-a-new-setup)); with `parallel` it is built beside your client work and arrives as `practice_job` on `work`. `GET /v1/practice`, signed with no body, shows your results. |
 
 - The job workspace is **created for you** from the client's brief (or, for a later round of a client's project,
   from the delivered project) and granted to your key, with its allowance of compute credits. You cannot delete
@@ -780,18 +780,29 @@ routing or pay, and a failed one costs you nothing.
     cadmind-einstein practice ... --status                              # your results so far
 
 (`cadmind-einstein-miner practice` is the same command.) Or call the routes yourself: `POST /v1/practice` (signed,
-empty body) and `GET /v1/practice` (signed, no body).
+`{"parallel": true}` or an empty body) and `GET /v1/practice` (signed, no body).
 
 - **What you get.** A brief taken from a project CADmind delivered and its owner made public, exactly as its gallery
-  page shows it, that you have not practised on. It arrives on `work` like any job (`practice: true`), with the same
+  page shows it, that you have not practised on. It arrives on `work` (`practice: true`), with the same
   workspace tools, the same deadline and the same gate. Your running miner builds it; send your `setup` label with
   the submit (`CADMIND_MINER_SETUP` or `--setup` on `cadmind-einstein-miner`).
 - **No client questions.** The gallery shows no client answers, so the job is `no_questions`: decide every open
   question yourself, as on the entry test.
+- **Beside your client work.** The command asks with `parallel`: the practice job takes none of your place. You
+  keep being given client jobs while you practise, and you may ask while you hold one. The practice job arrives on
+  `work` as `practice_job` (an object with a job's fields; `job` stays your client job, or null), and you accept and
+  submit it by its id with the same routes. The reference miner builds it with a **second agent**, in its own
+  directory (`practice` in the miner's state directory), while the first goes on with your client work: that is
+  two agents on your model account at once, so mind its rate limits and your cost. A cancel, a deadline or a
+  restart of one does not touch the other; the miner updates itself only when neither is building. A client's
+  cancel or the operator taking your client job back leaves the practice job alone; a revoked key, a disable or
+  leaving the subnet ends it.
+- **One at a time, if you prefer.** `--one-at-a-time` (an empty body) asks the earlier way: only while you hold no
+  job and no client job you could take is waiting, the practice job arrives as `job`, and you are given no client
+  job until it is over. A miner that cannot run two agents at once should ask this way.
 - **When.** Approved key holders, before or after admission, and while the subnet is on hold. One open at a time,
-  3 a UTC day. Never while you hold a
-  job or a client job you could take is waiting: client work always comes first, and practice runs on the
-  platform's spare capacity, so it may wait.
+  3 a UTC day. Practice runs on the platform's spare capacity, and the validator hands it out only after its client
+  work and while it has room to spare, so it may wait.
 - **The result.** The validator gates it with its own guard draw. A deliverable result is voted on with the
   validators' judge -- the same judge, prompt, rubric and sample count as a client delivery -- and so is the version
   that was delivered, under today's judge, so the two scores are comparable:

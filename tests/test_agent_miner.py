@@ -987,3 +987,300 @@ class TestAgentLaunch(unittest.TestCase):
                 log=lambda _m: None,
                 job="j1",
             )
+
+
+class TestPracticeBeside(unittest.TestCase):
+    """A practice job handed out beside the client work (``practice_job`` on ``work``) is built by
+    a second builder while the client job is built, each in its own files."""
+
+    def test_the_two_are_built_at_once_and_both_handed_over(self) -> None:
+        import io
+        import threading
+
+        from cadmind_einstein import auto_update as au
+
+        lock = threading.Lock()
+        open_jobs = {"j1": False, "practice-1": False}  # job -> accepted
+        sent: list[tuple[str, str]] = []
+        built: dict[str, dict[str, str]] = {}
+        both_building = threading.Event()
+
+        def view(job: str) -> dict[str, object]:
+            return {
+                "job": job,
+                "workspace": f"ws-{job}",
+                "brief": f"brief of {job}",
+                "accepted": open_jobs[job],
+                "deadline_ms": int(time.time() * 1000) + 3_600_000,
+                "no_questions": job != "j1",
+            }
+
+        def signed(_kp: object, _url: str, path: str, body: dict, *_a: object, **_k: object):
+            with lock:
+                if path == "/v1/miners/agent_key":
+                    return 200, {"key_id": "k1"}
+                if path == "/v1/jobs/accept":
+                    open_jobs[body["job"]] = True
+                    return 200, {}
+                if path == "/v1/jobs/work":
+                    out: dict[str, object] = {"job": None}
+                    if "j1" in open_jobs:
+                        out.update(view("j1"))
+                    if "practice-1" in open_jobs:
+                        out["practice_job"] = {**view("practice-1"), "practice": True}
+                    return 200, out
+                return 200, {}
+
+        class Got:
+            timed_out = cancelled = False
+            record = text = "DONE"
+            sessions: tuple[str, ...] = ()
+
+        def build(cmd: list[str], **kw: object) -> Got:
+            job = str(kw["job"])
+            with lock:
+                built[job] = {"cwd": str(kw["cwd"]), "prompt": cmd[2]}
+                if len(built) == 2:
+                    both_building.set()
+            # neither build ends before the other has started: they run at once
+            assert both_building.wait(10), "the other builder never started"
+            return Got()
+
+        def send(_call: object, path: str, body: dict, **_k: object) -> tuple[int, dict]:
+            with lock:
+                sent.append((path, body["job"]))
+                open_jobs.pop(body["job"], None)
+            return 200, {}
+
+        def outcome(job: str, _ws: str, _text: str, **_k: object):
+            return "submit", {"job": job, "digest": "d"}
+
+        with (
+            tempfile.TemporaryDirectory() as d,
+            mock.patch.dict(os.environ, {au.ENV: "0"}),
+            mock.patch.object(agent_miner, "signed", signed),
+            mock.patch.object(agent_miner, "own_key_id", lambda _p, _k: "k1"),
+            mock.patch.object(agent_miner, "build", build),
+            mock.patch.object(agent_miner, "corrector", lambda *a, **k: None),
+            mock.patch.object(agent_miner, "start_self_review", lambda *a, **k: None),
+            mock.patch.object(agent_miner, "answers_round", lambda *a, **k: False),
+            mock.patch.object(agent_miner, "outcome", outcome),
+            mock.patch.object(agent_miner, "send", send),
+            # the agent CLI's own checks: no CLI here, and a test never calls a model
+            mock.patch.object(agent_miner, "agent_launchable", lambda _argv: ""),
+            mock.patch.object(agent_miner, "probe_agent", lambda *_a, **_k: ""),
+            mock.patch("sys.stdout", io.StringIO()) as out,
+        ):
+            key = Path(d) / "agent.key"
+            key.write_text("k\n")
+            code = agent_miner.main(
+                [
+                    "--validator", "v", "--validator-hotkey", "h", "--platform", "p",
+                    "--state", d, "--dev-uri", "//Alice", "--no-version-check",
+                    "--agent-key-file", str(key), "--self-review", "off", "--max-jobs", "1",
+                ]
+            )  # fmt: skip
+            # the miner stops only once the second builder has handed its job over
+            with lock:
+                handed = sorted(sent)
+            main_prompt = (Path(d) / "prompt.txt").read_text()
+            side_prompt = (Path(d) / "practice" / "prompt.txt").read_text()
+            side_mcp = (Path(d) / "practice" / "watt-mcp.json").exists()
+        self.assertEqual(code, 0)
+        self.assertEqual(handed, [("/v1/jobs/submit", "j1"), ("/v1/jobs/submit", "practice-1")])
+        # each builder has its own directory, prompt and tool config
+        self.assertNotEqual(built["j1"]["cwd"], built["practice-1"]["cwd"])
+        self.assertIn(os.sep + "practice" + os.sep, built["practice-1"]["cwd"])
+        self.assertIn("brief of j1", main_prompt)
+        self.assertIn("brief of practice-1", side_prompt)
+        self.assertTrue(side_mcp)
+        self.assertIn("a second builder takes it", out.getvalue())
+
+    def test_the_practice_command_asks_for_it_beside_unless_told_otherwise(self) -> None:
+        import io
+
+        asked: list[dict] = []
+
+        def signed(_kp: object, _url: str, _path: str, body: dict, *_a: object, **_k: object):
+            asked.append(body)
+            return 200, {"practice": "practice-1", "title": "t", "state": "assigned"}
+
+        base = ["--validator", "v", "--validator-hotkey", "h", "--dev-uri", "//Alice"]
+        with (
+            mock.patch.object(agent_miner, "signed", signed),
+            mock.patch("sys.stdout", io.StringIO()) as out,
+        ):
+            self.assertEqual(agent_miner.practice_main(base), 0)
+            self.assertEqual(agent_miner.practice_main([*base, "--one-at-a-time"]), 0)
+        self.assertEqual(asked, [{"parallel": True}, {}])
+        self.assertIn("beside its client work", out.getvalue())
+
+
+class TestPracticeBesideRules(unittest.TestCase):
+    """The running miner's second builder: what ends it, what it never blocks, and the update."""
+
+    def test_the_practice_job_is_read_apart_and_its_end_is_its_own(self) -> None:
+        w = {"job": "j1", "cancelled": "j0", "practice_job": {"job": "p1", "accepted": True}}
+        self.assertEqual(agent_miner.beside_job(w), {"job": "p1", "accepted": True})
+        self.assertIsNone(agent_miner.beside_job({"job": "j1"}))
+        self.assertIsNone(agent_miner.beside_job({"job": None, "practice_job": {"job": ""}}))
+        self.assertFalse(agent_miner.dropped_beside(w, "p1"))
+        self.assertTrue(agent_miner.dropped_beside({"job": "j1"}, "p1"))
+        self.assertFalse(agent_miner.dropped_beside(None, "p1"), "a failed poll says nothing")
+        # a take-back or a cancel of the client job is not one of the practice job
+        self.assertFalse(agent_miner.dropped_beside({**w, "cancelled": "j1"}, "p1"))
+        self.assertTrue(agent_miner.dropped(w, "j0"))
+
+    def run_miner(
+        self,
+        work: Any,
+        build: Any,
+        *,
+        updater: Any = None,
+        extra: tuple[str, ...] = (),
+    ) -> tuple[int, list[tuple[str, dict]], str]:
+        """``agent_miner.main`` against a validator whose ``work`` answer is ``work()``; an
+        accepted job is added to ``self.accepted``."""
+        import io
+        import threading
+
+        lock = threading.Lock()
+        sent: list[tuple[str, dict]] = []
+        real_sleep = time.sleep
+
+        def signed(_kp: object, _url: str, path: str, body: dict, *_a: object, **_k: object):
+            with lock:
+                if path == "/v1/miners/agent_key":
+                    return 200, {"key_id": "k1"}
+                if path == "/v1/jobs/work":
+                    return 200, work()
+                if path == "/v1/jobs/accept":
+                    self.accepted.add(body["job"])
+                sent.append((path, dict(body)))
+                return 200, {}
+
+        def send(_call: object, path: str, body: dict, **_k: object) -> tuple[int, dict]:
+            with lock:
+                sent.append((path, dict(body)))
+            return 200, {}
+
+        with (
+            tempfile.TemporaryDirectory() as d,
+            mock.patch.object(agent_miner.au, "from_args", lambda *_a, **_k: updater),
+            mock.patch.object(agent_miner, "signed", signed),
+            mock.patch.object(agent_miner, "own_key_id", lambda _p, _k: "k1"),
+            mock.patch.object(agent_miner, "build", build),
+            mock.patch.object(agent_miner, "corrector", lambda *a, **k: None),
+            mock.patch.object(agent_miner, "start_self_review", lambda *a, **k: None),
+            mock.patch.object(agent_miner, "answers_round", lambda *a, **k: False),
+            mock.patch.object(
+                agent_miner,
+                "outcome",
+                lambda job, *_a, **_k: ("submit", {"job": job, "digest": "d"}),
+            ),
+            mock.patch.object(agent_miner, "send", send),
+            mock.patch.object(agent_miner, "agent_launchable", lambda _argv: ""),
+            mock.patch.object(agent_miner, "probe_agent", lambda *_a, **_k: ""),
+            mock.patch.object(agent_miner.time, "sleep", lambda _s: real_sleep(0.01)),
+            mock.patch("sys.stdout", io.StringIO()) as out,
+        ):
+            key = Path(d) / "agent.key"
+            key.write_text("k\n")
+            code = agent_miner.main(
+                [
+                    "--validator", "v", "--validator-hotkey", "h", "--platform", "p",
+                    "--state", d, "--dev-uri", "//Alice", "--no-version-check",
+                    "--agent-key-file", str(key), "--self-review", "off", *extra,
+                ]
+            )  # fmt: skip
+        return code, sent, out.getvalue()
+
+    def setUp(self) -> None:
+        self.accepted: set[str] = set()
+
+    class Got:
+        timed_out = cancelled = False
+        record = text = "DONE"
+        sessions: tuple[str, ...] = ()
+
+    @staticmethod
+    def view(job: str, accepted: bool) -> dict[str, Any]:
+        return {
+            "job": job,
+            "workspace": f"ws-{job}",
+            "brief": f"brief of {job}",
+            "accepted": accepted,
+            "deadline_ms": int(time.time() * 1000) + 3_600_000,
+            "no_questions": True,
+        }
+
+    def test_the_miner_updates_itself_only_once_the_practice_builder_is_done(self) -> None:
+        import threading
+
+        state: dict[str, Any] = {"practice": "open", "polls_while_building": 0}
+        building = threading.Event()
+        calls: list[bool] = []
+
+        def work() -> dict[str, Any]:
+            if building.is_set():
+                state["polls_while_building"] += 1
+            if state["practice"] == "over":
+                return {"job": None}
+            return {"job": None, "practice_job": self.view("p1", "p1" in self.accepted)}
+
+        def build(_cmd: list[str], **_kw: object) -> Any:
+            building.set()
+            # the main loop polls on, idle, while the second builder works
+            for _ in range(500):
+                if state["polls_while_building"] >= 3:
+                    break
+                time.sleep(0.01)
+            building.clear()
+            state["practice"] = "over"
+            return self.Got()
+
+        class Updater:
+            def watch(self, busy: Any, _stop: Any) -> None:
+                pass
+
+            def between_jobs(self, *, job_waiting: bool = False) -> bool:
+                calls.append(building.is_set())
+                return state["practice"] == "over"  # an update is pending: restart once idle
+
+        code, sent, _ = self.run_miner(work, build, updater=Updater())
+        self.assertEqual(code, 0, "the injected restart")
+        self.assertGreaterEqual(state["polls_while_building"], 3)
+        self.assertNotIn(True, calls, "never at the idle point while the practice job is built")
+        self.assertIn(("/v1/jobs/submit", {"job": "p1", "digest": "d"}), sent)
+
+    def test_a_practice_builder_that_cannot_start_hands_it_back_and_the_miner_goes_on(
+        self,
+    ) -> None:
+        state = {"practice": True, "client": True}
+
+        def work() -> dict[str, Any]:
+            out: dict[str, Any] = {"job": None}
+            if state["client"]:
+                out.update(self.view("j1", "j1" in self.accepted))
+            if state["practice"]:
+                out["practice_job"] = self.view("p1", "p1" in self.accepted)
+            return out
+
+        def build(_cmd: list[str], **kw: object) -> Any:
+            if kw["job"] == "p1":
+                state["practice"] = False
+                raise agent_miner.AgentLaunchError("no credit")
+            # the client job waits for the practice hand-back, then is built as ever
+            for _ in range(500):
+                if not state["practice"]:
+                    break
+                time.sleep(0.01)
+            state["client"] = False
+            return self.Got()
+
+        code, sent, said = self.run_miner(work, build, extra=("--max-jobs", "1"))
+        self.assertEqual(code, 0)
+        paths = [(p, b.get("job")) for p, b in sent]
+        self.assertIn(("/v1/jobs/reject", "p1"), paths)
+        self.assertIn(("/v1/jobs/submit", "j1"), paths)
+        self.assertNotIn("times in a row", said)

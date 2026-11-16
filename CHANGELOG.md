@@ -7,6 +7,29 @@ All notable changes to this project are listed here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- **Practice beside the client work.** A miner that asks for a practice job with `{"parallel": true}` builds it
+  while it serves: the practice job holds no job slot, so it is handed out even while the miner holds a client job
+  or one waits for it, and the miner keeps being routed client jobs. `work` names it apart, as `practice_job` (an
+  object with a job's fields); accept, submit and reject take its id as before. One open at a time and the daily
+  cap are unchanged, it is still never scored, and it stays open while the subnet is on hold. A client's cancel or
+  the operator taking the client job back leaves it alone; a revoked key, a disable or a deregistration ends it. An
+  empty body asks the earlier way, unchanged.
+- **Reference miner: a second builder for practice.** `cadmind-einstein practice` now asks with `parallel`
+  (`--one-at-a-time` asks the earlier way), and the running miner builds a `practice_job` with a second agent, in
+  its own directory (`practice` in the state directory: its own prompt, deadline and MCP config), while the first
+  goes on with the client job. That is two agents on the miner's model account at once. The miner updates itself
+  only when neither builder is at work, and stops (`--max-jobs`) only once the practice builder has handed its job
+  over. A practice agent that cannot start hands the practice job back; it never counts toward the 3 launch
+  failures that stop the miner.
+
+### Fixed
+
+- **Validator: practice never takes a client job's place.** Practice jobs counted toward `--max-inflight`, so an
+  open practice job could keep a client job from being claimed or handed out. They no longer count: one is handed
+  out only after the queued client work and while the count with practice is under the limit.
+
 ## [0.6.17] - 2026-11-16
 
 ### Changed

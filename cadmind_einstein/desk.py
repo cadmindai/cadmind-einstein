@@ -1050,7 +1050,7 @@ class Desk:
                     if job.state == "judging" and last.submitted_ms:
                         continue
                     holder = self.miners.get(last.hotkey)
-                    if holder is not None:
+                    if holder is not None and not self._beside(job):
                         holder.job = job.job
             if self.key_approval == "manual":
                 self._unapproved_out()
@@ -1067,6 +1067,7 @@ class Desk:
             out.append(m.hotkey)
             m.key_id, m.admitted, m.admission_ms = "", False, 0
             self._free_job(m, "manual approval: the key was never approved", "revoked")
+            self._fail_beside(m, "manual approval: the key was never approved", "revoked")
             self._queue_revoke(m.hotkey)
             r = self.approvals.get(m.hotkey)
             if r is None:
@@ -1305,6 +1306,7 @@ class Desk:
         if job is not None and a is not None and a.hotkey == hotkey:
             self._spawn(self._freeze_quietly, a.workspace)
             self._fail(job, a, "the miner was disabled", kind="disabled")
+        self._fail_beside(m, "the miner was disabled", "disabled")
         self.disabled_log.append(
             {"hotkey": hotkey, "reason": reason, "at_ms": self.now_ms(), "until_ms": until}
         )
@@ -1579,6 +1581,7 @@ class Desk:
                     self._fail(job, a, "the miner deregistered", kind="dereg")
                 elif job is None or job.state != "judging":
                     m.job = ""
+                self._fail_beside(m, "the miner deregistered", "dereg")
             # a pending key request of a hotkey that left is dropped (it asks again if it comes
             # back); a decision (approved, refused, revoked) is kept: a hotkey keeps its coldkey
             for hk in [h for h, r in self.approvals.items() if r.state == "pending"]:
@@ -1777,6 +1780,7 @@ class Desk:
             if m is not None:
                 m.key_id, m.admitted, m.admission_ms = "", False, 0
                 freed = self._free_job(m, "the operator revoked the miner's key", "revoked")
+                self._fail_beside(m, "the operator revoked the miner's key", "revoked")
             self._queue_revoke(r.hotkey)
             for job in self.jobs.values():
                 if job.kind == "admission" and job.target == r.hotkey and job.state == "queued":
@@ -1913,6 +1917,32 @@ class Desk:
             m.job = ""
         return held
 
+    @staticmethod
+    def _beside(job: Job) -> bool:
+        """Whether ``job`` is a practice job its miner asked to build beside its client work
+        (``parallel``): it holds no job slot, so the miner is still given client jobs."""
+        return job.kind == "practice" and job.practice.get("parallel") is True
+
+    def _practice_beside(self, hotkey: str) -> Job | None:
+        """The open practice job ``hotkey`` builds beside its client work, if any (one practice
+        job is open at a time)."""
+        for job in self.jobs.values():
+            if self._beside(job) and job.target == hotkey and job.state != "done":
+                return job
+        return None
+
+    def _fail_beside(self, m: Miner, why: str, kind: str) -> None:
+        """Inside a mutation: the practice job ``m`` builds beside its client work ends too when
+        the miner is disabled, revoked or gone (it holds no job slot, so nothing else finds it).
+        One being granted is dropped by :meth:`_assign` (the miner has no key left); one already
+        submitted (no ``current`` attempt) is judged as ever; an operator's take-back of the
+        client job leaves it alone."""
+        job = self._practice_beside(m.hotkey)
+        a = job.current if job else None
+        if job is not None and a is not None and a.hotkey == m.hotkey:
+            self._spawn(self._freeze_quietly, a.workspace)
+            self._fail(job, a, why, kind=kind)
+
     def _freeze_quietly(self, ws: str) -> None:
         with contextlib.suppress(PlatformError):
             self.platform.freeze(ws)
@@ -1925,28 +1955,36 @@ class Desk:
             a = job.current if job else None
             # its last job, cancelled by the client: the miner stops working on it
             told = {"cancelled": m.cancelled_job} if m.cancelled_job else {}
+            # a practice job built beside its client work: its own entry, never in ``job``
+            side = self._practice_beside(hotkey)
+            sa = side.current if side else None
+            if side is not None and sa is not None and sa.hotkey == hotkey:
+                told["practice_job"] = self._work_view(side, sa)
             if job is None or a is None or a.hotkey != hotkey:
                 return {"job": None, **told}
-            return {
-                **told,
-                "job": job.job,
-                "workspace": a.workspace,
-                "brief": job.brief,
-                "accepted": bool(a.accepted_ms),
-                "accept_by_ms": a.accept_by_ms,
-                "deadline_ms": a.deadline_ms,
-                # the client asked not to be asked questions: decide them, leave none open
-                "no_questions": job.no_questions,
-                # a practice job: never scored (docs/MINER.md "Trying a new setup")
-                **({"practice": True} if job.kind == "practice" else {}),
-                # whether the client allows sub-projects (brief/job.toml; W0233 if false)
-                **({"subprojects": job.subprojects} if job.subprojects is not None else {}),
-                # a style round: printed shapes only; Watt refuses a change of function (W0220)
-                **({"style": True} if job.style.get("baseline") else {}),
-                # a round continuing an unfinished one: the workspace starts as that project; the
-                # builder may continue it or start over from the base
-                **(self._continuation_work(job, a) if job.continuation else {}),
-            }
+            return {**told, **self._work_view(job, a)}
+
+    def _work_view(self, job: Job, a: Attempt) -> dict[str, Any]:
+        """An assignment as its miner reads it on ``work``."""
+        return {
+            "job": job.job,
+            "workspace": a.workspace,
+            "brief": job.brief,
+            "accepted": bool(a.accepted_ms),
+            "accept_by_ms": a.accept_by_ms,
+            "deadline_ms": a.deadline_ms,
+            # the client asked not to be asked questions: decide them, leave none open
+            "no_questions": job.no_questions,
+            # a practice job: never scored (docs/MINER.md "Trying a new setup")
+            **({"practice": True} if job.kind == "practice" else {}),
+            # whether the client allows sub-projects (brief/job.toml; W0233 if false)
+            **({"subprojects": job.subprojects} if job.subprojects is not None else {}),
+            # a style round: printed shapes only; Watt refuses a change of function (W0220)
+            **({"style": True} if job.style.get("baseline") else {}),
+            # a round continuing an unfinished one: the workspace starts as that project; the
+            # builder may continue it or start over from the base
+            **(self._continuation_work(job, a) if job.continuation else {}),
+        }
 
     @staticmethod
     def _continuation_work(job: Job, a: Attempt) -> dict[str, Any]:
@@ -1980,7 +2018,8 @@ class Desk:
                 raise DeskError("no such assignment", 404)
             now = self.now_ms()
             m = self.miners[hotkey]
-            m.cancelled_job, m.after_cancel = "", False
+            if not self._beside(job):  # a practice job built beside says nothing of its client work
+                m.cancelled_job, m.after_cancel = "", False
             a.accepted_ms = now
             a.deadline_ms = now + self.deadline_s * 1000
             job.state = "working"
@@ -2358,14 +2397,18 @@ class Desk:
             "result": {k: v for k, v in job.result.items() if k in ("deliverable", "why")},
         }
 
-    def practice(self, hotkey: str) -> dict[str, Any]:
+    def practice(self, hotkey: str, *, parallel: bool = False) -> dict[str, Any]:
         """A practice job for ``hotkey`` (docs/MINER.md "Trying a new setup"): a delivered public
         project's brief from the platform, run as a job assigned to this miner alone, with no
         client to ask (``no_questions``), on the platform's practice lane, and gated as any job.
         It is never in the ledger, points, weights or routing; its result is voted on beside the
         delivered version and reported (:mod:`.practice`). An approved key holder, admitted or
         not; one open at a time, ``practice_per_day`` a UTC day, and none while the miner holds a
-        job or a client job it could take is queued. Open while the subnet is on hold."""
+        job or a client job it could take is queued -- unless the miner asks to build it beside
+        its client work (``parallel``: a second builder of its own): then the practice job holds
+        no job slot, is handed out whatever else the miner holds, and the miner is given client
+        jobs as if it were not practising (it reads the practice job on ``work`` as
+        ``practice_job``). Open while the subnet is on hold."""
         now = self.now_ms()
         with self._mut():
             m = self._miner(hotkey)
@@ -2381,12 +2424,14 @@ class Desk:
                 return self._practice_view(live[-1])
             # practice stays open on hold (owner 2026-11-16): it is never scored, and the hold
             # holds back client jobs and weights only
-            if m.job:
-                raise DeskError("you hold a job: practice once it is over", 409)
-            if self._client_job_for(m) is not None:
-                raise DeskError(
-                    "a client job you can take is waiting: practice runs only when none is", 409
-                )
+            if not parallel:
+                if m.job:
+                    raise DeskError("you hold a job: practice once it is over", 409)
+                if self._client_job_for(m) is not None:
+                    raise DeskError(
+                        "a client job you can take is waiting: practice runs only when none is",
+                        409,
+                    )
             today = now // 86_400_000
             if sum(1 for j in mine if j.created_ms // 86_400_000 == today) >= self.practice_per_day:
                 raise DeskError(f"{self.practice_per_day} practice jobs a day", 429)
@@ -2422,9 +2467,10 @@ class Desk:
                     practice={
                         "title": " ".join(str(got.get("title") or "").split())[:200],
                         "reference_job": str(got.get("reference_job") or "")[:100],
+                        **({"parallel": True} if parallel else {}),
                     },
                 )
-                self._event("practice-queued", pid, hotkey=hotkey)
+                self._event("practice-queued", pid, hotkey=hotkey, parallel=parallel or None)
         finally:
             with self._lock:
                 self._practice_asking.discard(hotkey)
@@ -2677,7 +2723,7 @@ class Desk:
 
     # -- routing (section 6) -----------------------------------------------------------------------
 
-    def _available(self, job: Job) -> list[Miner]:
+    def _available(self, job: Job, *, beside: bool = False) -> list[Miner]:
         now = self.now_ms()
         reg = set(self.registered())
         tried = self._tried(job)
@@ -2691,7 +2737,7 @@ class Desk:
             m
             for m in self.miners.values()
             if m.key_id
-            and not m.job
+            and (beside or not m.job)  # a practice job built beside holds no job slot
             and m.hotkey in reg
             and m.blocked_until_ms <= now
             and now - m.last_seen_ms <= ALIVE_S * 1000
@@ -2763,6 +2809,9 @@ class Desk:
         in turn. Votes play no part. There is no team
         miner: with no miner free the job waits in the queue -- never rejected for lack of miners
         -- until a miner is free or the client cancels."""
+        if self._beside(job):  # its own miner, whatever else it holds
+            own = self._available(job, beside=True)
+            return next((m for m in own if m.hotkey == job.target), None)
         free = self._available(job)
         if job.kind == "admission":
             return next((m for m in free if m.hotkey == job.target), None)
@@ -2809,7 +2858,7 @@ class Desk:
                 if job.state == "assigned" and a and now > a.accept_by_ms:
                     self._spawn(self._freeze_quietly, a.workspace)
                     m = self.miners.get(a.hotkey)
-                    if m is not None and m.after_cancel:
+                    if m is not None and m.after_cancel and not self._beside(job):
                         # the first job after a cancel, missed while the miner stopped the
                         # cancelled one: nobody is scored, nothing counted
                         m.after_cancel = False
@@ -2860,11 +2909,9 @@ class Desk:
         if self._heart is None:
             self._lease(now)
         with self._mut():
-            inflight = sum(
-                1
-                for j in self.jobs.values()
-                if j.state in ("assigning", "assigned", "working", "judging")
-            )
+            inflight = self._inflight()
+            # practice runs on spare places only: it never takes one a client job could use
+            spare = self._inflight(practice=True)
             reg = set(self.registered())
             for job in [
                 j
@@ -2875,21 +2922,27 @@ class Desk:
             ]:
                 if self._exhausted(job, reg):
                     self._end_exhausted(job)
+            # client work first: a practice job is routed after every client and entry-test job
             queued = sorted(
-                (j for j in self.jobs.values() if j.state == "queued"), key=lambda j: j.created_ms
+                (j for j in self.jobs.values() if j.state == "queued"),
+                key=lambda j: (j.kind == "practice", j.created_ms),
             )
             plan: list[tuple[Job, Miner]] = []
             for job in queued:
-                if inflight >= self.max_inflight:
-                    break
+                if (spare if job.kind == "practice" else inflight) >= self.max_inflight:
+                    continue
                 if self.hold and job.kind == "client":
                     continue  # on hold, no client job is handed to a miner
                 m = self.route(job)
                 if m is None:
                     continue
-                m.job, job.state = job.job, "assigning"
+                if not self._beside(job):
+                    m.job = job.job
+                job.state = "assigning"
                 plan.append((job, m))
-                inflight += 1
+                spare += 1
+                if job.kind != "practice":
+                    inflight += 1
         with self._lock:
             stalled = [
                 (j, j.attempts[-1])
@@ -2911,12 +2964,8 @@ class Desk:
 
     def _want(self, now: int) -> int:
         """How many jobs to claim now: one per free admitted miner, after the held jobs, within
-        ``max_inflight``."""
-        inflight = sum(
-            1
-            for j in self.jobs.values()
-            if j.state in ("assigning", "assigned", "working", "judging")
-        )
+        ``max_inflight`` (practice jobs take none of it)."""
+        inflight = self._inflight()
         held = sum(1 for j in self.jobs.values() if j.state == "queued" and j.kind == "client")
         reg = set(self.registered())
         free = sum(
@@ -2931,6 +2980,17 @@ class Desk:
             and now - m.cancelled_ms >= self.cancel_cooloff_s * 1000
         )
         return max(0, min(free - held, self.max_inflight - inflight - held))
+
+    def _inflight(self, *, practice: bool = False) -> int:
+        """Inside a mutation: the jobs being granted, worked or judged -- client and entry-test
+        jobs only, unless ``practice``. ``max_inflight`` bounds the client work; a practice job
+        holds none of it, and is handed out only while the count with practice is under it."""
+        return sum(
+            1
+            for j in self.jobs.values()
+            if j.state in ("assigning", "assigned", "working", "judging")
+            and (practice or j.kind != "practice")
+        )
 
     def _lease(self, now: int) -> None:
         """Renew the lease on every claimed job not yet done (the platform re-queues a job whose
@@ -3280,7 +3340,8 @@ class Desk:
             return
         now = self.now_ms()
         with self._mut():
-            if job.state != "assigning" or m.job != job.job:
+            held = bool(m.key_id) if self._beside(job) else m.job == job.job
+            if job.state != "assigning" or not held:
                 # cancelled, or the miner left, while the workspace was being made
                 self._spawn(self._freeze_quietly, ws)
                 if m.job == job.job:

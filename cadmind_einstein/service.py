@@ -13,14 +13,16 @@ the metagraph):
   may: :meth:`.desk.Desk._waitlist`), and a refused or revoked one 403 with the operator's reason;
 - ``POST /v1/jobs/work`` -- the miner's assignment, if any (poll every few seconds: it is also how
   the validator knows the miner is alive), and ``cancelled``: the id of its last job when the
-  client cancelled it (stop working on it; said until the miner accepts another job);
+  client cancelled it (stop working on it; said until the miner accepts another job), and
+  ``practice_job``: a practice job it asked to build beside its client work (``parallel``);
 - ``POST /v1/jobs/accept {job}``, ``POST /v1/jobs/submit {job, workspace, digest, summary?,
   setup?, host_refused?}``
   (410 for a job its client cancelled; ``summary``: the builder's words on what blocks delivery;
   ``host_refused`` (``{code, why}`` or its why): the builder stopped because the platform refused
   its Watt runs' results, which the validator's own guard run then reproduces);
 - ``POST /v1/miners/admission`` -- its entry test, a job assigned to it alone;
-- ``POST /v1/practice`` -- a practice job on a public brief (never scored; :mod:`.practice`), and
+- ``POST /v1/practice {parallel?}`` -- a practice job on a public brief (never scored;
+  :mod:`.practice`; ``parallel``: built beside the miner's client work, holding no job slot), and
   ``GET /v1/practice`` (signed, no body) -- its practice results, grouped by the ``setup`` label
   its submits carried (``submit``'s optional ``setup``);
 - ``POST /v1/miners/receipt`` -- its jobs, their points, its weight (the sum of its points over 7
@@ -715,7 +717,9 @@ def serve(
                     elif self.path == "/v1/miners/admission":
                         self._send(200, desk.admission(hk))
                     elif self.path == "/v1/practice":
-                        self._send(200, desk.practice(hk))
+                        # ``parallel``: built beside the miner's client work, by a builder of
+                        # its own (the practice job holds no job slot)
+                        self._send(200, desk.practice(hk, parallel=body.get("parallel") is True))
                     elif self.path == "/v1/miners/stats":
                         if stats is None:
                             self._send(404, {"error": "no stats here"})
