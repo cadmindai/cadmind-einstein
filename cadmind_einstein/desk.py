@@ -569,6 +569,12 @@ class Job:
     """a remix's original miners, from the claim (:func:`_credit_of`): ``{job, hotkey}``, each the
     delivered round of the original that miner built. Never in the miner's ``work``; recorded with
     the job, never scored. Empty on most jobs."""
+    lineage: list[str] = field(default_factory=list)
+    """the project's earlier versions, from the claim (:func:`_lineage_of`): the platform's job ids
+    of every round before this one (its ``parent_job_id`` chain, nearest first). The copy check
+    never compares this job's output with theirs: a round may rebuild what an earlier version had
+    (a client undoing a change), and those versions are in its seed's history. Empty on most jobs
+    (and on jobs stored before it)."""
     practice: dict[str, Any] = field(default_factory=dict)
     """a practice job's ``title`` and ``reference_job`` (the delivered version of the brief, voted
     beside the miner's result), from the platform's practice brief. Empty on every other job."""
@@ -609,6 +615,23 @@ def _credit_of(value: Any) -> list[dict[str, str]]:
         good = isinstance(hotkey, str) and HOTKEY.match(hotkey)
         if isinstance(job, str) and job and len(job) <= 80 and good:
             out.append({"job": job, "hotkey": hotkey})
+    return out
+
+
+LINEAGE_MAX = 64
+"""the most earlier versions a claim's ``lineage`` may name: more is no project's history"""
+
+
+def _lineage_of(value: Any) -> list[str]:
+    """A claim's ``lineage``: a list of job ids (short non-empty strings; anything else in it is
+    dropped), dropped whole past :data:`LINEAGE_MAX`. Only the platform's claim reaches this, over
+    the queue key: no miner or client writes it."""
+    if not isinstance(value, list) or len(value) > LINEAGE_MAX:
+        return []
+    out: list[str] = []
+    for job in value:
+        if isinstance(job, str) and job and len(job) <= 80 and job not in out:
+            out.append(job)
     return out
 
 
@@ -2280,6 +2303,7 @@ class Desk:
                 old.continuation = _continuation_of(body.get("continuation"))
                 old.calibration = _calibration_of(body.get("calibration"))
                 old.credit = self._credit_checked(job_id, body.get("remix_credit"))
+                old.lineage = _lineage_of(body.get("lineage"))
                 old.state, old.result = "queued", {}
                 old.queued_ms = self.now_ms()
                 if job_id in self._outbox:
@@ -2312,6 +2336,7 @@ class Desk:
                 continuation=_continuation_of(body.get("continuation")),
                 calibration=_calibration_of(body.get("calibration")),
                 credit=self._credit_checked(job_id, body.get("remix_credit")),
+                lineage=_lineage_of(body.get("lineage")),
             )
         return self.status(job_id)
 
@@ -4153,6 +4178,7 @@ class Desk:
                     on_pair=self._watch_pair,
                     coldkey=cold,
                     origins=origins,
+                    lineage=job.lineage,
                 )
                 self._remember_copy(self.copies.recent[-1])
                 outcome.copy_of = str(copy["job"]) if copy else ""

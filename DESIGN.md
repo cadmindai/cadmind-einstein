@@ -457,7 +457,12 @@ output (the last `--copy-window`, 500) of **another** hotkey when the Watt diges
 identical; when their normalised features are identical (a small project is compared this way, not skipped); or,
 when both have at least `--copy-min-features` (8) distinctive features, when the **containment** -- the share of the
 smaller one's distinctive features found in the other -- reaches `--copy-containment` (0.7). Containment rather
-than Jaccard: a copy padded with unrelated material still contains its victim.
+than Jaccard: a copy padded with unrelated material still contains its victim. Never compared: another attempt
+at the same job, an output of a round that started from the same project, and an output of an **earlier version
+of the same project** -- the claim's `lineage` names those versions' jobs (the platform's revision chain). A
+round may rebuild what an earlier version had, a client undoing the last change, and those versions are in its
+seed's history: they are its project's own past, not another job's work. Pairs not compared are not in the
+hourly report.
 
 On 35 independent builds of 13 briefs by agents using the same primer, same-brief containment stayed at or below
 0.34 (0.16 with the common set); copies disguised by comments, renames, reordering, dead statements, padding or

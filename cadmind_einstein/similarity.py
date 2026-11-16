@@ -28,7 +28,9 @@ with only comments, layout or names changed, at any size); or, when both have at
 distinctive features found in the other -- reaches ``containment``. Containment, not Jaccard: a
 copy padded with unrelated material still contains its victim. An output with fewer distinctive
 features than ``min_features`` is compared by its normalised digest only (a few shared features
-prove nothing either way)."""
+prove nothing either way). Never compared: another attempt at the same job, an output that
+started from the same project (``origins``), and an output of an earlier version of the same
+project (``lineage``, the claim's revision chain)."""
 
 from __future__ import annotations
 
@@ -403,14 +405,17 @@ class CopyCheck:
         coldkey: str = "",
         remember: bool = True,
         origins: Iterable[str] = (),
+        lineage: Iterable[str] = (),
     ) -> dict[str, object] | None:
         """The closest other-hotkey output this one copies, or None; then remember this one.
         ``on_pair`` hears every comparison made -- its similarity, containment, the distinctive
         sizes and the reason -- for calibrating the thresholds; it changes no verdict.
         ``origins`` names what this attempt started from (:attr:`Entry.origins`): an output that
-        shares one is not compared."""
+        shares one is not compared. ``lineage`` names the job ids of the project's earlier versions:
+        their outputs are not compared either."""
         feats = sh.features if isinstance(sh, Fingerprint) else sh
         began = frozenset(o for o in origins if o)
+        earlier = frozenset(j for j in lineage if j)
         found: dict[str, object] | None = None
         best = -1.0
         for e in list(self.recent):
@@ -425,6 +430,12 @@ class CopyCheck:
                 # features subtracted, what is left of a small round (an assembly) is the natural
                 # answer, identical for every builder (2026-11-08: a round after a round that never
                 # delivered, both from the same kept version, flagged as a copy)
+                continue
+            if e.job in earlier:
+                # nor is an earlier version of the same project: a round may rebuild what an earlier
+                # version had (the client undoing a change the last round made), and those versions
+                # are in its seed's history; only the seed's own features are subtracted, so the
+                # older version's builder would otherwise be its victim
                 continue
             identical = bool(digest) and digest == e.digest
             cmp = self.compare(feats, e.features, base=base, coldkeys=(coldkey, e.coldkey))

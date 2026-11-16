@@ -7,6 +7,18 @@ All notable changes to this project are listed here. The format follows
 
 ## [Unreleased]
 
+### Fixed
+
+- **A round that rebuilds an earlier version of its own project is no copy.** The copy check subtracted only the
+  seed's features (the last version), so a round asked to undo what the last round changed -- an honest builder
+  handing in what an earlier version had -- was judged a copy of that earlier version's output, by another hotkey,
+  while it was still in the window: the attempt scored 0 and counted toward the copy limit. The platform's claim
+  now names the project's earlier versions (`lineage`: a list of job ids, at most 64, dropped whole past that),
+  the validator keeps it with the job, and the copy check never compares an output with theirs (as it never
+  compares attempts at the same job, or rounds started from the same project); those pairs are not in the hourly
+  `watch.copy_pairs`. A claim without `lineage` (an older platform) is checked as before, and jobs stored before
+  the field load with none.
+
 ## [0.6.18] - 2026-11-16
 
 ### Added
