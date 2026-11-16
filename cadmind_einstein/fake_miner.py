@@ -238,16 +238,11 @@ class Mcp:
 
     def call(self, tool: str, **args: Any) -> Any:
         res = self._rpc("tools/call", {"name": tool, "arguments": args})
-        text = "".join(
-            c.get("text", "") for c in res.get("content") or [] if c.get("type") == "text"
-        )
-        try:
-            out = json.loads(text)
-        except ValueError:
-            out = {"text": text}
+        texts = [c.get("text", "") for c in res.get("content") or [] if c.get("type") == "text"]
+        text = "".join(texts)
         if res.get("isError"):
             raise RuntimeError(f"{tool}: {text[:300]}")
-        return out
+        return answer_of(texts)
 
     def watt(self, ws: str, command: str, **args: Any) -> Any:
         """A run's full JSON (`detail`: the MCP tools answer an agent short text by default). A run
@@ -260,6 +255,23 @@ class Mcp:
         if why:
             raise HostRefusedError(why)
         return out
+
+
+def answer_of(texts: list[str]) -> Any:
+    """A tool's answer from its text blocks: the first that is a JSON object (the platform may put
+    a notice beside it, as a block of its own), else the text itself as ``{"text": ...}``."""
+    for t in texts:
+        try:
+            out = json.loads(t)
+        except ValueError:
+            continue
+        if isinstance(out, dict):
+            return out
+    joined = "".join(texts)
+    try:
+        return json.loads(joined)
+    except ValueError:
+        return {"text": joined}
 
 
 class HostRefusedError(Exception):

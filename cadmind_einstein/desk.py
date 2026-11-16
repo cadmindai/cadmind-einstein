@@ -820,6 +820,8 @@ class Desk:
         """told (job, builder's hotkey) once the platform took a delivered, charged result: the
         reviewer's queue (:mod:`.votes`)"""
         self.cancel_cooloff_s, self.gate_run_s = cancel_cooloff_s, gate_run_s
+        self._full_refused = False
+        """the platform or bench refused the gate's ``full`` once: not asked again (`_guard_run`)"""
         self.judge_max_retries, self.judge_give_up_s = judge_max_retries, judge_give_up_s
         self._gate_stop: dict[str, threading.Event] = {}
         """per job being judged: set to stop its guard run (a cancel)"""
@@ -3645,6 +3647,43 @@ class Desk:
         quotas, the platform's or Watt's load), never the miner's."""
         return e.ours or e.status in (0, 408, 429) or e.status >= 500 or e.code in OURS_BUSY
 
+    def _guard_run(
+        self,
+        fork: str,
+        full: bool,
+        started: Callable[[str], None],
+        stop: threading.Event,
+    ) -> dict[str, Any]:
+        """The gate's ``watt report`` on ``fork``: the files only when the miner's record is a full
+        guard (``full``), else the guard and the files. The guard is asked for in full (``full``,
+        every mutant): only a full record proves a design, and Watt's bench runs one by itself only
+        where it is set to (``WATT_GUARD_FULL``). A platform or bench that refuses ``full`` (an
+        older platform, an account that is not the operator's) is asked the earlier way, and not
+        asked for ``full`` again."""
+        if full:
+            args: dict[str, Any] = {}
+        elif self._full_refused:
+            args = {"mutate": True}
+        else:
+            args = {"mutate": True, "full": True}
+        try:
+            return self.platform.run(
+                fork, "report", args, budget_s=self.gate_run_s, on_run=started, stop=stop
+            )
+        except PlatformError as e:
+            if "full" not in args or e.status not in (400, 403, 422):
+                raise
+            self._full_refused = True
+            self.log(f"gate: full guard refused ({e.status} {e.code}): asking the earlier way")
+            return self.platform.run(
+                fork,
+                "report",
+                {"mutate": True},
+                budget_s=self.gate_run_s,
+                on_run=started,
+                stop=stop,
+            )
+
     def _status(self, fork: str) -> dict[str, Any]:
         return _status_of(self.platform.run(fork, "status", {}))
 
@@ -3765,14 +3804,7 @@ class Desk:
                     with self._mut():
                         a.gate_run = ""
             if run is None:
-                run = self.platform.run(
-                    fork,
-                    "report",
-                    {} if full else {"mutate": True},
-                    budget_s=self.gate_run_s,
-                    on_run=started,
-                    stop=stop,
-                )
+                run = self._guard_run(fork, full, started, stop)
         finally:
             if jid:
                 with self._lock:

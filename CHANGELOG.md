@@ -29,6 +29,11 @@ All notable changes to this project are listed here. The format follows
 - **Validator: practice never takes a client job's place.** Practice jobs counted toward `--max-inflight`, so an
   open practice job could keep a client job from being claimed or handed out. They no longer count: one is handed
   out only after the queued client work and while the count with practice is under the limit.
+- **The gate asks for the full guard.** The validator's guard run asks Watt for every mutant (`full`), so a design is
+  proved in full even on a Watt bench not set to run the full guard by itself. A platform or bench that refuses
+  `full` is asked the earlier way, once, and not asked for it again.
+- **The scripted miner reads a run's answer beside a notice.** `fake_miner` took the platform's notice blocks as part
+  of the run's JSON and logged every run as failed; it now reads the first block that is a JSON object.
 
 ## [0.6.17] - 2026-11-16
 
