@@ -67,8 +67,9 @@ signed link that expires. It is a zip:
 | `facts.json` | structured fields only: the requirements (id, level, statement, verdict, provenance kind: client, cite, standard, convention, decision, estimate, assumed), world items (name, kind, fidelity `box` or `shaped`, cited), parts (counts, overall size, materials), decisions (counts by who decided and status), the guard summary, `flags.injection_suspect`; from format `cadmind-review-facts/2`, the **function evidence** (`function`, below); in later formats, `assumptions` (what the designer decided in the client's place) and `assembly` (how each thing is kept, and the cables). A judge that does not read a section has it withheld from the model |
 | `client.json` | the client's words: the brief, the answers, the change requests, the stated making method |
 
-Never in a bundle: the project's `src/` and `tests/` (the miner's work), Watt's internals, client photos, the
-client's identity, the job id, the builder's hotkey. Third-party validators receive bundles of **public projects
+Never in a bundle: the project's `src/` and `tests/` (the miner's work), Watt's internals, the client's identity,
+the job id, the builder's hotkey. Client photos are never in a third party's bundle; our validator's carries them
+(below). Third-party validators receive bundles of **public projects
 only**. Do not redistribute bundles: they are the clients' projects, lent to you for one review.
 
 **The function evidence** (`facts.function`, format 2) is Watt's own word on whether the device works, never a
