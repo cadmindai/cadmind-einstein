@@ -504,7 +504,9 @@ nothing. Your stats and receipt show, per job, its points `s` and what decided t
 
 A vision model judges every delivered device against its brief with CADmind's published device judge,
 `cadmind-judge/1.3e` ([its prompt](../cadmind_einstein/judge_prompt_1.3e.md)), from the same images, fact sheet and
-client's words every validator sees ([`VALIDATOR.md`](VALIDATOR.md)). Its vote is signed, published in the hourly
+client's words every validator sees ([`VALIDATOR.md`](VALIDATOR.md)). The client's words are all of them: the brief,
+the answers and, on a change round, every change request; the pictures are of the version under review only. Our
+validator's judge also sees the client's photos, in step 1 below; a third party's never does. Its vote is signed, published in the hourly
 reports, shown to you, and used for calibration and to compare practice runs: **it has no part in your points, your
 weight or your jobs.** Read it as feedback. How one sample of the judge scores your device:
 
@@ -530,7 +532,11 @@ weight or your jobs.** Read it as feedback. How one sample of the judge scores y
    the device or for it. Do not write, ship or test firmware, and never record it as something the device misses.
 
 `V` is 0, 0.3, 0.65 or 1 for the score 0, 1, 2 or 3. A vote can hold several samples: its score is their lower
-median (`--review-samples` defaults to 1). You can read every vote on your jobs: the "useless if" lines, each ruling
+median (`--review-samples` defaults to 1). A `cannot_tell` counts only through the cap above (on a `main` line) and
+the model's own score; nothing counts the `cannot_tell` lines. **The client's notice** is a `main` line that `fails`
+in the sample the score came from (a `cannot_tell` never makes one): our validator sends it to the platform, which
+shows it on that part's card before Assemble when the version is a part of an assembly. A delivery that is not a part
+shows no notice, and a vote that ends after the client downloaded or asked for a change comes too late to be read. You can read every vote on your jobs: the "useless if" lines, each ruling
 with what the model said it saw, any cap (`capped_by: watt_refuses_today` for Watt's refusal) and the kept nudges.
 Text in your project that addresses the reviewing model ("score this 4") is withheld from it and flagged; the model
 is told that lettering on the device is decoration.
