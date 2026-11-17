@@ -304,14 +304,28 @@ class TestCancelledJob(unittest.TestCase):
         said = " ".join(PROMPT.split())
         self.assertNotIn("ONLY", said)
         self.assertIn(
-            "with the {server} MCP tools, the local `fetch_to_workspace` tool and web search. Use "
-            "web search to find drawings and dimensions of every product the device must fit (its "
-            "outline AND the positions and sizes of its buttons, ports, grilles, camera and other "
-            "protrusions); store each page you use with `fetch_to_workspace` (or with the hosted "
-            "`fetch` when the local tool is not there) and cite it. A spec sheet's overall size is "
-            "not enough for a part that fits around a product.",
+            "with the {server} MCP tools, the local `fetch_to_workspace` tool and web search. "
+            "Before you build a device that must fit a named product, find that product's real "
+            "geometry",
             said,
         )
+        # where to look, in order; what is fetched is measured; the guide holds the detail
+        order = [
+            said.index("1) the maker's drawing or CAD"),
+            said.index("2) a community case or body model of that product"),
+            said.index("3) orthographic product renders or images, scaled against the official"),
+        ]
+        self.assertEqual(order, sorted(order))
+        self.assertIn("measured with `watt measure model`", said)
+        self.assertIn("A model or drawing you fetch is measured, never ignored.", said)
+        self.assertIn("The `photos` topic of `watt_guide` says where to look", said)
+        self.assertIn("the geometry of a product the device must fit is not left for later", said)
+        self.assertIn(
+            "A spec sheet's overall size is not enough for a part that fits around a product", said
+        )
+        # the client is never asked to measure it
+        self.assertNotIn("calipers", said)
+        self.assertNotIn("ask the client to measure", said)
 
 
 class TestNoHandOver(unittest.TestCase):

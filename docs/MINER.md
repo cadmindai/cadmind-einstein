@@ -383,13 +383,17 @@ assumption you build on, why, and what it affects -- and may answer while you wo
   The platform re-runs that check with the part imported at its digest; if it passes, the request is refused
   (`change_unfounded`). An accepted request ends the round waiting for the client to accept a change of that part.
   Otherwise, when the parts cannot be assembled, reject the job (`not-capable`) and say why.
-- **Find the dimensions of what the device fits.** When a size the fit hangs on is known only to more than a few
-  tenths of a mm and fit is what the client stressed: first measure a reference model of the product (the `photos`
-  topic, `watt measure model`), then ask the client to measure it (ruler or calipers, naming each number), and only then design from a
-  drawing (to-scale community drawings, case and accessory makers' templates), stored and cited with its stated
-  tolerance; never default to the loose option. Asking is an open client decision; with `no_questions`, an agent
-  decision stating the bound you designed to when the need is met across that whole range, else a missed need, as
-  above. Never reject for missing data alone, and never guess silently. Each question says what each option costs in
+- **Find the real geometry of what the device fits, before you build.** For a device that must fit a named product,
+  look in this order: the maker's drawing or CAD (Apple publishes dimensioned drawings of its devices; board makers
+  publish STEP files and mechanical PDFs); a community case or body model of that product (Printables models download
+  without login), measured with `watt measure model`; orthographic product renders or images, scaled against the
+  official overall size and read with `view_image`. A model or drawing you fetch is measured, never ignored; store and
+  cite what you use. The `photos` topic of `watt_guide` says where to look and how to read each. "Fetch only what the
+  first sketch needs" does not apply to that geometry, and the client is not asked to measure it. When no source
+  gives a size the fit hangs on, design to a bounded estimate only if the need is met across its whole range, else
+  it is a missed need, as above; never default to the loose option. The judge (1.3f) sees whether each of the
+  product's sizes and places was measured, cited or guessed, and a precise fit resting on guesses is not met. Never
+  reject for missing data alone, and never guess silently. Each question says what each option costs in
   plain numbers, and a limit that defines the client's stated priority is theirs to set (or the strictest reasonable
   reading).
 - **Reject a brief that asks for nothing physical.** A greeting, a test word, a note about the client, or a question
