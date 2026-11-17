@@ -249,6 +249,7 @@ class MinerStats:
         c = _empty()
         # a void rejection (a confirmed decline, or the operator's) is not counted as one
         void = {o.job for o in outcomes if o.hotkey == hotkey and o.kind == "reject" and o.void}
+        void_copy = {o.job for o in outcomes if o.hotkey == hotkey and o.kind == "copy" and o.void}
         with self.desk._lock:  # noqa: SLF001 -- the desk's own lock, read only
             for j in self.desk.jobs.values():
                 last = j.attempts[-1] if j.attempts else None
@@ -263,7 +264,7 @@ class MinerStats:
                     elif a.kind == "gate":
                         c["gate_failed"] += 1
                     elif a.kind == "copy":
-                        c["copies"] += 1
+                        c["copies"] += 0 if j.job in void_copy else 1
                     if (
                         a is last
                         and a.kind in ("gate", "timeout")

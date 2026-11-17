@@ -2011,31 +2011,59 @@ class Desk:
         self.tick()
         return out
 
-    def void(self, job_id: str, reason: str) -> dict[str, Any]:
+    def void(self, job_id: str, reason: str, kind: str = "reject") -> dict[str, Any]:
         """The operator voids every rejection of a client job (a miner rightly
         declined briefs that said nothing to build, and each still scored 0): each counts for
         nothing from now on -- out of its miner's record and weight -- and is taken out of the
         rejection counts (telemetry, :meth:`enforce`; one another miner had overturned is no longer
         counted overturned). Saved with the outcome, so a restart and a report's recompute agree.
         Only a rejection still in the ledger's window can be voided; voiding twice changes nothing.
-        Deliveries and other failures are never touched."""
+        Deliveries and other failures are never touched.
+
+        ``kind="copy"``: the copy verdicts of the job instead (the copy check judged an honest
+        output a copy): each counts for nothing, and is taken out of its miner's copy count (the
+        abuse policy and the stats) the same way."""
         why = _clean(reason, REASON_MAX)
         if not why:
             raise DeskError("a void says why, for the record")
+        if kind not in ("reject", "copy"):
+            raise DeskError("a void is of rejections (reject) or of copy verdicts (copy)")
         job_id = str(job_id or "")
+        noun = "rejection" if kind == "reject" else "copy verdict"
         with self._mut():
-            mine = [o for o in self.ledger.outcomes if o.job == job_id and o.kind == "reject"]
+            mine = [o for o in self.ledger.outcomes if o.job == job_id and o.kind == kind]
             if not mine:
-                raise DeskError("no rejection of that job in the record", 404)
-            done = self._void(job_id, f"operator: {why}", self._cmap())
+                raise DeskError(f"no {noun} of that job in the record", 404)
+            if kind == "reject":
+                done = self._void(job_id, f"operator: {why}", self._cmap())
+            else:
+                done = self._void_copies(job_id, f"operator: {why}")
             out = {
                 "job": job_id,
+                "kind": kind,
                 "voided": [{"hotkey": o.hotkey, "ended_ms": o.ended_ms} for o in done],
                 "already_void": len(mine) - len(done),
             }
         hks = ", ".join(sorted({o.hotkey for o in done})) or "none new"
-        self.log(f"job {job_id}: rejections voided by the operator ({hks}): {why}")
+        self.log(f"job {job_id}: {noun}s voided by the operator ({hks}): {why}")
         return out
+
+    def _void_copies(self, job_id: str, reason: str) -> list[JobOutcome]:
+        """Inside a mutation: void ``job_id``'s copy verdicts in the ledger and take each newly void
+        one out of its miner's copy count; a count a strike already acted on (``abuse_seen``) is
+        lowered with it, so no later count reads below zero."""
+        done = self.ledger.void(job_id, reason, ("copy",))
+        for o in done:
+            hk = o.hotkey
+            left = max(0, self.copied.get(hk, 0) - 1)
+            if left:
+                self.copied[hk] = left
+            else:
+                self.copied.pop(hk, None)
+            seen = self.abuse_seen.get(hk)
+            if seen is not None and int(seen.get("copies", 0)) > left:
+                seen["copies"] = left
+        return done
 
     def _void_confirmed(self, job: Job, cmap: Mapping[str, str]) -> list[JobOutcome]:
         """Inside a mutation, as ``job`` ends declined: when the decline is confirmed -- every

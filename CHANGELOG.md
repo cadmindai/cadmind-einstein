@@ -7,6 +7,15 @@ All notable changes to this project are listed here. The format follows
 
 ## [Unreleased]
 
+## [0.6.20] - 2026-11-17
+
+### Added
+
+- **The operator can void a wrong copy verdict.** `POST /v1/operator/void {job, reason, kind: "copy"}`
+  (`cadmind-einstein-operator void JOB --kind copy --reason ...`): the job's copy verdicts count for nothing, and
+  each is taken out of its miner's copy count (the abuse policy and the stats), as a voided rejection is. Without
+  `kind` it voids rejections, as before.
+
 ## [0.6.19] - 2026-11-16
 
 ### Fixed

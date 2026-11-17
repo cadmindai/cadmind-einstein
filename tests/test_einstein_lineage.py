@@ -10,7 +10,7 @@ import unittest
 from dataclasses import asdict
 from typing import Any
 
-from cadmind_einstein.desk import LINEAGE_MAX, Desk, _job_from, _lineage_of
+from cadmind_einstein.desk import LINEAGE_MAX, Desk, DeskError, _job_from, _lineage_of
 from cadmind_einstein.scoring import Ledger
 from cadmind_einstein.similarity import CopyCheck
 from tests.test_einstein import A, B, C, Clock, FakePlatform, wait_state
@@ -140,6 +140,23 @@ class TestDesk(unittest.TestCase):
         self.assertEqual(self.desk.jobs["v3"].lineage, [])
         self.assertEqual(st["attempts"][0]["kind"], "copy")
         self.assertEqual(self.desk.copied.get(B, 0), 1)
+
+    def test_the_operator_voids_a_wrong_copy_verdict(self) -> None:
+        self.rebuild()
+        self.assertEqual(self.desk.copied.get(B, 0), 1)
+        with self.assertRaises(DeskError):
+            self.desk.void("v3", "x", "pass")  # only rejections or copy verdicts
+        with self.assertRaises(DeskError) as e:
+            self.desk.void("v1", "x", "copy")  # no copy verdict there
+        self.assertEqual(e.exception.status, 404)
+        out = self.desk.void("v3", "it rebuilt its own project's earlier version", "copy")
+        self.assertEqual(([v["hotkey"] for v in out["voided"]], out["kind"]), ([B], "copy"))
+        self.assertEqual(self.desk.copied.get(B, 0), 0)
+        self.assertEqual(self.desk._abuse_counts(B)["copies"], 0)
+        copies = [o for o in self.desk.ledger.outcomes if o.job == "v3" and o.kind == "copy"]
+        self.assertTrue(copies and all(o.void.startswith("operator: ") for o in copies))
+        self.assertEqual(self.desk.void("v3", "twice", "copy")["already_void"], 1)
+        self.assertEqual(self.desk.copied.get(B, 0), 0)  # voiding twice: nothing
 
 
 if __name__ == "__main__":

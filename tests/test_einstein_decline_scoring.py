@@ -334,7 +334,11 @@ class TestTheRoute(_Rig):
         self.assertEqual(code, 0)
         self.assertEqual(
             call.call_args.args[2:],
-            ("POST", "/v1/operator/void", {"job": "e2c9eb59a084", "reason": "no device named"}),
+            (
+                "POST",
+                "/v1/operator/void",
+                {"job": "e2c9eb59a084", "reason": "no device named", "kind": "reject"},
+            ),
         )
 
 

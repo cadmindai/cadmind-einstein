@@ -770,7 +770,12 @@ def serve(
                     )
                 elif self.path == "/v1/operator/void":
                     self._send(
-                        200, desk.void(str(body.get("job") or ""), str(body.get("reason") or ""))
+                        200,
+                        desk.void(
+                            str(body.get("job") or ""),
+                            str(body.get("reason") or ""),
+                            str(body.get("kind") or "reject"),
+                        ),
                     )
                 elif self.path == "/v1/operator/admit":
                     hk = str(body.get("hotkey") or "")

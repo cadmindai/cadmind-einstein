@@ -103,9 +103,17 @@ def parser() -> argparse.ArgumentParser:
         action="store_true",
         help="give back its admission (only if it had passed its entry test)",
     )
-    p = sub.add_parser("void", help="make every rejection of a job count for nothing")
+    p = sub.add_parser(
+        "void", help="make every rejection (or copy verdict) of a job count for nothing"
+    )
     p.add_argument("job")
     p.add_argument("--reason", required=True, help="why, for the validator's log")
+    p.add_argument(
+        "--kind",
+        choices=("reject", "copy"),
+        default="reject",
+        help="what to void: its rejections (default) or its copy verdicts",
+    )
     p = sub.add_parser("launch-equal", help="the launch rule: on, off, or its status")
     p.add_argument("switch", choices=("on", "off", "status"))
     return ap
@@ -134,7 +142,11 @@ def main(argv: list[str] | None = None) -> int:
         )
     elif a.command == "void":
         code, out = call(
-            a.validator, token, "POST", "/v1/operator/void", {"job": a.job, "reason": a.reason}
+            a.validator,
+            token,
+            "POST",
+            "/v1/operator/void",
+            {"job": a.job, "reason": a.reason, "kind": a.kind},
         )
     elif a.command == "approve":
         code, out = call(a.validator, token, "POST", "/v1/operator/approve", {"hotkey": a.hotkey})
