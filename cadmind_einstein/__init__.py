@@ -28,5 +28,5 @@ def _spec(version: str) -> int:
     return 10000 * major + 100 * minor + patch
 
 
-__version__ = "0.6.20"
+__version__ = "0.6.21"
 __spec_version__ = _spec(__version__)

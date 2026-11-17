@@ -7,6 +7,8 @@ All notable changes to this project are listed here. The format follows
 
 ## [Unreleased]
 
+## [0.6.21] - 2026-11-17
+
 ### Changed
 
 - **Judge `cadmind-judge/1.3f`: a precise fit is not met on a guess.** 1.3f is 1.3e's prompt plus one rule: the fact
