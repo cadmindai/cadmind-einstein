@@ -585,7 +585,7 @@ line it cannot tell caps it at 2. From 1.3b, so is **Watt's refusal**: a fact sh
 version for a reason in the device (`function.today`: `deliverable` false and a `blocking.code`) caps it at 1; a change
 of Watt's guard rules, or Watt not being reachable, caps nothing. Replies are checked strictly; a malformed one is unavailable, never a score.
 
-**Versions, switched by configuration** (`--judge`, `Judge(version=...)`). The validators' is `cadmind-judge/1.3e`
+**Versions, switched by configuration** (`--judge`, `Judge(version=...)`). The validators' is `cadmind-judge/1.3f`
 (`judge.VALIDATOR_VERSION`):
 
 | version | tools | samples | aggregation | who runs it |
@@ -596,8 +596,9 @@ of Watt's guard rules, or Watt not being reachable, caps nothing. Replies are ch
 | `cadmind-judge/1.3b` | none | as 1.2b: a validator asks for `--review-samples`, 1 by default, and may set more (at least 2 valid, or 1 when one was asked) | as 1.2b, and a vote of one sample keeps that sample's valid nudges; adds Watt's refusal cap and the fact sheet's `assembly`, from which mounting and cables are ruled, not from the pictures | validators until 0.5.17; still accepted |
 | `cadmind-judge/1.3c` | none | as 1.3b | as 1.3b; adds each vendored part's own evidence (the fact sheet's `subprojects`) | validators until 1.3d; still accepted |
 | `cadmind-judge/1.3d` | none | as 1.3b | as 1.3c; adds one rule: firmware, software and programs are out of scope, never a defect and never a point (the device is judged as hardware) | validators until 1.3e; still accepted |
-| `cadmind-judge/1.3e` | none | as 1.3b | as 1.3d; adds one rule: a requirement's `roles` (the design checker's reading of what an item is for) weigh as measured facts about the model as declared, and `built_for` absent means no size was assumed | **validators**; the miner's self-review |
-| `cadmind-judge/1.3-tools`, `1.3b-tools`, `1.3c-tools`, `1.3d-tools`, `1.3e-tools` | as 1.2b-tools | 1 | as 1.2b-tools, on that version's prompt | never a validator |
+| `cadmind-judge/1.3e` | none | as 1.3b | as 1.3d; adds one rule: a requirement's `roles` (the design checker's reading of what an item is for) weigh as measured facts about the model as declared, and `built_for` absent means no size was assumed | validators until 1.3f; still accepted |
+| `cadmind-judge/1.3f` | none | as 1.3b | as 1.3e; adds one rule: a line about a precise fit to the client's named product is never `ok` on the fact sheet's word while the values it depends on are guessed (the fact sheet's `fit`: each size and place of a named product measured, cited, the client's or guessed) | **validators**; the miner's self-review |
+| `cadmind-judge/1.3-tools`, `1.3b-tools`, `1.3c-tools`, `1.3d-tools`, `1.3e-tools`, `1.3f-tools` | as 1.2b-tools | 1 | as 1.2b-tools, on that version's prompt | never a validator |
 
 The tools version reads the delivered project in a Watt workspace through an agent key. Its read-only rule is
 enforced by **our** client only (`judge_tools.ReadOnlyWatt` sends exactly four requests: write a request file under

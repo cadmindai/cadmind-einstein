@@ -503,7 +503,7 @@ nothing. Your stats and receipt show, per job, its points `s` and what decided t
 ### The validators' vote (shown, never scored)
 
 A vision model judges every delivered device against its brief with CADmind's published device judge,
-`cadmind-judge/1.3e` ([its prompt](../cadmind_einstein/judge_prompt_1.3e.md)), from the same images, fact sheet and
+`cadmind-judge/1.3f` ([its prompt](../cadmind_einstein/judge_prompt_1.3f.md)), from the same images, fact sheet and
 client's words every validator sees ([`VALIDATOR.md`](VALIDATOR.md)). The client's words are all of them: the brief,
 the answers and, on a change round, every change request; the pictures are of the version under review only. Our
 validator's judge also sees the client's photos, in step 1 below; a third party's never does. Its vote is signed, published in the hourly
@@ -817,7 +817,7 @@ routing or pay, and a failed one costs you nothing.
   validators' judge -- the same judge, prompt, rubric and sample count as a client delivery -- and so is the version
   that was delivered, under today's judge, so the two scores are comparable:
 
-      practice-3f2a01b4c5d6  "a wall key rack"  yours 2  delivered 2  (judge 1.3e)
+      practice-3f2a01b4c5d6  "a wall key rack"  yours 2  delivered 2  (judge 1.3f)
           reported  36.0 min  setup "my-setup-v2"
       setup "my-setup-v2": 4 run(s), 3 deliverable, mean 1.67 vs delivered 2 over 3 voted
 

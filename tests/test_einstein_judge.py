@@ -282,6 +282,8 @@ class TestVersionsAndDigests(unittest.TestCase):
                 "1.3d-tools",
                 "1.3e",
                 "1.3e-tools",
+                "1.3f",
+                "1.3f-tools",
             },
         )
         base, tools = jm.Judge("1.2b"), jm.Judge("1.2b-tools")
@@ -289,7 +291,7 @@ class TestVersionsAndDigests(unittest.TestCase):
             (base.version, tools.version), ("cadmind-judge/1.2b", "cadmind-judge/1.2b-tools")
         )
         self.assertNotEqual(base.digest(), tools.digest())
-        self.assertEqual(jm.Judge("1.3e").digest(), jm.Judge().digest())  # the default
+        self.assertEqual(jm.Judge("1.3f").digest(), jm.Judge().digest())  # the default
         # the tool budget is part of the tools judge (it is in the prompt), not of 1.2b
         self.assertNotEqual(tools.digest(), jm.Judge("1.2b-tools", tool_budget=8).digest())
         self.assertEqual(base.digest(), jm.Judge("1.2b", tool_budget=8).digest())
@@ -303,7 +305,7 @@ class TestVersionsAndDigests(unittest.TestCase):
             self.assertNotEqual(before, jm.Judge().digest())
         finally:
             jm.V_MAP[1] = old
-        self.assertEqual(jm.Judge("1.3e").digest(), jm.Judge().digest())  # the default
+        self.assertEqual(jm.Judge("1.3f").digest(), jm.Judge().digest())  # the default
         with self.assertRaises(ValueError):
             jm.Judge("1.1")
 
@@ -327,6 +329,7 @@ RELEASED_DIGESTS = {
     "1.3b": "sha256:8803a031601b5f4e3f5743064a2b3d5d649c6a35d4c43d17b5d3bec4a4efb23d",
     "1.3c": "sha256:a87a7d19cc45dace94dbef13145ba6cb935527cb41e3f1109ae54f8c91b40d78",
     "1.3d": "sha256:43fb91726eb775525a2e410d4ee5bcb7bc3d4a72892efa20ed41cc4328ea6a57",
+    "1.3e": "sha256:470b2db2f4b34b7025810916b8dd8392c606ff2ff90cb9eb03032536dd5ca324",
 }
 """The validators' released judges: adding a version must not move these."""
 
@@ -473,16 +476,18 @@ class TestJudge13(unittest.TestCase):
                 "1.3d-tools",
                 "1.3e",
                 "1.3e-tools",
+                "1.3f",
+                "1.3f-tools",
             ),
         )
-        self.assertEqual(jm.VALIDATOR_VERSION, "1.3e")
+        self.assertEqual(jm.VALIDATOR_VERSION, "1.3f")
 
     def test_its_own_prompt_file_and_digest(self) -> None:
         new, tools = jm.Judge("1.3"), jm.Judge("1.3-tools")
         self.assertEqual(new.version, "cadmind-judge/1.3")
         self.assertEqual(jm.VERSIONS["1.3"].prompt, "judge_prompt_1.3.md")
         digests = {jm.judge_digest(v) for v in jm.VERSIONS}
-        self.assertEqual(len(digests), 12)
+        self.assertEqual(len(digests), 14)
         self.assertNotEqual(tools.digest(), jm.Judge("1.3-tools", tool_budget=8).digest())
         self.assertEqual(set(jm.sections("1.3")), set(jm.SECTIONS))
         self.assertIn("NOT RELEASED", jm.prompt_text("1.3"))
@@ -979,7 +984,42 @@ class TestJudge13e(unittest.TestCase):
         self.assertNotEqual(jm.judge_digest("1.3e"), jm.judge_digest("1.3d"))
         self.assertIn("1.3d's prompt", new)
         self.assertEqual(jm.for_validator("1.3d").name, "1.3d")  # still selectable
-        self.assertEqual(jm.for_validator(jm.VALIDATOR_VERSION).name, "1.3e")
+        self.assertEqual(jm.for_validator("1.3e").name, "1.3e")
+
+
+class TestJudge13f(unittest.TestCase):
+    """1.3f: 1.3e plus one rule, a precise fit is not met on a guess (validators)."""
+
+    def test_one_paragraph_added_to_1_3e_and_its_own_digest(self) -> None:
+        new = (jm.PROMPT_DIR / "judge_prompt_1.3f.md").read_text()
+        old = (jm.PROMPT_DIR / "judge_prompt_1.3e.md").read_text()
+        self.assertEqual(jm.VERSIONS["1.3f"].prompt, "judge_prompt_1.3f.md")
+        self.assertEqual(jm.VERSIONS["1.3f-tools"].prompt, "judge_prompt_1.3f.md")
+        self.assertEqual(replace_fields(jm.VERSIONS["1.3f"]), replace_fields(jm.VERSIONS["1.3e"]))
+        self.assertEqual(
+            replace_fields(jm.VERSIONS["1.3f-tools"]), replace_fields(jm.VERSIONS["1.3e-tools"])
+        )
+        self.assertIn("Fit. The fact sheet's `fit`", jm.Judge("1.3f").system_prompt())
+        self.assertNotIn("Fit. The fact sheet", jm.Judge("1.3e").system_prompt())
+        # every section is 1.3e's word for word; the system section differs by the one paragraph
+        f, e = jm.sections("1.3f"), jm.sections("1.3e")
+        self.assertEqual(
+            {k: v for k, v in f.items() if k != "system"},
+            {k: v for k, v in e.items() if k != "system"},
+        )
+        [added] = [x for x in f["system"].split("\n\n") if x.startswith("Fit.")]
+        self.assertNotIn("\n", added)  # one paragraph
+        self.assertIn("never `ok`", added)
+        self.assertIn("guessed", added)
+        self.assertEqual(f["system"].replace("\n\n" + added, ""), e["system"])
+        # outside the sections, only the header (the file's title and what it adds) differs
+        body = lambda t: t[t.index("This file IS the judge's prompt.") :]  # noqa: E731
+        self.assertEqual(body(new).replace("\n\n" + added, ""), body(old))
+        self.assertIn("1.3e's prompt", new)
+        self.assertNotEqual(jm.judge_digest("1.3f"), jm.judge_digest("1.3e"))
+        self.assertEqual(jm.judge_digest("1.3e"), RELEASED_DIGESTS["1.3e"])
+        self.assertEqual(jm.for_validator(jm.VALIDATOR_VERSION).name, "1.3f")
+        self.assertEqual(jm.for_validator("1.3e").name, "1.3e")  # still selectable
 
 
 def replace_fields(v: jm.Version) -> tuple:

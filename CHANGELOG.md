@@ -7,6 +7,17 @@ All notable changes to this project are listed here. The format follows
 
 ## [Unreleased]
 
+### Changed
+
+- **Judge `cadmind-judge/1.3f`: a precise fit is not met on a guess.** 1.3f is 1.3e's prompt plus one rule: the fact
+  sheet's `fit` says, for each named product in the client's world, how many of its sizes and places were `measured`
+  (read off the product's own drawing or 3D model), `cited`, the `client`'s or `guessed`, the guessed ones by name, and
+  which fetched product models were never measured. A line about a precise fit to the client's product is never `ok` on
+  the fact sheet's word while the values it depends on are guessed: it is ruled from the pictures and that provenance,
+  `fails` or `cannot_tell` by the existing rules. Its own prompt, `judge_prompt_1.3f.md`; 1.3e's prompt and digest are
+  unchanged (now pinned in the tests), and `--judge 1.3e` is still accepted. 1.3f is the default for the validators'
+  vote and the miner's self-review.
+
 ## [0.6.20] - 2026-11-17
 
 ### Added
