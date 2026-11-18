@@ -410,6 +410,34 @@ def _full_draw(status: Mapping[str, Any]) -> bool:
     )
 
 
+REPORT_FOUND = 3
+"""how many of a failed gate run's errors its verdict quotes (what each found, shortened)"""
+
+
+def _run_errors(data: Any) -> tuple[list[str], str]:
+    """The errors a failed gate run reports (its ``diagnostics`` of severity ``error``): their
+    codes, and what the first few found (code, then the line, each cut short), for the verdict's
+    words. Watt's own words only; empty when it reports none."""
+    diags = data.get("diagnostics") if isinstance(data, Mapping) else None
+    errors = [
+        d
+        for d in diags or []
+        if isinstance(d, Mapping) and d.get("severity") == "error" and d.get("code")
+    ]
+    codes = sorted({str(d["code"]) for d in errors})
+    said: list[str] = []
+    for d in errors:
+        found = " ".join(str(d.get("found") or "").split())
+        line = f"{d['code']} {found[:160]}".strip()
+        if line not in said:
+            said.append(line)
+        if len(said) >= REPORT_FOUND:
+            break
+    more = len(errors) - len(said)
+    words = "; ".join(said) + (f"; and {more} more" if more > 0 else "")
+    return codes, words
+
+
 def _survivors(guard: Any) -> str:
     """The must requirements a refused guard run names unguarded, unproven, read or excused, for the
     verdict's words: the unguarded ones from its ``survivors``, every one from its per-requirement
@@ -4474,14 +4502,30 @@ class Desk:
                 "digest": digest,
             }
         if not run.get("ok") or not isinstance(guard, dict) or not guard or guard.get("scope"):
+            # named from what failed: the run's limit, else the errors its report found, else the
+            # guard's survivors, else the guard as a whole
             limit = stopped or str(run.get("limit") or "")
+            codes, found = _run_errors(data)
+            survivors = _survivors(guard)
             verdict["stage"] = "test"
-            verdict["error"] = (
-                "the validator's own mutation guard did not pass on this design"
-                + (f" (stopped: {limit})" if limit else "")
-                + _survivors(guard)
-            )
-            verdict["cause"] = {"stage": "test", "limit": limit}
+            if limit:
+                verdict["error"] = (
+                    f"the validator's own guard run stopped at its {limit} limit" + survivors
+                )
+            elif codes:
+                verdict["error"] = (
+                    f"the validator's own report run found errors in this design: {found}"
+                    + (f" (its mutation guard{survivors})" if survivors else "")
+                )
+            else:
+                verdict["error"] = (
+                    "the validator's own mutation guard did not pass on this design" + survivors
+                )
+            verdict["cause"] = {
+                "stage": "test",
+                "limit": limit,
+                **({"codes": codes[:8]} if codes else {}),
+            }
             if unproven:
                 return _not_reproduced(unproven)
             return verdict

@@ -160,6 +160,8 @@ class FakePlatform:
             weak=src.get("weak", False),
             draw=src.get("draw", ""),
             report_fails=src.get("report_fails", False),
+            report_errors=src.get("report_errors", []),
+            report_limit=src.get("report_limit", ""),
             stage=src.get("stage", "check"),
             diagnostics=src.get("diagnostics", []),
             as_delivered=src.get("as_delivered", []),
@@ -215,7 +217,12 @@ class FakePlatform:
                 return {"state": "done", "ok": False, "data": {"guard": guard}}
             if w.get("report_fails"):  # the guard passes but the delivery's files cannot be made
                 guard = {"digest": digest, "sampled": {"seed": "sha256:validator"}, "survivors": []}
-                return {"state": "done", "ok": False, "data": {"guard": guard}}
+                return {
+                    "state": "done",
+                    "ok": False,
+                    **({"limit": w["report_limit"]} if w.get("report_limit") else {}),
+                    "data": {"guard": guard, "diagnostics": w.get("report_errors", [])},
+                }
             w.update(deliverable=True, draw="sha256:validator")
             guard = {"digest": digest, "sampled": {"seed": "sha256:validator"}, "survivors": []}
             return {"state": "done", "ok": True, "data": {"guard": guard}}
@@ -973,6 +980,48 @@ class TestGateDraw(unittest.TestCase):
         a = self.desk.jobs["r3"].attempts[0]
         self.assertIn("did not pass", a.outcome)
         self.assertNotEqual(self.p.completed.get("r3", {}).get("label"), "delivered")
+
+    def test_a_report_that_fails_on_errors_names_them_not_the_guard(self) -> None:
+        """A run whose guard passed but whose report found errors (an assembly order that cannot
+        be built, found only when the delivery's files are made) says those errors, the first few
+        quoted, never that the guard did not pass."""
+        _, ws = self.submit("r6", weak=False)
+        way = "step {}: the lid goes in along -Z, but the clip is already in its way"
+        self.p.ws[ws].update(
+            report_fails=True,
+            report_errors=[
+                {"code": "W0248", "severity": "warning", "found": "a warning"},
+                *[
+                    {"code": "W0238", "severity": "error", "found": way.format(n)}
+                    for n in (4, 5, 6, 7)
+                ],
+            ],
+        )
+        st = wait_state(self.desk, "r6", ("queued", "done"))
+        self.assertEqual(st["result"]["label"], "not finished")
+        a = self.desk.jobs["r6"].attempts[0]
+        self.assertNotIn("mutation guard did not pass", a.outcome)
+        self.assertIn(
+            "the validator's own report run found errors in this design: W0238 step 4:", a.outcome
+        )
+        self.assertIn(way.format(6), a.outcome)
+        self.assertNotIn(way.format(7), a.outcome)
+        self.assertIn("and 1 more", a.outcome)
+        self.assertNotIn("W0248", a.outcome)
+        self.assertEqual(st["result"]["cause"], {"stage": "test", "limit": "", "codes": ["W0238"]})
+
+    def test_a_run_stopped_at_a_limit_names_the_limit(self) -> None:
+        _, ws = self.submit("r7", weak=False)
+        self.p.ws[ws].update(
+            report_fails=True,
+            report_limit="memory",
+            report_errors=[{"code": "W0004", "severity": "error", "found": "killed"}],
+        )
+        st = wait_state(self.desk, "r7", ("queued", "done"))
+        a = self.desk.jobs["r7"].attempts[0]
+        self.assertIn("the validator's own guard run stopped at its memory limit", a.outcome)
+        self.assertNotIn("W0004", a.outcome)
+        self.assertEqual(st["result"]["cause"]["limit"], "memory")
 
     def test_a_sound_design_passes_on_the_validators_own_draw(self) -> None:
         hk, ws = self.submit("r2", weak=False)
