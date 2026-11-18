@@ -7,6 +7,8 @@ All notable changes to this project are listed here. The format follows
 
 ## [Unreleased]
 
+## [0.6.22] - 2026-11-18
+
 ### Added
 
 - **The reference miner checks `watt status` at `DONE`.** An agent that ends with `DONE` on a workspace `watt status`
