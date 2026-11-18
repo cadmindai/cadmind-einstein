@@ -7,6 +7,18 @@ All notable changes to this project are listed here. The format follows
 
 ## [Unreleased]
 
+## [0.6.23] - 2026-11-19
+
+### Changed
+
+- **A failed gate run names what failed.** The verdict names, in order: the run's limit; the errors its report found
+  (their codes and the first few found lines, cut short; the codes also in the verdict's `cause.codes`); the guard's
+  survivors; and only then that the mutation guard did not pass. A report error was said to be a guard failure before.
+- **The gate's run budget follows the miner's own run.** The validator gives its guard run (and the files-only report
+  on a full record) the larger of `--gate-run-s` and 1.5 times the miner's longest `report --mutate` on the same
+  digest, capped by the new `--gate-run-max-s` (default 7200 s). A run stopped at Watt's own wall fails at once instead
+  of being run again at the same budget; a run that ran out of the validator's own budget is retried once at the cap.
+
 ### Changed
 
 - **The gate's time follows the design.** The validator's guard run gets `--gate-run-s` (1800), or 1.5 times the
