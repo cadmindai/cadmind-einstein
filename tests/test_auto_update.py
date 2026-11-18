@@ -387,6 +387,7 @@ class TestMinerLoop(Repo):
             mock.patch.object(agent_miner, "corrector", lambda *a, **k: None),
             mock.patch.object(agent_miner, "start_self_review", lambda *a, **k: None),
             mock.patch.object(agent_miner, "answers_round", lambda *a, **k: False),
+            mock.patch.object(agent_miner, "deliverable_round", lambda *a, **k: 0),
             mock.patch.object(agent_miner, "outcome", lambda *a, **k: ("submit", {"digest": "d"})),
             mock.patch.object(agent_miner, "send", send),
             # the agent CLI's own checks: no CLI here, and a test never calls a model

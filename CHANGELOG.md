@@ -7,6 +7,13 @@ All notable changes to this project are listed here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- **The reference miner checks `watt status` at `DONE`.** An agent that ends with `DONE` on a workspace `watt status`
+  does not call deliverable, with at least 5 minutes left, is sent back once with its stage and what to run (`watt
+  check` for errors; `watt test` or the final `report` with mutate otherwise), and the corrected run's `DONE` is the one
+  submitted. A certain gate failure becomes a fixable one. Asked by a miner.
+
 ## [0.6.21] - 2026-11-17
 
 ### Changed

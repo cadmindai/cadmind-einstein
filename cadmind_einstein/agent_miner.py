@@ -1329,6 +1329,78 @@ def answers_round(
     return made
 
 
+DELIVERABLE_CHECKS = 1
+"""How many times the builder is sent back when it wrote ``DONE`` on a workspace ``watt status``
+does not call deliverable (a miner's ask, 2026-11-18: a W0210 error went to the gate with 67
+minutes left)."""
+DELIVERABLE_NOTE = """You ended with a DONE line, but `watt status` on your workspace says it is \
+not deliverable (stage `{stage}`). The validator's gate refuses it as it stands: the round is \
+lost, not marked down. {what} Fix that, make the project deliverable again (the scoped guard, \
+then the one final `report` with mutate, and `watt status` deliverable), then end with your final \
+lines for the client and the DONE line of the digest `watt status` reports. You have about \
+{minutes} minutes."""
+DELIVERABLE_WHAT = {
+    "none": "`watt check` lists the errors.",
+    "check": "Nothing is built or tested on this digest: `watt build`, then `watt test`.",
+    "build": "Its tests have not run on this digest: `watt test`.",
+    "test": "Its guard is not recorded on this digest: the final `report` with mutate.",
+}
+
+
+def deliverable_round(
+    got: Build,
+    *,
+    job: str,
+    ws: str,
+    deadline_ms: int,
+    status: Callable[[], dict[str, Any] | None],
+    correct: sr.Correct,
+    cancelled: Callable[[], bool],
+    log: Callable[[str], None],
+    clock: Callable[[], float] = time.time,
+) -> int:
+    """Before the submit: when the builder wrote ``DONE`` and ``watt status`` says the workspace
+    is not deliverable, and time is left, the builder runs once more with what is missing (at most
+    :data:`DELIVERABLE_CHECKS` times): a certain gate failure becomes a fixable one. ``got.text``
+    becomes the corrected run's text when it ends with a ``DONE`` line. Returns the corrections
+    made. Never raises."""
+    made = 0
+    try:
+        while not (got.cancelled or cancelled()):
+            kind, body = outcome(job, ws, got.text)
+            if kind != "submit" or not body.get("digest") or body.get("host_refused"):
+                break
+            st = status()
+            if st is None:
+                log(f"{job}: deliverable check: skipped: no `watt status` answer")
+                break
+            if st.get("deliverable"):
+                if made:
+                    log(f"{job}: deliverable check: deliverable after {made} correction(s)")
+                break
+            stage = str(st.get("stage") or "none")
+            left = deadline_ms / 1000 - clock() - sr.SUBMIT_RESERVE_S if deadline_ms else 0.0
+            if made >= DELIVERABLE_CHECKS or left < ANSWERS_MIN_LEFT_S:
+                log(f"{job}: deliverable check: handed over as it is (stage {stage})")
+                break
+            log(f"{job}: deliverable check: stage {stage}, not deliverable: the builder runs again")
+            made += 1
+            note = DELIVERABLE_NOTE.format(
+                stage=stage,
+                what=DELIVERABLE_WHAT.get(stage, DELIVERABLE_WHAT["none"]),
+                minutes=max(1, int(left // 60)),
+            )
+            text, stopped = correct(note, left)
+            if stopped:
+                got.cancelled = True
+                break
+            if _DONE.search(text):
+                got.text = text
+    except Exception as e:  # noqa: BLE001 -- the check is the builder's own help, never its end
+        log(f"{job}: deliverable check: skipped: {type(e).__name__}: {str(e)[:200]}")
+    return made
+
+
 def corrector(
     a: argparse.Namespace,
     got: Build,
@@ -1875,6 +1947,17 @@ def main(argv: list[str] | None = None) -> int:
                 deadline_ms=deadline_ms,
                 no_questions=not asked and not (isinstance(work, dict) and work.get("style")),
                 export=functools.partial(sr.workspace_export, a.platform, agent_key, ws),
+                correct=again,
+                cancelled=cancel.is_set,
+                log=log,
+            )
+            got.cancelled = got.cancelled or cancel.is_set()
+            deliverable_round(
+                got,
+                job=job,
+                ws=ws,
+                deadline_ms=deadline_ms,
+                status=functools.partial(sr.workspace_status, a.platform, agent_key, ws),
                 correct=again,
                 cancelled=cancel.is_set,
                 log=log,

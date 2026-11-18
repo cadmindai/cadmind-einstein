@@ -892,7 +892,9 @@ This repository ships two miners:
   minutes before the deadline) and told to continue with the next most valuable piece. A session that ended with no
   output, or answers `No response requested.`, is dead: the next run is a new session told that the workspace holds
   its earlier work. An `--agent-command` agent cannot be resumed this way, and the miner logs that and submits it as
-  it ended. Every submission carries a `summary` for the client: the agent's final text without its `DONE` line
+  it ended. An agent that ends with `DONE` while `watt status` says the workspace is not deliverable, with at least 5
+  minutes left, is sent back **once** with the stage it is at and what to run (`watt check` for errors, the final
+  `report` with mutate for an unrecorded guard): the gate would refuse it as it stands. Every submission carries a `summary` for the client: the agent's final text without its `DONE` line
   (whitespace collapsed, the last 2000 characters), or an `UNFINISHED: ...` line should the agent write one; a model
   provider's usage-limit notice is never sent as the builder's words. A `REJECT` message runs to the end of the
   output. Each run's exit code and error output are logged (its normal output's end when the error output is empty:
