@@ -199,11 +199,19 @@ OURS_BUSY = (
 command, Watt busy, its rate, its quotas on the validator's own workspaces: our side, so the
 judgement is retried, never counted against the miner"""
 GATE_RUN_S = 1800.0
-"""the default budget of one validator guard run (``watt report --mutate``): past it the validator
-stops the run (freeing its lane for other judgements) and counts a gate timeout"""
-GATE_TIMEOUTS = 2
-"""gate timeouts (the budget, or Watt's own wall-clock stop) that fail an attempt; fewer are judged
-again later, since one slow run may be load on our side"""
+"""the least budget of one validator guard run (``watt report --mutate``): past its budget the
+validator stops the run (freeing its lane for other judgements)"""
+GATE_RUN_SCALE = 1.5
+"""a design whose miner's own guard run took longer gets this many times that run's time
+(:func:`_miner_run_s`): the validator's run draws its own mutants, so it builds some the miner's
+did not, and its own queue and machine start are counted too"""
+GATE_RUN_MAX_S = 7200.0
+"""the most one validator guard run is given, however long the miner's own took: half the job's
+deadline, so a slow design holds one of the validator's run lanes for two hours at most, and the
+first run, the one longer run and the retries' back-off stay within ``JUDGE_GIVE_UP_S``"""
+GATE_TRACE = ".watt/trace.jsonl"
+"""Watt's own record of the runs on a project (one line per command: its digest, its arguments,
+its wall time ``ms``), written by Watt alone and copied with a fork"""
 JUDGE_MAX_RETRIES = 20
 JUDGE_GIVE_UP_S = 4 * 3600.0
 """a judgement retried on our side this many times, or for this long since its first retry, ends the
@@ -305,8 +313,39 @@ def host_refusal(run: Any) -> str:
 
 
 class _GateTimeoutError(Exception):
-    """The validator's own guard run hit its budget (stopped by the validator) or Watt's wall-clock
-    limit: counted on the attempt; judged again, or failed at ``GATE_TIMEOUTS``."""
+    """The validator's own guard run did not finish: past the budget it was given (``budget_s``,
+    stopped by the validator), or stopped at Watt's own wall-clock limit (``wall``). It is run
+    again only with a larger budget (:meth:`Desk._judge_once`): a run as slow as before would be
+    stopped the same way."""
+
+    def __init__(self, message: str, *, budget_s: float, wall: bool = False) -> None:
+        super().__init__(message)
+        self.budget_s, self.wall = budget_s, wall
+
+
+def _miner_run_s(trace: bytes, digest: str) -> float:
+    """The longest whole guard run (``report`` or ``test`` with ``mutate``, no selection) that
+    Watt's trace records on ``digest``, in seconds; 0 when it records none."""
+    longest = 0.0
+    for raw in trace.splitlines():
+        try:
+            line = json.loads(raw)
+        except ValueError:
+            continue
+        if not isinstance(line, dict) or line.get("type", "cli") != "cli":
+            continue
+        args = line.get("args") if isinstance(line.get("args"), dict) else {}
+        if (
+            line.get("digest_after") != digest
+            or line.get("command") not in ("report", "test")
+            or str(args.get("mutate")).lower() != "true"
+            or any(args.get(k) not in (None, "", "None", "[]") for k in ("k", "only", "part"))
+        ):
+            continue
+        ms = line.get("ms")
+        if isinstance(ms, (int, float)) and not isinstance(ms, bool) and ms > 0:
+            longest = max(longest, float(ms) / 1000)
+    return longest
 
 
 @dataclass(frozen=True)
@@ -512,6 +551,7 @@ class Platform(Protocol):
     ) -> dict[str, Any]: ...
     def cancel_run(self, run: str) -> None: ...
     def export(self, ws: str) -> bytes: ...
+    def raw(self, ws: str, path: str) -> bytes: ...
     def delete(self, ws: str) -> None: ...
     def claim(self) -> dict[str, Any] | None: ...
     def lease(self, jobs: list[str], working: list[str] | None = None) -> dict[str, Any]: ...
@@ -584,6 +624,10 @@ class Attempt:
     gate_started_ms: int = 0
     """when ``gate_run`` started: a run taken up again keeps what is left of its budget"""
     gate_timeouts: int = 0
+    gate_budget_s: float = 0.0
+    """the budget the validator's guard run on this attempt is given (0: not set yet): the least
+    budget, or more for a design whose miner's own run was long, or the most after a run that did
+    not finish in less"""
     retries: int = 0
     """judgements retried on our side"""
     last_retry: str = ""
@@ -901,6 +945,7 @@ class Desk:
         second_opinion: SecondOpinion | None = None,
         cancel_cooloff_s: float = CANCEL_COOLOFF_S,
         gate_run_s: float = GATE_RUN_S,
+        gate_run_max_s: float = GATE_RUN_MAX_S,
         judge_max_retries: int = JUDGE_MAX_RETRIES,
         judge_give_up_s: float = JUDGE_GIVE_UP_S,
         on_delivered: Callable[[str, str], None] | None = None,
@@ -933,6 +978,8 @@ class Desk:
         self.cancel_cooloff_s, self.gate_run_s = cancel_cooloff_s, gate_run_s
         self._full_refused = False
         """the platform or bench refused the gate's ``full`` once: not asked again (`_guard_run`)"""
+        self.gate_run_max_s = max(gate_run_s, gate_run_max_s)
+        """the most one guard run is given (:meth:`_gate_budget`); never less than ``gate_run_s``"""
         self.judge_max_retries, self.judge_give_up_s = judge_max_retries, judge_give_up_s
         self._gate_stop: dict[str, threading.Event] = {}
         """per job being judged: set to stop its guard run (a cancel)"""
@@ -2837,6 +2884,7 @@ class Desk:
             "einstein": __version__,
             "deadline_s": self.deadline_s,
             "gate_run_s": self.gate_run_s,
+            "gate_run_max_s": self.gate_run_max_s,
         }
         if self.judge is not None:
             with contextlib.suppress(Exception):
@@ -4285,13 +4333,16 @@ class Desk:
         full: bool,
         started: Callable[[str], None],
         stop: threading.Event,
+        budget_s: float = 0.0,
     ) -> dict[str, Any]:
-        """The gate's ``watt report`` on ``fork``: the files only when the miner's record is a full
-        guard (``full``), else the guard and the files. The guard is asked for in full (``full``,
+        """The gate's ``watt report`` on ``fork``, waited for at most ``budget_s``
+        (:meth:`_gate_budget`): the files only when the miner's record is a full guard (``full``),
+        else the guard and the files. The guard is asked for in full (``full``,
         every mutant): only a full record proves a design, and Watt's bench runs one by itself only
         where it is set to (``WATT_GUARD_FULL``). A platform or bench that refuses ``full`` (an
         older platform, an account that is not the operator's) is asked the earlier way, and not
         asked for ``full`` again."""
+        budget_s = budget_s or self.gate_run_s
         if full:
             args: dict[str, Any] = {}
         elif self._full_refused:
@@ -4300,7 +4351,7 @@ class Desk:
             args = {"mutate": True, "full": True}
         try:
             return self.platform.run(
-                fork, "report", args, budget_s=self.gate_run_s, on_run=started, stop=stop
+                fork, "report", args, budget_s=budget_s, on_run=started, stop=stop
             )
         except PlatformError as e:
             if "full" not in args or e.status not in (400, 403, 422):
@@ -4311,13 +4362,38 @@ class Desk:
                 fork,
                 "report",
                 {"mutate": True},
-                budget_s=self.gate_run_s,
+                budget_s=budget_s,
                 on_run=started,
                 stop=stop,
             )
 
     def _status(self, fork: str) -> dict[str, Any]:
         return _status_of(self.platform.run(fork, "status", {}))
+
+    def _gate_ran_s(self, a: Attempt | None) -> int:
+        """How long the attempt's guard run has been going, in whole seconds (0: not known)."""
+        if a is None or not a.gate_started_ms:
+            return 0
+        return max(0, round((self.now_ms() - a.gate_started_ms) / 1000))
+
+    def _gate_max_s(self) -> float:
+        return max(self.gate_run_s, self.gate_run_max_s)
+
+    def _gate_budget(self, fork: str, digest: str, jid: str = "") -> float:
+        """The budget of the validator's guard run on ``fork``: ``gate_run_s``, or
+        ``GATE_RUN_SCALE`` times the miner's own guard run on this digest when that is longer
+        (Watt's trace in the fork, :func:`_miner_run_s`), at most ``gate_run_max_s``. A trace
+        that cannot be read gives the least budget: the miner's time is then unknown, never a
+        reason to fail."""
+        miner_s = 0.0
+        if digest:
+            try:
+                miner_s = _miner_run_s(self.platform.raw(fork, GATE_TRACE), digest)
+            except (PlatformError, ValueError, TypeError):
+                miner_s = 0.0
+        budget = min(self._gate_max_s(), max(self.gate_run_s, GATE_RUN_SCALE * miner_s))
+        self._event("gate-budget", jid, fork=fork, miner_s=round(miner_s), budget_s=round(budget))
+        return budget
 
     def _gate(self, fork: str, job: Job | None = None, a: Attempt | None = None) -> dict[str, Any]:
         """The Watt gate on the validator's fork of a frozen workspace.
@@ -4345,9 +4421,10 @@ class Desk:
            changes.) The validator's draw of a digest is the same on every run, so a design
            delivered before and submitted unchanged draws as it did then.
 
-        The guard run has a budget (``gate_run_s``): still going at it, the validator stops it --
-        freeing its lane for the other judgements -- and raises :class:`_GateTimeoutError`, as for
-        a run Watt stopped at its own wall-clock limit. A cancel of the job stops it too.
+        The guard run has a budget (:meth:`_gate_budget`: ``gate_run_s``, more for a design whose
+        miner's own run was long, kept on the attempt): still going at it, the validator stops it
+        -- freeing its lane for the other judgements -- and raises :class:`_GateTimeoutError`, as
+        for a run Watt stopped at its own wall-clock limit. A cancel of the job stops it too.
 
         **A judgement retried on our side** (a poll that failed past the client's own retries, a
         validator restart mid-run) takes the attempt's ``gate_run`` up again -- waiting for it, or
@@ -4420,11 +4497,17 @@ class Desk:
                 "gate-start", jid, run=str(run_id), fork=fork, digest=digest, mutate=not full
             )
 
+        budget = a.gate_budget_s if a is not None and a.gate_budget_s > 0 else 0.0
+        if budget <= 0:
+            budget = self._gate_budget(fork, digest, jid)
+            if a is not None:
+                with self._mut():
+                    a.gate_budget_s = budget
         try:
             run: dict[str, Any] | None = None
             if resume and a is not None:
                 spent = (self.now_ms() - a.gate_started_ms) / 1000 if a.gate_started_ms else 0.0
-                left = max(1.0, self.gate_run_s - max(0.0, spent))
+                left = max(1.0, budget - max(0.0, spent))
                 self._event("gate-attach", jid, run=resume, fork=fork, left_s=round(left))
                 try:
                     run = self.platform.attach(resume, budget_s=left, stop=stop)
@@ -4436,7 +4519,7 @@ class Desk:
                     with self._mut():
                         a.gate_run = ""
             if run is None:
-                run = self._guard_run(fork, full, started, stop)
+                run = self._guard_run(fork, full, started, stop, budget)
         finally:
             if jid:
                 with self._lock:
@@ -4454,7 +4537,8 @@ class Desk:
                 with self._mut():
                     a.gate_run = ""
             raise _GateTimeoutError(
-                f"the validator's guard run {run_id} passed its {self.gate_run_s:g} s budget"
+                f"the validator's own report run did not finish within {budget:g} s",
+                budget_s=budget,
             )
         if a is not None:
             with self._mut():
@@ -4467,8 +4551,15 @@ class Desk:
             ok=bool(run.get("ok")),
             stopped=stopped,
         )
-        if stopped == "wall":
-            raise _GateTimeoutError("the validator's guard run hit Watt's wall-clock limit")
+        if stopped == "wall" or (state == "done" and run.get("limit") == "wall"):
+            ran = self._gate_ran_s(a)
+            raise _GateTimeoutError(
+                "the validator's own report run did not finish within "
+                + (f"{ran:g} s, " if ran else "")
+                + "Watt's wall-clock limit",
+                budget_s=budget,
+                wall=True,
+            )
         refused = host_refusal(run)
         if refused:
             raise _HostBlockedError(refused)
@@ -4648,7 +4739,9 @@ class Desk:
         the platform unreachable, 5xx, a timeout, our own key busy or over its rate or quota, our
         guard run not ending on its own -- leaves the job judging, judged again after a back-off
         on the same fork (:meth:`_retry`): never scored against the miner, never sent to another
-        miner, and bounded. A guard run past its budget (or Watt's wall) twice fails the attempt.
+        miner, and bounded. A guard run past its budget is run once more with the most budget
+        (``gate_run_max_s``) when it had less, and otherwise fails the attempt, as a run stopped at
+        Watt's own wall-clock limit does at once: either would be as slow again.
         A fork that delivers nothing is deleted."""
         on_time = bool(a.submitted_ms) and a.submitted_ms <= a.deadline_ms
         verdict: dict[str, Any] = {"deliverable": False, "stage": "none", "digest": ""}
@@ -4677,16 +4770,20 @@ class Desk:
                         verdict, lambda: self._style_gate(job, verdict, export)
                     )
         except _GateTimeoutError as e:
+            # never run again as it ran: a design this slow is as slow the next time. Only a run
+            # the validator stopped short of its most is given that, once
+            larger = self._gate_max_s()
             with self._mut():
                 a.gate_timeouts += 1
-                timeouts = a.gate_timeouts
-            if timeouts < GATE_TIMEOUTS:
-                self._retry(job, a, str(e), RETRY_FIRST_S)
+                again = not e.wall and e.budget_s < larger
+                if again:
+                    a.gate_budget_s = larger
+            if again:
+                self._retry(job, a, f"{e}; run again within {larger:g} s", RETRY_FIRST_S)
                 return
             verdict["stage"] = "test"
-            verdict["error"] = (
-                f"the guard did not finish within the validator's budget {GATE_TIMEOUTS} times"
-            )
+            verdict["error"] = str(e)
+            verdict["cause"] = {"stage": "test", "limit": "wall" if e.wall else "budget"}
         except _GateRetryError as e:
             self._retry(job, a, str(e), RETRY_FIRST_S)
             return

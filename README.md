@@ -209,8 +209,11 @@ cadmind-einstein --state-dir ~/.local/share/cadmind-einstein \
   The switch is saved in the state: the flag sets and saves it; without the flag the saved value is kept across
   restarts (off when none); `cadmind-einstein-operator launch-equal on|off` changes it at runtime. The startup log
   names the value and its source (flag, saved or default). Off, the usual rules.
-- `--gate-run-s` (1800) bounds one validator guard run (past it the run is stopped and counted as a gate timeout;
-  two fail the attempt); `--judge-max-retries` (20) and `--judge-give-up-s` (14400) bound the retries of a judgement
+- `--gate-run-s` (1800) is the least budget of one validator guard run, and `--gate-run-max-s` (7200) the most: a
+  design whose miner's own guard run on the same digest (Watt's trace in the fork) took longer gets 1.5 times that
+  time. A run past its budget is stopped and run once more with the most, when it had less; otherwise, or when Watt
+  stopped it at its own wall-clock limit, the attempt fails at once ("the validator's own report run did not finish
+  within N s"); `--judge-max-retries` (20) and `--judge-give-up-s` (14400) bound the retries of a judgement
   that fails on the validator's side, after which the job ends "didn't finish", not charged; `--cancel-cooloff-s`
   (45) is how long a miner whose job was cancelled gets no new job. `--mint-per-hour` and
   `--mint-per-coldkey-hour` are accepted and ignored (the validator makes no key), and `--mint-key-file` is the

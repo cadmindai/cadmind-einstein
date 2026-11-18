@@ -106,6 +106,7 @@ from .cli import (
 )
 from .desk import (
     CANCEL_COOLOFF_S,
+    GATE_RUN_MAX_S,
     GATE_RUN_S,
     JOB_DEADLINE_S,
     JUDGE_GIVE_UP_S,
@@ -326,7 +327,15 @@ def parser() -> argparse.ArgumentParser:
         "--gate-run-s",
         type=float,
         default=GATE_RUN_S,
-        help="budget of one validator guard run; past it the run is stopped (a gate timeout)",
+        help="least budget of one validator guard run; past its budget the run is stopped",
+    )
+    ap.add_argument(
+        "--gate-run-max-s",
+        type=float,
+        default=GATE_RUN_MAX_S,
+        help="most budget of one validator guard run: a design whose miner's own guard run took"
+        " longer than --gate-run-s gets 1.5 times that, up to this; a run stopped short of it is"
+        " run once more with it",
     )
     ap.add_argument(
         "--cancel-cooloff-s",
@@ -569,6 +578,7 @@ def main(argv: list[str] | None = None) -> int:
         copy_corpus=corpus,
         second_opinion=second,
         gate_run_s=a.gate_run_s,
+        gate_run_max_s=a.gate_run_max_s,
         cancel_cooloff_s=a.cancel_cooloff_s,
         judge_max_retries=a.judge_max_retries,
         judge_give_up_s=a.judge_give_up_s,

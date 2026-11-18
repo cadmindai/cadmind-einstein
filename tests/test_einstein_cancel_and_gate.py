@@ -120,7 +120,7 @@ class TestGateStoppedOnCancel(_Cases):
         self.assertEqual(self.desk.status("g1")["result"]["label"], "cancelled")
         self.assertEqual(self.desk.ledger.outcomes, [])
 
-    def test_a_run_past_its_budget_is_stopped_once_then_fails_the_attempt(self) -> None:
+    def test_a_run_past_its_budget_is_run_once_more_with_the_most_then_fails(self) -> None:
         real, budgets = self.p.run, []
 
         def over(ws: str, command: str, args: Any = None, **kw: Any) -> dict[str, Any]:
@@ -130,7 +130,7 @@ class TestGateStoppedOnCancel(_Cases):
             return real(ws, command, args)
 
         self.p.run = over  # type: ignore[method-assign]
-        self.desk.gate_run_s = 900.0
+        self.desk.gate_run_s, self.desk.gate_run_max_s = 900.0, 2700.0
         self.submit("g2")
         self.assertTrue(self.desk.wait_idle())
         self.assertEqual(self.desk.status("g2")["state"], "judging")
@@ -139,8 +139,11 @@ class TestGateStoppedOnCancel(_Cases):
         self.tick()
         st = wait_state(self.desk, "g2", ("queued", "done"))
         self.assertEqual(st["result"]["label"], "not finished")
-        self.assertEqual(budgets, [900.0, 900.0])
-        self.assertEqual(self.desk.jobs["g2"].attempts[0].kind, "gate")
+        self.assertEqual(budgets, [900.0, 2700.0])  # never again at the budget it ran out of
+        a = self.desk.jobs["g2"].attempts[0]
+        self.assertEqual(a.kind, "gate")
+        self.assertIn("the validator's own report run did not finish within 2700 s", a.outcome)
+        self.assertEqual(st["result"]["cause"], {"stage": "test", "limit": "budget"})
 
 
 class TestOurErrors(_Cases):

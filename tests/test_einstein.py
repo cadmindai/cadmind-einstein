@@ -20,7 +20,15 @@ from typing import Any
 import bittensor.http_auth as btauth
 from bittensor.sp_core import Keypair
 
-from cadmind_einstein.desk import GATE_RUN_S, UNCOUNTED, Desk, DeskError, _survivors
+from cadmind_einstein.desk import (
+    GATE_RUN_MAX_S,
+    GATE_RUN_S,
+    UNCOUNTED,
+    Desk,
+    DeskError,
+    _miner_run_s,
+    _survivors,
+)
 from cadmind_einstein.platform import PlatformError
 from cadmind_einstein.scoring import (
     HOUR_MS,
@@ -177,7 +185,7 @@ class FakePlatform:
         leaves the miner's record in place; a sound one is recorded with the validator's draw."""
         w = self.ws[ws]
         self.runs.append((ws, command))
-        digest = str(abs(hash(json.dumps(w["files"], sort_keys=True))))
+        digest = self.digest(ws)
         if command == "check" and (args or {}).get("as_delivered"):
             # Watt's check of the tree as a delivery carries it (no .watt/, no build/)
             if w.get("old_watt"):  # a Watt that does not know the mode
@@ -246,8 +254,19 @@ class FakePlatform:
             },
         }
 
+    def digest(self, ws: str) -> str:
+        """The design's digest: its files, not Watt's records under ``.watt/``."""
+        files = {k: v for k, v in self.ws[ws]["files"].items() if not k.startswith(".watt/")}
+        return str(abs(hash(json.dumps(files, sort_keys=True))))
+
     def export(self, ws: str) -> bytes:
         return project_zip(self.ws[ws]["files"])
+
+    def raw(self, ws: str, path: str) -> bytes:
+        files = self.ws[ws]["files"]
+        if path not in files:
+            raise PlatformError(f"{path} does not exist", 404, "not_found")
+        return files[path].encode()
 
     def delete(self, ws: str) -> None:
         self.ws.pop(ws, None)
@@ -1094,13 +1113,12 @@ class TestGateDraw(unittest.TestCase):
         self.assertEqual(self.gate_runs(ws), ["status"])  # bounded: nothing heavy for a no
 
     def test_a_guard_run_that_does_not_end_is_retried_on_the_same_fork(self) -> None:
-        real, calls = self.p.run, {"report": 0}
+        real, budgets = self.p.run, []
 
         def slow_once(ws: str, command: str, args: Any = None, **kw: Any) -> dict[str, Any]:
             if command == "report":
-                calls["report"] += 1
-                self.assertEqual(kw.get("budget_s"), GATE_RUN_S)
-                if calls["report"] == 1:
+                budgets.append(kw.get("budget_s"))
+                if len(budgets) == 1:
                     return {"state": "running", "run": "run-1"}
             return real(ws, command, args, **kw)
 
@@ -1113,29 +1131,152 @@ class TestGateDraw(unittest.TestCase):
         st = wait_state(self.desk, "r5", ("done",))
         self.assertEqual((st["result"]["label"], st["result"]["hotkey"]), ("delivered", hk))
         self.assertEqual(self.p.forks, 1)  # the same fork, its guard outcomes reused
+        self.assertEqual(budgets, [GATE_RUN_S, GATE_RUN_MAX_S])  # again only with more time
 
     def test_a_guard_run_stopped_by_its_wall_clock_limit_does_not_pass(self) -> None:
-        real = self.p.run
+        real, reports = self.p.run, []
 
         def wall(ws: str, command: str, args: Any = None, **kw: Any) -> dict[str, Any]:
             if command == "report":
+                reports.append(kw.get("budget_s"))
                 return {"state": "done", "ok": False, "stopped": "wall", "data": None}
             return real(ws, command, args, **kw)
 
         self.p.run = wall  # type: ignore[method-assign]
         self.submit("r6", weak=False)
-        self.assertTrue(self.desk.wait_idle())
-        # once may be load on our side: judged again, nobody blamed
-        self.assertEqual(self.desk.status("r6")["state"], "judging")
-        self.assertEqual(self.desk.jobs["r6"].attempts[0].gate_timeouts, 1)
-        self.desk._retry_at.clear()
-        self.tick()
+        # Watt's own limit is not the validator's to raise: a run as slow again would be stopped
+        # the same way, so the attempt fails at once, not after a second run
         st = wait_state(self.desk, "r6", ("queued", "done"))
-        self.assertEqual(st["result"]["label"], "not finished")  # twice: the attempt fails the gate
+        self.assertEqual(st["result"]["label"], "not finished")
+        self.assertEqual(reports, [GATE_RUN_S])  # one run, never a second as slow
         a = self.desk.jobs["r6"].attempts[0]
-        self.assertEqual(a.kind, "gate")
-        self.assertIn("did not finish within the validator's budget", a.outcome)
+        self.assertEqual((a.kind, a.retries), ("gate", 0))
+        self.assertIn("the validator's own report run did not finish within", a.outcome)
+        self.assertIn("Watt's wall-clock limit", a.outcome)
+        self.assertEqual(st["result"]["cause"], {"stage": "test", "limit": "wall"})
         self.assertNotIn(a.fork, self.p.deleted)  # its fork is the project kept
+
+    def guard_line(self, ws: str, ms: int, **over: Any) -> dict[str, Any]:
+        """A line of Watt's trace: the miner's whole guard run (``report --mutate``) on the
+        design."""
+        return {
+            "type": "cli",
+            "command": "report",
+            "args": {"command": "report", "mutate": "True", "k": "None"},
+            "digest_after": self.p.digest(ws),
+            "ms": ms,
+            **over,
+        }
+
+    def submit_traced(
+        self, job: str, lines: Any, run: Any = None, full: bool = False
+    ) -> tuple[list[float], dict[str, Any]]:
+        """Submit a sound design whose workspace holds Watt's trace ``lines(ws)`` (the fork copies
+        it); the budgets of the validator's report runs, and the job's end."""
+        real, budgets = self.p.run, []
+
+        def seen(w: str, command: str, args: Any = None, **kw: Any) -> dict[str, Any]:
+            if command == "report":
+                budgets.append(kw.get("budget_s"))
+                self.assertEqual(bool((args or {}).get("mutate")), not full)
+                if run is not None:
+                    return run(len(budgets))
+            return real(w, command, args, **kw)
+
+        self.p.run = seen  # type: ignore[method-assign]
+        self.poll(A, B, C)
+        self.enqueue({"job": job, "brief": "A wall hook."})
+        hk, w = self.assigned()
+        self.desk.accept(hk, job)
+        ws = w["workspace"]
+        self.p.work(ws, GOOD, deliverable=True, full=full)
+        trace = "".join(json.dumps(x) + "\n" for x in lines(ws))
+        self.p.ws[ws]["files"][".watt/trace.jsonl"] = trace
+        self.desk.submit(hk, job, ws, "d")
+        st = wait_state(self.desk, job, ("queued", "done"))
+        self.p.run = real  # type: ignore[method-assign]
+        return budgets, st
+
+    def test_the_budget_scales_with_the_miners_own_guard_run_on_this_digest(self) -> None:
+        self.desk.gate_run_s, self.desk.gate_run_max_s = 1800.0, 7200.0
+        budgets, st = self.submit_traced(
+            "s1",
+            lambda ws: [
+                self.guard_line(ws, 3_150_000),
+                self.guard_line(ws, 9_000_000, digest_after="sha256:an-earlier-design"),
+                self.guard_line(
+                    ws, 8_000_000, command="test", args={"mutate": "True", "only": "['R.holds']"}
+                ),
+                self.guard_line(ws, 8_000_000, args={"command": "report", "mutate": "False"}),
+                {"type": "agent", "event": "round", "ms": 9_000_000},
+            ],
+        )
+        self.assertEqual(st["result"]["label"], "delivered")
+        self.assertEqual(budgets, [4725.0])  # 1.5 x 3150 s, the whole guard on this digest only
+        self.assertEqual(self.desk.jobs["s1"].attempts[0].gate_budget_s, 4725.0)
+
+    def budget_for(self, ms: int) -> float:
+        self.desk.gate_run_s, self.desk.gate_run_max_s = 1800.0, 7200.0
+        budgets, st = self.submit_traced("s2", lambda ws: [self.guard_line(ws, ms)] if ms else [])
+        self.assertEqual(st["result"]["label"], "delivered")
+        self.assertEqual(len(budgets), 1)
+        return budgets[0]
+
+    def test_a_short_miner_run_gets_the_least_budget(self) -> None:
+        self.assertEqual(self.budget_for(600_000), 1800.0)
+
+    def test_an_unknown_miner_run_gets_the_least_budget(self) -> None:
+        self.assertEqual(self.budget_for(0), 1800.0)
+
+    def test_a_very_long_miner_run_gets_the_most_budget(self) -> None:
+        self.assertEqual(self.budget_for(9_000_000), 7200.0)
+
+    def test_a_run_given_the_most_is_not_run_again(self) -> None:
+        self.desk.gate_run_s, self.desk.gate_run_max_s = 1800.0, 7200.0
+        budgets, st = self.submit_traced(
+            "s5",
+            lambda ws: [self.guard_line(ws, 6_000_000)],
+            run=lambda n: {"state": "running", "run": f"run-{n}"},
+        )
+        self.assertEqual(st["result"]["label"], "not finished")
+        self.assertEqual(budgets, [7200.0])  # the most already: never run again
+        a = self.desk.jobs["s5"].attempts[0]
+        self.assertEqual((a.kind, a.retries), ("gate", 0))
+        self.assertIn("the validator's own report run did not finish within 7200 s", a.outcome)
+
+    def test_a_files_only_run_on_a_full_record_gets_the_same_budget(self) -> None:
+        self.desk.gate_run_s, self.desk.gate_run_max_s = 1800.0, 7200.0
+        budgets, st = self.submit_traced(
+            "s6", lambda ws: [self.guard_line(ws, 3_150_000)], full=True
+        )
+        self.assertEqual(st["result"]["label"], "delivered")
+        self.assertEqual(budgets, [4725.0])
+
+    def test_a_files_only_run_stopped_at_watts_wall_is_not_run_again(self) -> None:
+        budgets, st = self.submit_traced(
+            "s7",
+            lambda ws: [self.guard_line(ws, 3_150_000)],
+            run=lambda n: {"state": "done", "ok": False, "stopped": "wall", "run": f"run-{n}"},
+            full=True,
+        )
+        self.assertEqual(st["result"]["label"], "not finished")
+        self.assertEqual(len(budgets), 1)
+        a = self.desk.jobs["s7"].attempts[0]
+        self.assertEqual((a.kind, a.retries), ("gate", 0))
+        self.assertIn("the validator's own report run did not finish within", a.outcome)
+        self.assertEqual(st["result"]["cause"], {"stage": "test", "limit": "wall"})
+
+    def test_the_miners_run_time_is_read_from_watts_trace(self) -> None:
+        line = {"command": "report", "args": {"mutate": "True"}, "digest_after": "d", "ms": 2000}
+        trace = (
+            b"not json\n"
+            + json.dumps(line).encode()
+            + b"\n"
+            + json.dumps({**line, "ms": True}).encode()
+        )
+        self.assertEqual(_miner_run_s(trace, "d"), 2.0)
+        self.assertEqual(_miner_run_s(trace, "other"), 0.0)
+        self.assertEqual(_miner_run_s(b"", "d"), 0.0)
 
 
 class TestHostBlockAndAsDelivered(unittest.TestCase):

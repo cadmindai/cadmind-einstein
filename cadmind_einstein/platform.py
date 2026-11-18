@@ -639,6 +639,18 @@ class OperatorClient:
             self._call("GET", f"/api/agent/workspaces/{self._ws(ws)}/export", raw=True, timeout=320)
         )
 
+    def raw(self, ws: str, path: str) -> bytes:
+        """One file of one of the validator's workspaces, its bytes as stored (a record under
+        ``.watt/`` too, which an export leaves out)."""
+        return bytes(
+            self._call(
+                "GET",
+                f"/api/agent/workspaces/{self._ws(ws)}/raw?path={quote(path, safe='')}",
+                raw=True,
+                timeout=120,
+            )
+        )
+
     def delete(self, ws: str) -> None:
         try:
             self._call("DELETE", f"/api/agent/workspaces/{self._ws(ws)}")

@@ -7,6 +7,14 @@ All notable changes to this project are listed here. The format follows
 
 ## [Unreleased]
 
+### Changed
+
+- **The gate's time follows the design.** The validator's guard run gets `--gate-run-s` (1800), or 1.5 times the
+  miner's own whole guard run on the same digest when that is longer (read from Watt's trace in the validator's
+  fork), at most `--gate-run-max-s` (7200, new). A run stopped at its budget is run again only with a larger one
+  (the most, once); a run Watt stopped at its own wall-clock limit is not run again. Either ends the attempt with
+  "the validator's own report run did not finish within N s" instead of a second run as slow as the first.
+
 ## [0.6.22] - 2026-11-18
 
 ### Added
