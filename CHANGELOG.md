@@ -7,6 +7,13 @@ All notable changes to this project are listed here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- The validator sends each vote of its own to the platform (`POST /api/engine/einstein/jobs/{job}/vote`: the 0-3 score
+  the vote's value came from, that value, how many votes stand on the job, the judge's version), the votes it already
+  holds included. The platform shows the scores averaged per gallery category and gates nothing with them; the vote
+  still has no role in scores, weights or routing.
+
 ## [0.6.23] - 2026-11-19
 
 ### Changed

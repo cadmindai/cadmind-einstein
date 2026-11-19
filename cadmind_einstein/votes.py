@@ -40,6 +40,12 @@ The platform shows it to the client as a notice before Assemble; nothing is refu
 A finding the platform could not take is sent again on later passes
 (:meth:`Reviewer.send_findings`).
 
+**The vote's score reaches the platform** (:func:`vote_out`, :meth:`.platform.Platform.vote`). Each
+of our own votes is also sent to the platform as ``{score, value, count, judge_version}``, the
+votes recorded before this was sent included (:meth:`Reviewer.send_votes`). The platform shows the
+scores averaged per gallery category and gates nothing with them: this gives the vote no role in
+scores, weights or routing.
+
 **The queue.** The desk tells the reviewer each delivery the platform took and charged
 (:attr:`.desk.Desk.on_delivered`). One review runs at a time (:meth:`Reviewer.pass_once`, called
 by the daemon's review thread): ask the platform for the bundle (it may still be rendering: asked
@@ -69,7 +75,7 @@ from collections.abc import Callable, Iterable, Mapping
 from typing import Any
 
 from .desk import job_event
-from .judge import VALIDATOR_VERSION, Judge, for_validator, inputs_from_bundle
+from .judge import V_MAP, VALIDATOR_VERSION, Judge, for_validator, inputs_from_bundle
 from .platform import PlatformError
 from .review import (
     MAX_BUNDLE_BYTES,
@@ -86,6 +92,8 @@ from .scoring import HOUR_MS, WINDOW_H
 FINDING_CHARS = 300
 """a finding's line, quote and nudge, each at most this long"""
 FINDING_TRIES = 8
+VOTE_OUT_TRIES = 8
+"""how many times a vote is offered to the platform (:meth:`Reviewer.send_votes`)"""
 
 MODES = ("off", "shadow")
 ALIASES = {"live": "shadow", "counted": "shadow"}
@@ -170,6 +178,9 @@ class Reviewer:
         """the device judge votes are made with (a validator never runs the tools judge)"""
         self.digest = self.judge_cfg.digest()
         self._busy = threading.Lock()
+        self._votes_queued = False
+        """whether the votes recorded before they were sent to the platform have been queued
+        (:meth:`Reviewer.queue_unsent_votes`: once per process)"""
 
     @property
     def active(self) -> bool:
@@ -224,6 +235,7 @@ class Reviewer:
             return "idle"
         try:
             self.send_findings()
+            self.send_votes()
             now = self.now_ms()
             due = [r for r in self.queue() if r["state"] == "pending" and r["next_ms"] <= now]
             if not due:
@@ -389,6 +401,10 @@ class Reviewer:
         if finding is not None:
             self.kv.put("finding", job, {"job": job, "finding": finding, "tries": 0, "sent": False})
             self.send_findings()
+        out = vote_out(vote.as_json(), int(self.standing_of(job)["count"]))
+        if out is not None:
+            self.kv.put("voteout", job, {"job": job, "vote": out, "tries": 0, "sent": False})
+            self.send_votes()
         self.log(
             job_event(
                 "vote-recorded",
@@ -452,6 +468,66 @@ class Reviewer:
             except Exception as e:  # noqa: BLE001 -- the platform unreachable: tried again later
                 row["why"] = f"{type(e).__name__}"[:120]
             self.kv.put("finding", job, row)
+        return sent
+
+    def queue_unsent_votes(self) -> int:
+        """Queue for the platform every vote of ours that has no ``voteout`` row: the votes
+        recorded before they were sent (a vote recorded since is queued as it is recorded). One
+        read of the votes; answers how many it queued."""
+        held = self.kv.items("voteout")
+        votes = self.kv.items("vote")
+        counts: dict[str, int] = {}
+        for r in votes.values():
+            if isinstance(r, Mapping) and r.get("value") is not None and not r.get("abstain"):
+                job = str(r.get("job") or "")
+                counts[job] = counts.get(job, 0) + 1
+        queued = 0
+        for k, r in votes.items():
+            if not isinstance(r, Mapping) or r.get("validator") != self.me:
+                continue
+            job = str(r.get("job") or k.split("|", 1)[0])
+            if not job or job in held:
+                continue
+            out = vote_out(r, counts.get(job, 1))
+            if out is None:
+                continue
+            self.kv.put("voteout", job, {"job": job, "vote": out, "tries": 0, "sent": False})
+            queued += 1
+        return queued
+
+    def send_votes(self) -> int:
+        """Send the votes the platform has not taken yet (:func:`vote_out`), those recorded before
+        they were sent included (:meth:`queue_unsent_votes`, once per process). The rules are
+        :meth:`send_findings`': a platform that refuses one for good (4xx other than 429: an older
+        platform, a job it does not hold as a delivered version) or one tried
+        :data:`VOTE_OUT_TRIES` times is not tried again. Answers how many it sent."""
+        send = getattr(self.platform, "vote", None)
+        if send is None:
+            return 0
+        if not self._votes_queued:
+            queued = self.queue_unsent_votes()
+            self._votes_queued = True
+            if queued:
+                self.log(f"votes: {queued} recorded earlier queued for the platform")
+        sent = 0
+        for job, kept in self.kv.items("voteout").items():
+            if kept.get("sent") or int(kept.get("tries") or 0) >= VOTE_OUT_TRIES:
+                continue
+            row = dict(kept)
+            row["tries"] = int(row.get("tries") or 0) + 1
+            try:
+                send(job, row["vote"])
+                row["sent"] = True
+                row.pop("why", None)
+                sent += 1
+                self.log(job_event("vote-sent", job, score=row["vote"].get("score")))
+            except PlatformError as e:
+                if 400 <= int(e.status or 0) < 500 and int(e.status or 0) != 429:
+                    row["tries"] = VOTE_OUT_TRIES
+                row["why"] = f"{e.status} {e.code}"[:120]
+            except Exception as e:  # noqa: BLE001 -- the platform unreachable: tried again later
+                row["why"] = f"{type(e).__name__}"[:120]
+            self.kv.put("voteout", job, row)
         return sent
 
     def judge_bundle(self, got: Mapping[str, Any]) -> dict[str, Any]:
@@ -634,6 +710,9 @@ class Reviewer:
                         },
                     )
                 self.kv.delete("vote", k)
+                if row.get("validator") == self.me:
+                    # what was (or was not) sent to the platform of it goes with it
+                    self.kv.delete("voteout", str(row.get("job") or k.split("|", 1)[0]))
 
 
 def deciding_sample(vote: Mapping[str, Any]) -> Mapping[str, Any] | None:
@@ -647,6 +726,38 @@ def deciding_sample(vote: Mapping[str, Any]) -> Mapping[str, Any] | None:
         return None
     low = statistics.median_low([int(s["score"]) for s in samples])
     return next(s for s in samples if int(s["score"]) == low)
+
+
+def vote_out(vote: Mapping[str, Any], count: int = 1) -> dict[str, Any] | None:
+    """A recorded vote as the platform takes it (:meth:`.platform.Platform.vote`): ``{score,
+    value, count, judge_version}`` -- ``score`` the lower median of its samples' 0-3 scores (the
+    one its value came from; a vote that kept its value alone gives the score :data:`V_MAP` maps
+    to that value), ``value`` the vote's, ``count`` how many votes stand on the job (at least 1),
+    ``judge_version`` when the vote names one. None for an abstaining vote, one with no value, or
+    one whose value is no score's (a v1 vote)."""
+    value = vote.get("value")
+    if vote.get("abstain") or isinstance(value, bool) or not isinstance(value, int | float):
+        return None
+    if not 0 <= value <= 1:
+        return None
+    scores = [
+        int(s["score"])
+        for s in vote.get("samples") or []
+        if isinstance(s, Mapping)
+        and isinstance(s.get("score"), int)
+        and not isinstance(s.get("score"), bool)
+    ]
+    if scores:
+        score = statistics.median_low(scores)
+    else:
+        score = next((k for k, v in V_MAP.items() if abs(v - float(value)) < 1e-9), None)
+    if score is None or score not in V_MAP:
+        return None
+    out: dict[str, Any] = {"score": int(score), "value": float(value), "count": max(1, int(count))}
+    version = str(vote.get("judge_version") or "")
+    if version:
+        out["judge_version"] = version
+    return out
 
 
 def _lines(sample: Mapping[str, Any]) -> list[dict[str, Any]]:

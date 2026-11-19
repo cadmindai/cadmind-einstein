@@ -168,6 +168,13 @@ provenance, `fails` when the pictures show a misfit or the assumption rules make
 sends it to the platform (`POST /api/engine/einstein/jobs/{job}/finding`, its queue key: `{finding: {id, line, quote,
 nudge, value, judge_version}}`), which shows it to the client as a notice; it refuses and gates nothing.
 
+**The vote's score reaches the platform.** Each vote of its own the validator records, it also sends to the platform
+(`POST /api/engine/einstein/jobs/{job}/vote`, its queue key: `{vote: {score, value, count, judge_version}}` -- the 0-3
+score the vote's value came from, that value, and how many votes stand on the job), the votes it held before it sent
+them included. The platform shows the scores averaged per gallery category; it refuses and gates nothing with them,
+and the vote still has no role in scores, weights or routing. A vote the platform could not take is sent again on
+later passes; one it refuses (a 4xx other than 429) is not.
+
 **Assumptions.** An assumption counts against the device only when it was avoidable (the client's words or photos, or
 a source, gave the fact) or the design is fragile to it. An unavoidable assumption the device covers is never a nudge
 and never lowers the score.

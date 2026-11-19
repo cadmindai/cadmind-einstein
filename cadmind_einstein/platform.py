@@ -533,6 +533,22 @@ class OperatorClient:
         )
         return dict(out) if isinstance(out, Mapping) else {}
 
+    def vote(self, job: str, vote: Mapping[str, Any]) -> dict[str, Any]:
+        """Our vote on a delivered job (:func:`.votes.vote_out`): ``{score, value, count,
+        judge_version}`` -- the 0-3 score the vote's value came from, that value, and how many
+        votes stand on the job. The platform shows the scores averaged per gallery category; it
+        gates and scores nothing with them. Sent again, it replaces the one before. 400 for a
+        malformed vote, 404 for a job the platform does not hold as a delivered version."""
+        out = self._call(
+            "POST",
+            f"/api/engine/einstein/jobs/{quote(job, safe='')}/vote",
+            {"vote": dict(vote)},
+            base=self.queue,
+            role=QUEUE,
+            job=True,
+        )
+        return dict(out) if isinstance(out, Mapping) else {}
+
     def fetch_bundle(self, url: str, max_bytes: int) -> bytes:
         """A bundle's bytes from its signed link (no credential is sent: the link is the
         authority). Only a link on the platform's own origin is fetched."""
