@@ -7,6 +7,28 @@ All notable changes to this project are listed here. The format follows
 
 ## [Unreleased]
 
+## [0.6.25] - 2026-11-19
+
+### Changed
+
+- **Every sub-device contract states the whole device's mass** (`budget carried_mass`); a contract without it is
+  refused. A sub-device delivered before this was built to a contract with none, so once its main project's record
+  states one it no longer meets its contract: **legacy split parts are rebuilt at their next assembly**.
+- **A part is rebuilt only when it fails its record's contract.** `watt status` reports each part's
+  `contract_verdict` (`same`, `kept`, `stale`); a brief-only change of the main project, or a contract change the part
+  still meets, keeps it. The reference miner never adds revision notes to a part's brief.
+- **A main project runs its sub-devices by itself by default.** A sub-device round is started again only when its
+  delivered version fails what the main project now requires (a changed contract it fails, or an answer of the
+  client's it does not record): never for a brief-only change. A sub-device whose guard did not finish within the
+  validator's budget at every try is not started again automatically.
+- **One answer register for the whole device.** Every round of a device with parts gets
+  `brief/answers-<date>-<HHMMSS>.toml`: every answer the client gave, wherever they gave it, with the sub-device that
+  owns its decision. Its own answers also arrive as answer files to record; the others are context. The reference miner
+  never asks them again, and asks a revision of a sub-device whose imported version does not record its answer.
+- The reference miner keeps a lead a sub-device publishes clear of the main project's bodies where it is held.
+- **A guard that runs out of time is said by code.** A round whose guard did not finish within the validator's time
+  carries `gate_code = "guard_timeout"` in its result: the platform does not start it again by itself.
+
 ## [0.6.24] - 2026-11-19
 
 ### Added

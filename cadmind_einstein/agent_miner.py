@@ -332,7 +332,14 @@ miner. When a part truly breaks one of this project's checks with the part impor
 change request on that part's record ([subproject.<id>.change] with `test` = the failing check, \
 `measured` = its numbers with the part imported, `proposal` = what the part should change), keep \
 every other part imported, and deliver (DONE); the platform re-runs that check with the part \
-imported and refuses a request it does not reproduce (change_unfounded). Otherwise, when the parts \
+imported and refuses a request it does not reproduce (change_unfounded). A part is rebuilt only \
+when it fails its record's contract (watt status: contract_verdict stale); never add revision \
+notes to a part's brief: what it must meet goes in its contract, what it should change in the \
+change request's proposal. brief/answers-<date>-<HHMMSS>.toml (the newest holds) lists every \
+answer the client gave across the device, with the part that owns its decision: yours also \
+arrive as answer files to record; the others are context, never asked again; a parent decision \
+same_as a part's that the imported part does not record is W0227 (ask a revision of the part). \
+Otherwise, when the parts \
 cannot be assembled, REJECT not-capable and say why. When you split a device, every connection \
 between sub-devices (a lead, a hose, a signal) is an interface in each contract (a pin or port with
 \
@@ -344,9 +351,12 @@ one its contract omits is named (W0230, a warning): take it into the contract an
 extension lead is this project's own cable, in its BOM and steps; a sub-device never stands in \
 another sub-device's hardware as a world item to wire to, and every brief that says where a \
 shared part sits says the
-same. A workspace with \
+same. Every required contract states the whole device's mass (budget carried_mass, W0225), \
+which the device's measured mass lies inside (W0419), and a lead a part publishes runs clear of \
+this project's bodies where it is held (W0752). A workspace with \
 brief/contract.toml is a sub-device: meet that contract (W0230; its contacts work across the \
-voltage it gives and draw no more than it allows, W0837 and W0816) and publish spec/contract.toml; \
+voltage it gives and draw no more than it allows, W0837 and W0816; a test that needs the \
+device's mass reads its budget carried_mass) and publish spec/contract.toml; \
 brief/parent.md, when there, is the parent's brief, for context. \
 A workspace with brief/references.toml is an accessory of another device, `@<id>` in the brief: \
 read the `references` topic first; you check against references/<id>/, numbers and shapes, which \
