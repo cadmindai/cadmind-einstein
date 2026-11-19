@@ -212,6 +212,10 @@ first run, the one longer run and the retries' back-off stay within ``JUDGE_GIVE
 GATE_TRACE = ".watt/trace.jsonl"
 """Watt's own record of the runs on a project (one line per command: its digest, its arguments,
 its wall time ``ms``), written by Watt alone and copied with a fork"""
+GUARD_TIMEOUT = "guard_timeout"
+"""The result's ``gate_code`` when the guard did not finish within the validator's time (its budget
+at the most it gives, or Watt's own wall-clock stop): the platform does not start such a round
+again by itself."""
 JUDGE_MAX_RETRIES = 20
 JUDGE_GIVE_UP_S = 4 * 3600.0
 """a judgement retried on our side this many times, or for this long since its first retry, ends the
@@ -4784,6 +4788,8 @@ class Desk:
             verdict["stage"] = "test"
             verdict["error"] = str(e)
             verdict["cause"] = {"stage": "test", "limit": "wall" if e.wall else "budget"}
+            # machine-readable: the platform does not send such a round again by itself
+            verdict["gate_code"] = GUARD_TIMEOUT
         except _GateRetryError as e:
             self._retry(job, a, str(e), RETRY_FIRST_S)
             return

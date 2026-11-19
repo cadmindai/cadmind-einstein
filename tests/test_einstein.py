@@ -1154,6 +1154,7 @@ class TestGateDraw(unittest.TestCase):
         self.assertIn("the validator's own report run did not finish within", a.outcome)
         self.assertIn("Watt's wall-clock limit", a.outcome)
         self.assertEqual(st["result"]["cause"], {"stage": "test", "limit": "wall"})
+        self.assertEqual(st["result"]["gate_code"], "guard_timeout")  # read by the platform: not sent again
         self.assertNotIn(a.fork, self.p.deleted)  # its fork is the project kept
 
     def guard_line(self, ws: str, ms: int, **over: Any) -> dict[str, Any]:
