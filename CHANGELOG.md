@@ -7,6 +7,16 @@ All notable changes to this project are listed here. The format follows
 
 ## [Unreleased]
 
+### Changed
+
+- **Every sub-device contract states the whole device's mass** (`budget carried_mass`); a contract without it is
+  refused. A sub-device delivered before this was built to a contract with none, so once its main project's record
+  states one it no longer meets its contract: **legacy split parts are rebuilt at their next assembly**.
+- **A part is rebuilt only when it fails its record's contract.** `watt status` reports each part's
+  `contract_verdict` (`same`, `kept`, `stale`); a brief-only change of the main project, or a contract change the part
+  still meets, keeps it. The reference miner never adds revision notes to a part's brief.
+- The reference miner keeps a lead a sub-device publishes clear of the main project's bodies where it is held.
+
 ## [0.6.23] - 2026-11-19
 
 ### Changed
