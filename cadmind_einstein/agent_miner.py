@@ -332,7 +332,10 @@ miner. When a part truly breaks one of this project's checks with the part impor
 change request on that part's record ([subproject.<id>.change] with `test` = the failing check, \
 `measured` = its numbers with the part imported, `proposal` = what the part should change), keep \
 every other part imported, and deliver (DONE); the platform re-runs that check with the part \
-imported and refuses a request it does not reproduce (change_unfounded). Otherwise, when the parts \
+imported and refuses a request it does not reproduce (change_unfounded). A part is rebuilt only \
+when it fails its record's contract (watt status: contract_verdict stale); never add revision \
+notes to a part's brief: what it must meet goes in its contract, what it should change in the \
+change request's proposal. Otherwise, when the parts \
 cannot be assembled, REJECT not-capable and say why. When you split a device, every connection \
 between sub-devices (a lead, a hose, a signal) is an interface in each contract (a pin or port with
 \
