@@ -7,6 +7,8 @@ All notable changes to this project are listed here. The format follows
 
 ## [Unreleased]
 
+## [0.6.24] - 2026-11-19
+
 ### Added
 
 - The validator sends each vote of its own to the platform (`POST /api/engine/einstein/jobs/{job}/vote`: the 0-3 score
