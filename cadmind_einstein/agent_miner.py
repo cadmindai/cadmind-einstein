@@ -335,7 +335,11 @@ every other part imported, and deliver (DONE); the platform re-runs that check w
 imported and refuses a request it does not reproduce (change_unfounded). A part is rebuilt only \
 when it fails its record's contract (watt status: contract_verdict stale); never add revision \
 notes to a part's brief: what it must meet goes in its contract, what it should change in the \
-change request's proposal. Otherwise, when the parts \
+change request's proposal. brief/answers-<date>-<HHMMSS>.toml (the newest holds) lists every \
+answer the client gave across the device, with the part that owns its decision: yours also \
+arrive as answer files to record; the others are context, never asked again; a parent decision \
+same_as a part's that the imported part does not record is W0227 (ask a revision of the part). \
+Otherwise, when the parts \
 cannot be assembled, REJECT not-capable and say why. When you split a device, every connection \
 between sub-devices (a lead, a hose, a signal) is an interface in each contract (a pin or port with
 \

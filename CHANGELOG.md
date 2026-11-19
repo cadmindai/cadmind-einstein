@@ -9,6 +9,12 @@ All notable changes to this project are listed here. The format follows
 
 ### Changed
 
+- **One answer register for the whole device.** Every round of a device with parts gets
+  `brief/answers-<date>-<HHMMSS>.toml`: every answer the client gave, wherever they gave it, with the sub-device that
+  owns its decision. Its own answers also arrive as answer files to record; the others are context. The reference miner
+  never asks them again, and asks a revision of a sub-device whose imported version does not record its answer.
+- The reference miner wires every crossing between sub-devices at the split, states each electrical interface's
+  signal, voltage and current, and keeps a published lead clear of the main project's bodies.
 - **Every sub-device contract states the whole device's mass** (`budget carried_mass`); a contract without it is
   refused. A sub-device delivered before this was built to a contract with none, so once its main project's record
   states one it no longer meets its contract: **legacy split parts are rebuilt at their next assembly**.
