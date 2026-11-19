@@ -336,11 +336,17 @@ imported and refuses a request it does not reproduce (change_unfounded). Otherwi
 cannot be assembled, REJECT not-capable and say why. When you split a device, every connection \
 between sub-devices (a lead, a hose, a signal) is an interface in each contract (a pin or port with
 \
-its signal and place) and this project wires them in its own src/wiring.py: an extension lead is \
-this project's own cable, in its BOM and steps; a sub-device never stands in another sub-device's \
-hardware as a world item to wire to, and every brief that says where a shared part sits says the
+its signal and place) and this project wires them in its own src/wiring.py, at the split on the \
+stand-ins: a Net per contact and a Cable of its own. A required electrical interface states its \
+signal, voltage and, carrying power, current; one interface is one contact (a pin each, or a lead \
+per conductor); a member a part publishes is never Unused unless its contract marks it spare, and \
+one its contract omits is named (W0230, a warning): take it into the contract and wire it. An \
+extension lead is this project's own cable, in its BOM and steps; a sub-device never stands in \
+another sub-device's hardware as a world item to wire to, and every brief that says where a \
+shared part sits says the
 same. A workspace with \
-brief/contract.toml is a sub-device: meet that contract (W0230) and publish spec/contract.toml; \
+brief/contract.toml is a sub-device: meet that contract (W0230; its contacts work across the \
+voltage it gives and draw no more than it allows, W0837 and W0816) and publish spec/contract.toml; \
 brief/parent.md, when there, is the parent's brief, for context. \
 A workspace with brief/references.toml is an accessory of another device, `@<id>` in the brief: \
 read the `references` topic first; you check against references/<id>/, numbers and shapes, which \
