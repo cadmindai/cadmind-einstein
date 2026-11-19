@@ -344,9 +344,9 @@ one its contract omits is named (W0230, a warning): take it into the contract an
 extension lead is this project's own cable, in its BOM and steps; a sub-device never stands in \
 another sub-device's hardware as a world item to wire to, and every brief that says where a \
 shared part sits says the
-same. A part that carries or drives the whole device is given the device's mass in its \
-contract (budget carried_mass, W0419), and a lead a part publishes runs clear of this project's \
-bodies where it is held (W0752). A workspace with \
+same. Every required contract states the whole device's mass (budget carried_mass, W0225), \
+which the device's measured mass lies inside (W0419), and a lead a part publishes runs clear of \
+this project's bodies where it is held (W0752). A workspace with \
 brief/contract.toml is a sub-device: meet that contract (W0230; its contacts work across the \
 voltage it gives and draw no more than it allows, W0837 and W0816; a test that needs the \
 device's mass reads its budget carried_mass) and publish spec/contract.toml; \
