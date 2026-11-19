@@ -7,6 +7,17 @@ All notable changes to this project are listed here. The format follows
 
 ## [Unreleased]
 
+### Fixed
+
+- **A revision whose source workspace is busy waits instead of ending.** A revision's grant forks the delivered
+  workspace, and the platform may still have a run going on it after the delivery. Watt refused that fork after two
+  minutes, and the validator counted each refusal as one that can never succeed, so three of them ended the client's
+  revision "didn't finish". A busy refusal (Watt's code `workspace_busy`, a 409 the platform answers as `busy`, or
+  the refusal's words where it carries no code) is now a wait: the grant is offered again after 30 s, doubling up to
+  2 minutes, until the job's own deadline from its claim, and never counted toward the three. A source still busy at
+  that deadline ends the job "didn't finish", not charged, nobody scored. A refusal that can never succeed still ends
+  the job at its third.
+
 ## [0.6.24] - 2026-11-19
 
 ### Added

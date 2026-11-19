@@ -242,6 +242,20 @@ again for this long, doubling with each refusal up to the cap"""
 GRANT_PERMANENT_TRIES = 3
 """grants refused as never able to succeed -- a 400, 404 or 410 that is not about the miner (a
 revision whose seed workspace is gone) -- before the job ends "didn't finish", nobody scored"""
+WORKSPACE_BUSY = "workspace_busy"
+"""Watt's code for a fork refused because a run that writes the source workspace is going on it (a
+revision's grant forks the delivered workspace, which the platform may still be working on after
+the delivery): a wait, never a refusal of the job (:meth:`Desk._grant_refusal`)"""
+WORKSPACE_BUSY_WORDS = (
+    "fork it when it has ended",
+    "is still running on this workspace",
+)
+"""how the same refusal reads where it carries no code of its own (an older Watt answers a bare
+400 with these words; a platform that maps Watt's 409 to ``busy`` keeps them)"""
+GRANT_BUSY_RETRY_MAX_S = 120.0
+"""a grant refused for a busy source workspace is offered again after :data:`GRANT_RETRY_S`,
+doubling up to this cap (shorter than :data:`GRANT_RETRY_MAX_S`: the run it waits for ends in
+minutes), until the job's own deadline (:data:`JOB_DEADLINE_S` from its claim)"""
 MINER_COOL_S = 600.0
 """a miner the platform refused a grant for its own sake (its quota of open job workspaces, its
 network) is offered no job for this long"""
@@ -3850,12 +3864,20 @@ class Desk:
 
     @staticmethod
     def _grant_refusal(e: PlatformError) -> str:
-        """``miner`` (about the miner: :data:`MINER_REFUSALS`), ``permanent`` (the platform can
-        never make this job's workspace: a 400, 404 or 410 that is not the validator's own side
-        -- a revision's seed workspace swept away) or ``transient`` (its rate, its load, a
-        timeout: asked again later)."""
+        """``miner`` (about the miner: :data:`MINER_REFUSALS`), ``busy`` (the workspace a
+        revision forks has a run going on it: :data:`WORKSPACE_BUSY`, or its words), ``permanent``
+        (the platform can never make this job's workspace: a 400, 404 or 410 that is not the
+        validator's own side -- a revision's seed workspace swept away) or ``transient`` (its
+        rate, its load, a timeout: asked again later)."""
         if e.code in MINER_REFUSALS:
             return "miner"
+        words = " ".join(str(e).split())
+        if (
+            e.code == WORKSPACE_BUSY
+            or (e.code == "busy" and e.status == 409)
+            or any(w in words for w in WORKSPACE_BUSY_WORDS)
+        ):
+            return "busy"
         if e.code == SEED_NOT_FOUND:
             return "permanent"  # the seed workspace is gone: no grant of this job can be made
         if not e.ours and e.status in (400, 404, 410):  # an older platform: a bare 404
@@ -3877,6 +3899,11 @@ class Desk:
           :data:`GRANT_RATE_PAUSE_S`. A refusal that can never succeed (:meth:`_grant_refusal`)
           ends a client job "didn't finish" at its :data:`GRANT_PERMANENT_TRIES`-th: nobody
           scored, the platform told.
+        - **a busy source workspace** (``busy``: a revision forks the delivered workspace, and a
+          run is still going on it): a wait, never counted toward those tries. Offered again
+          after :data:`GRANT_RETRY_S`, doubling up to :data:`GRANT_BUSY_RETRY_MAX_S`, until the
+          job's own deadline (:attr:`deadline_s` from its claim); a client job still refused then
+          ends "didn't finish", as above.
 
         One log line per refusal kind, throttled (:meth:`_say`)."""
         if e.code == SUSPENDED:
@@ -3888,7 +3915,7 @@ class Desk:
             f"job {job.job}: grant to {m.hotkey[:10]} refused ({e.status} {e.code or 'no code'}: "
             f"{words})"
         )
-        ended = 0
+        ended = busy_out = 0
         with self._mut():
             if e.code == NOT_LINKED:  # its key is gone there: not available until it asks
                 m.key_id = ""
@@ -3911,7 +3938,9 @@ class Desk:
                     then += "; its grants for jobs it holds no live work on here are closed"
                 key = f"miner:{m.hotkey}:{e.code}"
             else:
-                if e.status == 0 or e.status == 409 or (e.status >= 500 and not e.held):
+                if kind != "busy" and (
+                    e.status == 0 or e.status == 409 or (e.status >= 500 and not e.held)
+                ):
                     # no answer (a timeout, the platform unreachable, a gateway's 5xx), or the
                     # same grant still being made: it may exist on the platform, unlearned
                     self._note_maybe(m.hotkey, job.job)
@@ -3921,7 +3950,8 @@ class Desk:
                 row["tries"] = int(row.get("tries", 0)) + 1
                 if kind == "permanent":
                     row["permanent"] = int(row.get("permanent", 0)) + 1
-                delay = min(GRANT_RETRY_MAX_S, GRANT_RETRY_S * 2 ** min(row["tries"] - 1, 30))
+                cap = GRANT_BUSY_RETRY_MAX_S if kind == "busy" else GRANT_RETRY_MAX_S
+                delay = min(cap, GRANT_RETRY_S * 2 ** min(row["tries"] - 1, 30))
                 row["next_ms"] = now + int(delay * 1000)
                 row.update(status=e.status, code=e.code, error=str(e)[:300])
                 if e.status == 429:
@@ -3936,9 +3966,25 @@ class Desk:
                 ):
                     self._end_ungrantable(job, e)
                     ended = permanent
+                since = int(job.created_ms or row.get("first_ms") or now)
+                until = since + self.deadline_s * 1000
+                if (
+                    kind == "busy"
+                    and now >= until
+                    and job.kind == "client"
+                    and job.state == "queued"
+                ):
+                    self._end_ungrantable(job, e, busy=True)
+                    busy_out = int(row["tries"])
                 then = f"offered again in {delay:.0f} s (refusal {row['tries']})"
                 if kind == "permanent":
                     then += f", a permanent one ({permanent} of {GRANT_PERMANENT_TRIES})"
+                elif kind == "busy":
+                    left = max(0, until - now) // 60_000
+                    then += (
+                        ", the workspace it forks is busy: a wait, not counted "
+                        f"(the job's deadline in {left} min)"
+                    )
                 key = f"job:{job.job}:{e.code or e.status}"
         if ended:
             self.log(
@@ -3946,17 +3992,26 @@ class Desk:
                 "it ends didn't finish, not charged, nobody scored"
             )
             return
+        if busy_out:
+            self.log(
+                f"ALERT: {head}: the workspace this job forks stayed busy until the job's deadline "
+                f"({busy_out} refusals): it ends didn't finish, not charged, nobody scored"
+            )
+            return
         self._say(key, f"{head}; {then}")
         if kind == "miner" and m.hotkey in self._sweep:
             self._spawn(self._sweep_grants)
 
-    def _end_ungrantable(self, job: Job, e: PlatformError) -> None:
-        """Inside a mutation: no grant of ``job`` can succeed (its seed workspace is gone, ...).
-        It ends "didn't finish", not charged, nobody scored (its earlier attempts keep what they
-        scored as they ended), and the platform is told with the reason."""
+    def _end_ungrantable(self, job: Job, e: PlatformError, *, busy: bool = False) -> None:
+        """Inside a mutation: no grant of ``job`` can succeed (its seed workspace is gone, ...),
+        or (``busy``) the workspace it forks stayed busy until the job's deadline. It ends
+        "didn't finish", not charged, nobody scored (its earlier attempts keep what they scored
+        as they ended), and the platform is told with the reason."""
+        said = f"({e.status} {e.code or 'no code'}: {' '.join(str(e).split())[:300]})"
         why = (
-            "the platform cannot make this job's workspace "
-            f"({e.status} {e.code or 'no code'}: {' '.join(str(e).split())[:300]})"
+            f"the workspace this job forks stayed busy until the job's deadline {said}"
+            if busy
+            else f"the platform cannot make this job's workspace {said}"
         )
         job.state = "done"
         job.result = {
