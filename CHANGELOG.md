@@ -18,14 +18,10 @@ All notable changes to this project are listed here. The format follows
   on a full record) the larger of `--gate-run-s` and 1.5 times the miner's longest `report --mutate` on the same
   digest, capped by the new `--gate-run-max-s` (default 7200 s). A run stopped at Watt's own wall fails at once instead
   of being run again at the same budget; a run that ran out of the validator's own budget is retried once at the cap.
-
-### Changed
-
-- **The gate's time follows the design.** The validator's guard run gets `--gate-run-s` (1800), or 1.5 times the
-  miner's own whole guard run on the same digest when that is longer (read from Watt's trace in the validator's
-  fork), at most `--gate-run-max-s` (7200, new). A run stopped at its budget is run again only with a larger one
-  (the most, once); a run Watt stopped at its own wall-clock limit is not run again. Either ends the attempt with
-  "the validator's own report run did not finish within N s" instead of a second run as slow as the first.
+- **The reference miner wires a split at its stand-ins.** Its prompt says that each crossing between sub-devices is
+  wired on the stand-ins (a net per contact, a cable of its own); that a required electrical interface states its
+  signal, voltage and, carrying power, current; that a published member stays Unused only when its contract marks it
+  spare; and that a sub-device's contacts work across the voltage its contract gives and draw no more than it allows.
 
 ## [0.6.22] - 2026-11-18
 
