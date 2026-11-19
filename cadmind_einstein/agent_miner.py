@@ -344,9 +344,12 @@ one its contract omits is named (W0230, a warning): take it into the contract an
 extension lead is this project's own cable, in its BOM and steps; a sub-device never stands in \
 another sub-device's hardware as a world item to wire to, and every brief that says where a \
 shared part sits says the
-same. A workspace with \
+same. A part that carries or drives the whole device is given the device's mass in its \
+contract (budget carried_mass, W0419), and a lead a part publishes runs clear of this project's \
+bodies where it is held (W0752). A workspace with \
 brief/contract.toml is a sub-device: meet that contract (W0230; its contacts work across the \
-voltage it gives and draw no more than it allows, W0837 and W0816) and publish spec/contract.toml; \
+voltage it gives and draw no more than it allows, W0837 and W0816; a test that needs the \
+device's mass reads its budget carried_mass) and publish spec/contract.toml; \
 brief/parent.md, when there, is the parent's brief, for context. \
 A workspace with brief/references.toml is an accessory of another device, `@<id>` in the brief: \
 read the `references` topic first; you check against references/<id>/, numbers and shapes, which \
