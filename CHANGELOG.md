@@ -7,6 +7,14 @@ All notable changes to this project are listed here. The format follows
 
 ## [Unreleased]
 
+## [0.6.26] - 2026-11-23
+
+### Fixed
+
+- **The miner stats answer reads the votes once.** `GET /v1/stats/miners` read every vote once per delivered job, about
+  20 s per miner on the mainnet store, so the platform's 10 s call timed out and miners saw "validator unreachable".
+  `Reviewer.votes_by_job()` groups the votes from one read; the answer is unchanged.
+
 ## [0.6.25] - 2026-11-19
 
 ### Changed
