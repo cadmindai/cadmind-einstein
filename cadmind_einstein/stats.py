@@ -199,11 +199,16 @@ class MinerStats:
 
     # -- the rollup ----------------------------------------------------------------------------
 
-    def _vote_of(self, job: str) -> float | None:
+    def _votes(self) -> dict[str, list[dict[str, Any]]]:
+        """Every vote by job, read once per answer: reading them per job made one answer read the
+        whole vote table once for each delivered job, so it grew with jobs times votes."""
+        return self.reviewer.votes_by_job() if self.reviewer is not None else {}
+
+    def _vote_of(self, job: str, votes: Mapping[str, list[dict[str, Any]]]) -> float | None:
         """A delivered job's vote ``V`` (shown, never scored); None without a reviewer or a vote."""
         if self.reviewer is None:
             return None
-        v = self.reviewer.standing_of(job).get("V")
+        v = self.reviewer.standing_from(votes.get(job, ())).get("V")
         return None if v is None else float(v)
 
     def _store(self) -> Any:
@@ -219,7 +224,8 @@ class MinerStats:
         """At the hour's close: rewrite the rows of the days still wholly in the window (frozen
         after). Answers how many rows were written."""
         now = self.desk.now_ms() if now_ms is None else now_ms
-        fresh = rollup(self.desk.ledger.outcomes, now, self._vote_of)
+        votes = self._votes()
+        fresh = rollup(self.desk.ledger.outcomes, now, lambda j: self._vote_of(j, votes))
         cutoff = now - WINDOW_H * HOUR_MS
         store = self._store()
         old = store.items("miner_day") if store is not None else dict(self._frozen)
@@ -234,18 +240,26 @@ class MinerStats:
             self._frozen[key] = row
         return len(fresh)
 
-    def _days(self, now_ms: int) -> dict[str, dict[str, float]]:
+    def _days(
+        self, now_ms: int, votes: Mapping[str, list[dict[str, Any]]]
+    ) -> dict[str, dict[str, float]]:
         """Every rollup row: the frozen ones as stored, the window's ones fresh."""
         store = self._store()
         stored = store.items("miner_day") if store is not None else dict(self._frozen)
         cutoff = now_ms - WINDOW_H * HOUR_MS
         rows = {k: v for k, v in stored.items() if day_start(k.split("/", 1)[0]) < cutoff}
-        rows.update(rollup(self.desk.ledger.outcomes, now_ms, self._vote_of))
+        rows.update(rollup(self.desk.ledger.outcomes, now_ms, lambda j: self._vote_of(j, votes)))
         return rows
 
     # -- counters -------------------------------------------------------------------------------
 
-    def _window(self, hotkey: str, since_ms: int, outcomes: list[JobOutcome]) -> dict[str, Any]:
+    def _window(
+        self,
+        hotkey: str,
+        since_ms: int,
+        outcomes: list[JobOutcome],
+        votes: Mapping[str, list[dict[str, Any]]],
+    ) -> dict[str, Any]:
         c = _empty()
         # a void rejection (a confirmed decline, or the operator's) is not counted as one
         void = {o.job for o in outcomes if o.hotkey == hotkey and o.kind == "reject" and o.void}
@@ -275,7 +289,7 @@ class MinerStats:
         for o in outcomes:
             if o.hotkey != hotkey or o.ended_ms < since_ms:
                 continue
-            _add(c, outcome_row(o, self._vote_of(o.job) if o.passed else None))
+            _add(c, outcome_row(o, self._vote_of(o.job, votes) if o.passed else None))
             if o.kind == "reject" and not o.void and o.job in passed_by_other:
                 c["overturned"] += 1
         return _finish(c)
@@ -313,7 +327,8 @@ class MinerStats:
         wanted = [h for h in dict.fromkeys(hotkeys) if h][:MAX_HOTKEYS]
         now = self.desk.now_ms()
         window, weight, average = self.desk.ledger.snapshot(now)
-        days = self._days(now)
+        votes = self._votes()
+        days = self._days(now, votes)
         uids, cold = dict(self.uids() or {}), dict(self.coldkeys() or {})
         cur = dict(self.current() or {})
         vec = {str(k): float(v) for k, v in (cur.get("by_hotkey") or {}).items()}
@@ -326,7 +341,18 @@ class MinerStats:
             "miners": {
                 hk: {
                     **self._doc(
-                        hk, now, window, weight, average, days, uids, cold, vec, total, ranked
+                        hk,
+                        now,
+                        window,
+                        weight,
+                        average,
+                        days,
+                        uids,
+                        cold,
+                        vec,
+                        total,
+                        ranked,
+                        votes,
                     ),
                     # its own key request and place on the waitlist (0.6.10), None if it never asked
                     "key_request": keys.get(hk),
@@ -348,6 +374,7 @@ class MinerStats:
         vec: Mapping[str, float],
         total: float,
         ranked: list[str],
+        votes: Mapping[str, list[dict[str, Any]]],
     ) -> dict[str, Any]:
         d = self.desk
         m = d.miners.get(hk)
@@ -396,13 +423,13 @@ class MinerStats:
                 "strikes": d.strikes.get(hk, 0),
             },
             "windows": {
-                "24h": self._window(hk, now - DAY_MS, window),
-                "7d": self._window(hk, now - WINDOW_H * HOUR_MS, window),
+                "24h": self._window(hk, now - DAY_MS, window, votes),
+                "7d": self._window(hk, now - WINDOW_H * HOUR_MS, window, votes),
                 "lifetime": self._lifetime([hk], days),
             },
             "coldkey_lifetime": self._lifetime(siblings, days),
             "days": self._daily(hk, days, now),
-            "jobs": [self._job(o) for o in mine[:JOBS_SHOWN]],
+            "jobs": [self._job(o, votes) for o in mine[:JOBS_SHOWN]],
             "failures": d.failures(hk),
             "imports": {"available": False, "note": "imports: not available yet"},
         }
@@ -422,14 +449,14 @@ class MinerStats:
             )
         return out
 
-    def _job(self, o: JobOutcome) -> dict[str, Any]:
+    def _job(self, o: JobOutcome, by_job: Mapping[str, list[dict[str, Any]]]) -> dict[str, Any]:
         votes: dict[str, Any] = {"V": None, "count": 0, "items": []}
         if self.reviewer is not None and o.passed:
             from .votes import full_votes  # noqa: PLC0415
 
             votes = {
-                **self.reviewer.standing_of(o.job),
-                "items": full_votes(self.reviewer.votes_of(o.job)),
+                **self.reviewer.standing_from(by_job.get(o.job, ())),
+                "items": full_votes(list(by_job.get(o.job, ()))),
             }
         return {
             "job": o.job,
@@ -452,12 +479,13 @@ class MinerStats:
         vec = {str(k): float(v) for k, v in (cur.get("by_hotkey") or {}).items()}
         total = sum(vec.values())
         uids = dict(self.uids() or {})
+        by_job = self._votes()
         hks = {h for h, w in weight.items() if w > 0} | set(self.desk.admitted()) | set(vec)
         rows = []
         for hk in hks:
             mine = [o for o in window if o.hotkey == hk and o.passed]
             stars = [_signals(o)["stars"][-1] for o in mine if _signals(o)["stars"]]
-            votes = [v for v in (self._vote_of(o.job) for o in mine) if v is not None]
+            votes = [v for v in (self._vote_of(o.job, by_job) for o in mine) if v is not None]
             rows.append(
                 {
                     "hotkey": hk,

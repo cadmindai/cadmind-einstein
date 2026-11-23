@@ -640,9 +640,20 @@ class Reviewer:
     def votes_of(self, job: str) -> list[dict[str, Any]]:
         return [v for k, v in self.kv.items("vote").items() if k.split("|", 1)[0] == job]
 
+    def votes_by_job(self) -> dict[str, list[dict[str, Any]]]:
+        """Every vote grouped by its job, from one read of the store (``votes_of`` reads all of
+        them for one job: a caller asking about many jobs asks this once instead)."""
+        out: dict[str, list[dict[str, Any]]] = {}
+        for k, v in self.kv.items("vote").items():
+            out.setdefault(k.split("|", 1)[0], []).append(v)
+        return out
+
     def standing_of(self, job: str) -> dict[str, Any]:
         """``{V, count}`` of a job's votes: their average and how many (never scored)."""
-        rows = self.votes_of(job)
+        return self.standing_from(self.votes_of(job))
+
+    def standing_from(self, rows: Iterable[Mapping[str, Any]]) -> dict[str, Any]:
+        """``{V, count}`` of these votes (one job's, as :meth:`votes_by_job` groups them)."""
         voters = [
             Voter(
                 coldkey="ours" if r["validator"] == self.me else f"hotkey:{r['validator']}",

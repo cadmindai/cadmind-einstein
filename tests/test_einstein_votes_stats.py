@@ -648,6 +648,29 @@ class TestStats(ReviewRig):
         self.assertEqual(net["miners"][0]["vote_mean"], 0.65)  # shown, never scored
         self.assertNotIn("jobs", net["miners"][0])
 
+    def test_one_answer_reads_the_votes_once_however_many_jobs_it_counts(self) -> None:
+        hk = self.deliver()
+        self.reviewer.pass_once()
+        stats = MinerStats(self.desk, reviewer=self.reviewer, votes_mode=self.mode)
+        reads: list[str] = []
+        items = self.reviewer.kv.items
+
+        def counted(ns: str) -> dict[str, Any]:
+            reads.append(ns)
+            return items(ns)
+
+        self.reviewer.kv.items = counted  # type: ignore[method-assign]
+        doc = stats.docs([hk])["miners"][hk]
+        self.assertEqual(reads.count("vote"), 1)  # it read the whole table once per job before
+        self.assertEqual(doc["windows"]["7d"]["voted"], 1)
+        self.assertEqual(doc["jobs"][0]["votes"]["count"], 1)
+        reads.clear()
+        self.assertEqual(stats.network()["miners"][0]["vote_mean"], 0.65)
+        self.assertEqual(reads.count("vote"), 1)
+        reads.clear()
+        stats.roll()
+        self.assertEqual(reads.count("vote"), 1)
+
     def test_lifetime_outlives_the_window(self) -> None:
         with tempfile.TemporaryDirectory() as d:
             store = Store(Path(d) / "s.sqlite3")
