@@ -235,10 +235,11 @@ and web search. Before you build a device that must fit a named product, find th
 real geometry (its outline AND the positions and sizes of its buttons, ports, grilles, camera and \
 other protrusions), in this order: 1) the maker's drawing or CAD (Apple publishes dimensioned \
 drawings of its devices; board makers publish STEP files and mechanical PDFs); 2) a community case \
-or body model of that product (Printables models download without login), measured with `watt \
-measure model`; 3) orthographic product renders or images, scaled against the official overall \
-size and read with `view_image`. A model or drawing you fetch is measured, never ignored. The \
-`photos` topic of `watt_guide` says where to look and how to read each. Store each page and \
+or body model of that product, from a site whose terms allow automated access and paid \
+work, measured with `watt measure model`; 3) orthographic product renders or images, scaled \
+against the official overall size and read with `view_image`. A model or drawing you fetch \
+is measured, never ignored. The `photos` topic of `watt_guide` says where to look and how to \
+read each. Store each page and \
 file you use with `fetch_to_workspace` (or with the hosted `fetch` when the local tool is not \
 there) and cite it. A spec sheet's overall size is not enough for a part that fits around a \
 product; never default to the loose option. When no source gives a size the fit hangs on, \

@@ -317,6 +317,7 @@ class TestCancelledJob(unittest.TestCase):
         ]
         self.assertEqual(order, sorted(order))
         self.assertIn("measured with `watt measure model`", said)
+        self.assertNotIn("without login", said)  # no model site is named (their terms)
         self.assertIn("A model or drawing you fetch is measured, never ignored.", said)
         self.assertIn("The `photos` topic of `watt_guide` says where to look", said)
         self.assertIn("the geometry of a product the device must fit is not left for later", said)

@@ -385,10 +385,10 @@ assumption you build on, why, and what it affects -- and may answer while you wo
   Otherwise, when the parts cannot be assembled, reject the job (`not-capable`) and say why.
 - **Find the real geometry of what the device fits, before you build.** For a device that must fit a named product,
   look in this order: the maker's drawing or CAD (Apple publishes dimensioned drawings of its devices; board makers
-  publish STEP files and mechanical PDFs); a community case or body model of that product (Printables models download
-  without login), measured with `watt measure model`; orthographic product renders or images, scaled against the
-  official overall size and read with `view_image`. A model or drawing you fetch is measured, never ignored; store and
-  cite what you use. The `photos` topic of `watt_guide` says where to look and how to read each. "Fetch only what the
+  publish STEP files and mechanical PDFs); a community case or body model of that product, from a site
+  whose terms allow automated access and paid work, measured with `watt measure model`; orthographic product renders
+  or images, scaled against the official overall size and read with `view_image`. A model or drawing you fetch is
+  measured, never ignored; store and cite what you use. The `photos` topic of `watt_guide` says where to look and how to read each. "Fetch only what the
   first sketch needs" does not apply to that geometry, and the client is not asked to measure it. When no source
   gives a size the fit hangs on, design to a bounded estimate only if the need is met across its whole range, else
   it is a missed need, as above; never default to the loose option. The judge (1.3f) sees whether each of the
