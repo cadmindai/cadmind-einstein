@@ -213,6 +213,9 @@ improvement job that got no workspace in this long is dropped (the platform free
 NO_PRODUCTION_LOG_S = 600.0
 """lanes open, a client job waits for a production miner: said at most this often"""
 FALLBACK_ALERT_S = 3600.0
+PRODUCTION_SEEN_S = 600.0
+"""lanes open: a production-rated miner counts as existing only if it polled within this long. One
+that stopped polling does not make client jobs wait for it"""
 """lanes open and no approved miner has a production rating: client jobs go to the highest-rated
 free approved miner, and the operator is alerted at most this often"""
 OURS_BUSY = (
@@ -2534,9 +2537,11 @@ class Desk:
         to be asked questions is never declined for a need: the builder assumes, records it and
         delivers.
 
-        **An improvement job**: the miner rejects the device. It is never served that device
-        again (the platform keeps the rejection), nothing is counted -- no outcome, no rejection
-        telemetry -- and the miner is free at once. A category and a message are optional."""
+        **An improvement job**: the miner rejects the device, and only BEFORE it accepts the job
+        (409 ``improvement_accepted`` after: an accepted try ends with a result or a failure,
+        which counts 0). It is never served that device again (the platform keeps the
+        rejection), nothing is counted -- no outcome, no rejection telemetry -- and the miner is
+        free at once. A category and a message are optional."""
         with self._lock:
             held = self.jobs.get(job_id)
             improvement = held is not None and held.kind == "improvement"
@@ -2566,13 +2571,21 @@ class Desk:
     def _reject_device(
         self, hotkey: str, job_id: str, category: str, message: str
     ) -> dict[str, Any]:
-        """A miner rejects the device of its improvement job (:meth:`reject`)."""
+        """A miner rejects the device of its improvement job (:meth:`reject`), before accepting
+        it: once accepted, a rejection would be a way round a failed try's 0."""
         with self._mut():
             self._miner(hotkey)
             job = self.jobs.get(job_id)
             a = job.current if job else None
             if job is None or a is None or a.hotkey != hotkey:
                 raise DeskError("no such assignment", 404)
+            if job.state != "assigned" or a.accepted_ms:
+                raise DeskError(
+                    "an improvement device is rejected before its job is accepted: an accepted "
+                    "try ends with a result, or fails",
+                    409,
+                    "improvement_accepted",
+                )
             self._spawn(self._freeze_quietly, a.workspace)
             a.category = category if category in CATEGORIES else ""
             a.message = " ".join(str(message or "").split())[:2000]
@@ -2849,11 +2862,14 @@ class Desk:
 
     def _fallback(self, ratings: Mapping[str, float], now: int) -> bool:
         """Inside the lock, lanes open: whether NO eligible miner (registered, approved, keyed,
-        not blocked) has a production rating at all. Client jobs then go to the highest-rated
-        free approved miner instead of waiting for a lane nobody is in."""
+        not blocked) that polled within :data:`PRODUCTION_SEEN_S` has a production rating. Client
+        jobs then go to the highest-rated free approved miner instead of waiting for a lane
+        nobody is in. A production miner that stopped polling is not waited for; one that polls
+        and is busy is."""
         reg = set(self.registered())
         return not any(
             m.key_id
+            and now - m.last_seen_ms <= PRODUCTION_SEEN_S * 1000
             and m.hotkey in reg
             and m.hotkey not in self.excluded
             and m.blocked_until_ms <= now
@@ -3414,10 +3430,11 @@ class Desk:
         equal waits are drawn at random.
 
         **No production miner at all**: while no eligible miner (registered, approved, keyed,
-        not blocked) has a production rating, a client job does not wait for a lane nobody is
+        not blocked) seen polling in the last :data:`PRODUCTION_SEEN_S` has a production rating,
+        a client job does not wait for a lane nobody is
         in: it goes to the highest-rated free approved miner (ties: the longest wait). Each such
         assignment is logged, and an ALERT is raised at most every :data:`FALLBACK_ALERT_S`.
-        While at least one production miner exists and all of them are busy, the job waits."""
+        While at least one production miner is polling and all of them are busy, the job waits."""
         now = self.now_ms()
         ratings = self.ledger.ratings(now)
         free = [m for m in free if self.approved(m.hotkey)]

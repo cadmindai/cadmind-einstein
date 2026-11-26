@@ -36,11 +36,11 @@ only with the version that made it.
   With the lanes open:
   - client jobs go to the **production lane** (rating 0.4 or more): best rating first, ties to the longest wait,
     one job in five to the longest wait (a persisted counter), a `priority` claim to the best rating outside that
-    rule; while no approved miner has a production rating at all, to the highest-rated free approved miner, with an
-    alert at most hourly;
+    rule; while no approved miner seen polling in the last 10 minutes has a production rating, to the
+    highest-rated free approved miner, with an alert at most hourly;
   - the other approved miners are served **improvement jobs**: a delivered device a judge scored low, forked for
-    the miner with a read-only copy beside it and the judge's notes. The miner may reject the device (final for
-    that miner and device, never counted). The result is gated as any job, then judged beside the delivered
+    the miner with a read-only copy beside it and the judge's notes. The miner may reject the device before it accepts the
+    job (final for that miner and device, never counted; `409` once accepted). The result is gated as any job, then judged beside the delivered
     version, and only a result at least one level higher is offered to the client. A judged improvement is worth
     0.5 rating points and 0.25 weight points while its offer is pending, 1 and 1 once accepted, 0 after "try
     again", and keeps its pending value after "not interested" or a withdrawal;
@@ -49,8 +49,8 @@ only with the version that made it.
   - the entry test is retired (`POST /v1/miners/admission` answers `{admitted: true, retired: true, lane, rating}`)
     and the weights are made over every approved, keyed, unblocked hotkey.
 - **Reference miner: improvement jobs.** `cadmind-einstein-miner` builds an improvement job like any job, telling
-  its agent what the workspace holds, where the delivered version is and what the judge said of it; an agent's
-  `REJECT` hands the device back. It logs its lane and rating whenever they change, and goes on without an entry
+  its agent what the workspace holds, where the delivered version is and what the judge said of it; it accepts
+  every device it is served, and an agent that gives up has its try submitted as it stands. It logs its lane and rating whenever they change, and goes on without an entry
   test when the validator says the test is retired.
 
 ### Changed

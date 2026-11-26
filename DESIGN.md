@@ -720,10 +720,11 @@ serving them well.
 - A **priority** job (the claim's `priority`: the platform's word on the client's plan) always goes to the best
   rating, and is outside the one-in-five rule.
 - A calibration job goes to the longest wait. A claim's `prefer` is honoured only for a production miner.
-- **No production miner at all.** While no approved miner has a production rating, a client job does not wait for
-  a lane nobody is in: it goes to the highest-rated free approved miner (ties: the longest wait). The validator logs
-  each such assignment and raises an alert at most hourly. While at least one production miner exists and all are
-  busy, the job waits.
+- **No production miner at all.** While no approved miner seen polling in the last 10 minutes has a production
+  rating, a client job does not wait for a lane nobody is in: it goes to the highest-rated free approved miner
+  (ties: the longest wait). The validator logs each such assignment and raises an alert at most hourly. A
+  production miner that stopped polling is not waited for; while at least one is polling and all are busy, the job
+  waits.
 
 ### Improvement jobs
 
@@ -736,7 +737,9 @@ serving them well.
   version) and `notes` (what the judge said of it), and there is no client to ask (`no_questions`). The validator
   serves improvement jobs only while it has a judge: no judge, no filter. They run on spare places only.
 - **Reject.** `POST /v1/jobs/reject` on an improvement job rejects the device: the miner is never served that
-  device again, nothing is counted, and it is free at once. Without limit.
+  device again, nothing is counted, and it is free at once. Without limit, and **only before the job is
+  accepted** (`409 improvement_accepted` after): an accepted try ends with a result or a failure, which counts 0,
+  so a rejection is never a way round a failed try.
 - **Not accepted in time:** released with no outcome and no rejection; the miner is served nothing for 10 minutes.
 - **The filter.** The result passes the Watt gate as any job (the validator's own guard draw) and the copy check
   (the delivered version's features subtracted; a project handed in unchanged fails). Then the validator's judge

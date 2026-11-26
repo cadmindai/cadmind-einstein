@@ -1032,7 +1032,7 @@ class TestImprovementJob(unittest.TestCase):
             "scored level 1 of 3",
             "read-only workspace `ag-ref`",
             "at least one level above the delivered version",
-            "REJECT not-capable",
+            "there is no handing it back now (do not REJECT)",
             "- (main, fails) it tips over -- the judge saw: the base is 20 mm deep",
             "- (cannot_tell) it does not hold a phone",
             "- nudge: widen the base",
@@ -1184,7 +1184,7 @@ class TestImprovementJob(unittest.TestCase):
         self.assertIn("lane: improvement (rating 0.000, threshold 0.4)", said)
         self.assertEqual(said.count("lane: improvement"), 1)
 
-    def test_a_reject_hands_the_device_back(self) -> None:
+    def test_a_reject_after_the_accept_is_submitted_as_a_failed_try(self) -> None:
         state = {"open": True}
 
         def work() -> dict[str, Any]:
@@ -1202,8 +1202,40 @@ class TestImprovementJob(unittest.TestCase):
                 work, build, extra=("--max-jobs", "1"), keep_outcome=True
             )
         self.assertEqual(code, 0)
-        self.assertIn(("/v1/jobs/reject", reject[1]), sent)
-        self.assertNotIn("/v1/jobs/submit", [p for p, _ in sent])
+        # a device is rejected before its job is accepted, never after: no reject is sent
+        self.assertNotIn("/v1/jobs/reject", [p for p, _ in sent])
+        self.assertIn(
+            (
+                "/v1/jobs/submit",
+                {"job": "imp-1", "workspace": "ws-imp-1", "digest": "", "summary": "no way"},
+            ),
+            sent,
+        )
+
+    def test_an_agent_that_cannot_start_submits_an_accepted_improvement_job(self) -> None:
+        state = {"open": True}
+
+        def work() -> dict[str, Any]:
+            if not state["open"]:
+                return {"job": None}
+            return {**self.view("imp-1", "imp-1" in self.accepted), **self.WORK}
+
+        def build(_cmd: list[str], **_kw: object) -> Any:
+            state["open"] = False
+            raise agent_miner.AgentLaunchError("no credit")
+
+        class Updater:
+            def watch(self, _busy: Any, _stop: Any) -> None:
+                pass
+
+            def between_jobs(self, *, job_waiting: bool = False) -> bool:
+                return not state["open"]  # the injected restart ends the run once it is over
+
+        _, sent, _ = self.run_miner(work, build, updater=Updater())
+        self.assertNotIn("/v1/jobs/reject", [p for p, _ in sent])
+        self.assertIn(
+            ("/v1/jobs/submit", {"job": "imp-1", "workspace": "ws-imp-1", "digest": ""}), sent
+        )
 
     def test_a_retired_entry_test_is_said_and_the_miner_goes_on(self) -> None:
         polls = {"n": 0}

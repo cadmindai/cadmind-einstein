@@ -22,7 +22,14 @@ import bittensor.http_auth as btauth
 from bittensor.sp_core import Keypair
 
 from cadmind_einstein import daemon, onboarding
-from cadmind_einstein.desk import FALLBACK_ALERT_S, NO_PRODUCTION_LOG_S, Desk, DeskError, Job
+from cadmind_einstein.desk import (
+    FALLBACK_ALERT_S,
+    NO_PRODUCTION_LOG_S,
+    PRODUCTION_SEEN_S,
+    Desk,
+    DeskError,
+    Job,
+)
 from cadmind_einstein.fake_miner import signed
 from cadmind_einstein.scoring import HOUR_MS, THRESHOLD, JobOutcome, Ledger
 from cadmind_einstein.service import serve
@@ -300,6 +307,46 @@ class TestOpen(Lanes):
         self.poll()
         self.tick()
         self.assertEqual(self.desk.jobs["j2"].state, "queued")  # never to B while A exists
+        self.assertFalse([x for x in self.said if "no production miner at all" in x])
+
+    def test_an_offline_production_miner_is_not_waited_for(self) -> None:
+        self.rate(A, 10)  # the only production miner
+        self.rate(B, 6)
+        self.rate(C, 3)
+        # A has not polled for five minutes: no candidate, but seen within ten -- the job waits
+        self.clock.t += 300
+        self.poll(B, C)
+        self.desk.jobs["j1"] = Job(job="j1", brief="b", created_ms=self.now(), queued_ms=self.now())
+        self.tick()
+        self.assertEqual(self.desk.jobs["j1"].state, "queued")
+        self.assertEqual(self.desk.capacity()["active_miners"], 0)
+        # past ten minutes without a poll it no longer counts: the fallback takes the job
+        self.clock.t += PRODUCTION_SEEN_S - 300 + 1
+        self.poll(B, C)
+        self.tick()
+        self.assertEqual(self.holder_of("j1"), B)  # the highest-rated free approved miner
+        self.assertEqual(len([x for x in self.said if "no production miner at all" in x]), 1)
+        self.assertTrue(any(x.startswith("ALERT") and "production rating" in x for x in self.said))
+        # it polls again: it counts again, and the next job waits for it or goes to it
+        self.poll(A)
+        self.enqueue("j2")
+        self.assertEqual(self.holder_of("j2"), A)
+
+    def holder_of(self, job: str) -> str:
+        return self.desk.jobs[job].attempts[-1].hotkey
+
+    def test_an_online_but_busy_production_miner_makes_the_job_wait(self) -> None:
+        self.rate(A, 10)
+        self.rate(B, 6)
+        self.poll()
+        self.enqueue("j1")
+        self.desk.accept(A, "j1")
+        self.desk.jobs["j2"] = Job(job="j2", brief="b", created_ms=self.now(), queued_ms=self.now())
+        for _ in range(4):  # A keeps polling while it works, for well over ten minutes
+            self.clock.t += PRODUCTION_SEEN_S / 2 - 50
+            self.poll()
+            self.tick()
+            self.assertEqual(self.desk.jobs["j2"].state, "queued")
         self.assertFalse([x for x in self.said if "no production miner at all" in x])
 
     def test_an_offline_or_blocked_miner_is_no_candidate(self) -> None:

@@ -419,10 +419,32 @@ class TestRejectAndAcceptWindow(Rig):
         self.assertNotEqual(second["job"], w["job"])
         self.assertEqual(self.desk.jobs[second["job"]].improvement["device"], "dev-2")
 
-    def test_a_device_may_be_rejected_while_it_is_worked(self) -> None:
+    def test_a_device_is_rejected_only_before_its_job_is_accepted(self) -> None:
         self.p.device()
         w = self.served(A)
         self.desk.accept(A, w["job"])
+        with self.assertRaises(DeskError) as e:  # no way round a failed try's 0
+            self.desk.reject(A, w["job"], "not-capable", "nothing to improve here")
+        self.assertEqual((e.exception.status, e.exception.code), (409, "improvement_accepted"))
+        # nothing changed: the miner still holds the job, the platform heard of no rejection
+        self.assertEqual(self.desk.miners[A].job, w["job"])
+        self.assertEqual(self.desk.status(w["job"])["state"], "working")
+        self.assertFalse(self.p.ws[w["workspace"]]["frozen"])
+        self.assertEqual((self.drain(), self.p.rejects), ([], []))
+        # the only ways out are a result or a failure, which counts 0
+        self.p.work(w["workspace"], {}, deliverable=False)
+        self.desk.submit(A, w["job"], w["workspace"], "")
+        wait_state(self.desk, w["job"], ("done",))
+        self.assertTrue(self.desk.wait_idle())
+        o = self.outcome_of(w["job"])
+        self.assertEqual((o.kind, o.s, o.parts["event"]), ("gate", 0.0, "improvement_failed"))
+        with self.assertRaises(DeskError) as e:
+            self.desk.reject(A, w["job"], "", "")
+        self.assertEqual(e.exception.status, 404)
+
+    def test_a_rejected_device_is_frozen_and_gone(self) -> None:
+        self.p.device()
+        w = self.served(A)
         self.desk.reject(A, w["job"], "not-capable", "nothing to improve here")
         self.assertEqual((self.tries(), self.desk.miners[A].job), ([], ""))
         self.assertTrue(self.desk.wait_idle())

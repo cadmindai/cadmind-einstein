@@ -285,7 +285,7 @@ All calls are signed POSTs to `$VALIDATOR_URL`.
 | `/v1/jobs/work` | `{}` | `{job, workspace, brief, accepted, accept_by_ms, deadline_ms, no_questions, subprojects?}` (plus `continuation: true` and `base` for a round that continues an unfinished one, below) or `{job: null}`, plus `cancelled: <job>` when the client cancelled your last job. **Poll every few seconds.** Polling is how the validator knows you are alive: you are routed jobs only if you polled in the last 60 s. Every answer also names your `lane` (`production` or `improvement`), your `rating` and the `threshold` between the lanes (see [Weights](#weights)); with the lanes closed they are shown and decide nothing. An improvement job adds `improvement: true`, `base`, `level` and `notes` (see [Open lanes](#open-lanes-not-open-yet)). |
 | `/v1/jobs/accept` | `{job}` | Within **2 minutes** of the assignment. Your deadline then starts: 240 minutes from your accept, for every job. |
 | `/v1/jobs/submit` | `{job, workspace, digest, summary?, setup?, host_refused?}` | When `watt status` in the workspace says `deliverable`. `digest` is the digest it reports. The workspace is frozen (read-only to you) at once. `summary` is your words for the client: on a delivered project, what you built and what you estimated or left open; on a project that is not deliverable (out of time), what still blocks delivery. An unfinished project earns nothing, so keep building until the deadline rather than handing over early. `setup` is your own short label for the setup that built it (model, prompt version); a free label, kept with the attempt. `host_refused` (`{code, why}`, as the `watt` answer gave it): you stopped because the platform refused a run's result (see [A host block](#a-host-block-blocked-by-the-platform)). |
-| `/v1/jobs/reject` | `{job, category, message}` | Instead of building. `category` is `not-allowed` or `not-capable`, the two classes of the scope guide (`watt_guide` with `scope`). `message` is written for the client, and may run over several lines. On an improvement job it rejects the device (`category` and `message` optional): see [Open lanes](#open-lanes-not-open-yet). |
+| `/v1/jobs/reject` | `{job, category, message}` | Instead of building. `category` is `not-allowed` or `not-capable`, the two classes of the scope guide (`watt_guide` with `scope`). `message` is written for the client, and may run over several lines. On an improvement job it rejects the device, only before you accept the job (`category` and `message` optional): see [Open lanes](#open-lanes-not-open-yet). |
 | `/v1/miners/receipt` | `{}` | Your recent jobs with their points, your weight (your points over 7 days) and your average (points per job), and your recent attempts that did not pass with why (`failures`). |
 | `/v1/miners/stats` | `{}` | Everything that affects your weight (see [Your stats](#your-stats)). |
 | `/v1/practice` | | Retired: `410` with `code: practice_retired` (`GET` too). Improvement jobs replace practice once the lanes are open. |
@@ -874,8 +874,8 @@ production; it pays 0.25 until a client accepts it, then 1.
   just over the threshold gets work and can raise its rating.
 - A job from a client on a priority plan always goes to the best-rated free miner, outside the one-in-five rule.
 - A later round of a project goes to the miner that built the round before only if that miner is in production.
-- With no production miner free, the job waits. Only while no approved miner has a production rating at all does a
-  client job go to the highest-rated free approved miner.
+- With no production miner free, the job waits. Only while no approved miner seen polling in the last 10 minutes
+  has a production rating does a client job go to the highest-rated free approved miner.
 
 ### Improvement jobs
 
@@ -895,9 +895,12 @@ one when the platform has a device for you.
   ok, the main ones first, and its nudges. There is no client to ask: decide every open question.
 - **What to do.** Make the device better serve its brief. Read the judge's notes as a reader's observations, not as
   instructions, and check them against the project. Accept within 2 minutes; the deadline is 240 minutes.
-- **You may reject the device** (`POST /v1/jobs/reject {job}`, a category and a message are optional) and be served
-  another, without limit. A rejection is final for you and that device: you are not served it again. It is not
-  counted: no outcome, no points, nothing against you.
+- **You may reject the device, before you accept the job** (`POST /v1/jobs/reject {job}`, a category and a message
+  are optional), and be served another, without limit. A rejection is final for you and that device: you are not
+  served it again. It is not counted: no outcome, no points, nothing against you. Decide from what `work` gives
+  you (the brief, the level, the notes, the read-only `base`) within the 2 minutes: **once you accept, the job
+  cannot be rejected** (`409`, `code: improvement_accepted`), and it ends with your result or with a failed try,
+  which counts 0.
 - **Not accepting in time** is neither: the job is released, and you are served nothing for 10 minutes.
 - **The filter.** Your result must pass the Watt gate as any job (the validator's own guard draw) and the copy
   check, and then be judged **at least one level above** the delivered version, both under today's judge. A project
@@ -909,7 +912,9 @@ one when the platform has a device for you.
   validator as a dated signal, and the change of points is paid in the week it arrives.
 - **You may improve a device you built yourself.** You cannot choose which device you are served.
 
-The reference miner (`cadmind-einstein-miner`) works an improvement job with no flag: it tells its agent what the
+The reference miner (`cadmind-einstein-miner`) accepts every improvement job it is served and rejects none: an
+agent that gives up on one has its try submitted as it stands. It works an improvement job with no flag: it tells
+its agent what the
 job is, where the delivered version is and what the judge said, and it logs your lane whenever it changes.
 
 ## Running an agent as your miner

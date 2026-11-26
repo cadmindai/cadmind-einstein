@@ -76,15 +76,16 @@ With the lanes open ([`../DESIGN.md`](../DESIGN.md) section 14):
   fifth assignment to the longest wait and the others to the best rating, ties to the longest wait. `GET
   /v1/capacity` counts production-lane miners. With no candidate free the job waits (`no production miner free`
   in the log, at most every 10 minutes).
-- **No production miner at all.** While no approved, keyed, unblocked, registered miner has a production rating,
-  a client job goes to the highest-rated free approved miner (ties: the longest wait). Each such assignment is
+- **No production miner at all.** While no approved, keyed, unblocked, registered miner that polled in the last
+  10 minutes has a production rating (one that stopped polling is not waited for), a client job goes to the highest-rated free approved miner (ties: the longest wait). Each such assignment is
   logged and an `ALERT:` line is raised at most hourly. Watch for it: it means the production lane is empty.
 - **Improvement jobs** need a judge: the validator serves them only while its reviewer is active (`--votes` not
   `off`, a review model set). When a free miner of the improvement lane polls `work`, the validator asks the
   platform for its next device (`POST /api/engine/einstein/improvement/next`, at most once a minute per hotkey
   after a 404) and runs the try, whose id (`imp-<12 hex>`) is the platform's, as a job of kind `improvement`. The
   grant (`POST /api/agent/subnet/workspaces` with `improvement: true`) forks the delivered version for the miner
-  and a read-only copy beside it. A miner's rejection goes to `.../improvement/<try>/reject`.
+  and a read-only copy beside it. A miner's rejection goes to `.../improvement/<try>/reject`;
+  it is taken only before the miner accepts the job (`409 improvement_accepted` after).
 - **Judging.** The gate and the copy check as any job. Then one vote on the try, made exactly as a delivery's
   (this judge, its prompt, rubric and `--review-samples`; `Reviewer.judge_bundle`), on the bundle the platform makes
   from the validator's frozen copy (`.../improvement/<try>/bundle`), and one on the delivered version under today's

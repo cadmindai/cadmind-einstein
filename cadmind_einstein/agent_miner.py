@@ -60,9 +60,10 @@ miner whose rating is under the threshold is served improvement jobs on ``work``
 a judge scored low; ``base`` names a read-only copy of that version, ``level`` the judge's level
 of it and ``notes`` what the judge said. The agent is told so (:func:`improvement_rule`) and
 builds as on any job, with the same deadline and no client to ask. Its result is offered to the
-client only when it is judged at least one level above the delivered version. An agent that ends
-with ``REJECT`` hands the device back: the miner is never served that device again and nothing
-is counted. The miner logs its lane and rating whenever they change (:func:`lane_line`).
+client only when it is judged at least one level above the delivered version. A device can be
+rejected only before its job is accepted, and this miner accepts what it is served: an agent
+that ends with ``REJECT``, or cannot start, has its try submitted as it stands (a failed try).
+The miner logs its lane and rating whenever they change (:func:`lane_line`).
 
 A submit or a reject the validator did not take (no answer, 429 or 5xx) is sent again with a
 backoff (:func:`send`).
@@ -488,9 +489,8 @@ fix that first. The delivered version itself is the read-only workspace `{ref}` 
 `list_files` and `read_file`). There is no client to ask: decide every open question yourself and \
 record it. Your result is offered to the device's client only if it passes the gate and is judged \
 at least one level above the delivered version; a project handed in unchanged, or one that is not \
-better, counts as a failed try. If you find, before building, that you cannot improve this \
-device, end with `REJECT not-capable: <why>`: you are not served this device again, and a \
-rejection is not counted.{notes}"""
+better, counts as a failed try. The job is accepted: there is no handing it back now (do not \
+REJECT), so build the best improvement you can.{notes}"""
 
 
 def _level_words(level: Any) -> str:
@@ -500,7 +500,7 @@ def _level_words(level: Any) -> str:
 def improvement_rule(work: dict[str, Any]) -> str:
     """What the prompt says of an improvement job (``improvement``): what the workspace holds,
     where the delivered version is, what the judge said of it (``notes``: the lines of the brief
-    it did not rule ok, and its nudges), and what a rejection means."""
+    it did not rule ok, and its nudges), and that an accepted try is not handed back."""
     if not work.get("improvement"):
         return ""
     base = work.get("base") if isinstance(work.get("base"), dict) else {}
@@ -1771,6 +1771,7 @@ def main(argv: list[str] | None = None) -> int:
         back) or ``"built"`` (submitted, rejected, or cancelled meanwhile)."""
         la = on.a
         job, ws, brief = work["job"], work["workspace"], work.get("brief") or ""
+        improvement = work.get("improvement") is True
         if not work.get("accepted"):
             code, _ = call("/v1/jobs/accept", {"job": job})
             log(f"accepted {job} in {ws}: {code}")
@@ -1920,6 +1921,14 @@ def main(argv: list[str] | None = None) -> int:
                 overrun.cancel()
             on.busy.clear()
             on.running.update(job="", agent=None)
+        if launch_error and improvement:
+            # an accepted improvement job cannot be handed back: submitted as it stands
+            log(f"{job}: the agent could not start ({launch_error}): submitted as it stands")
+            code, out = send(
+                call, "/v1/jobs/submit", {"job": job, "workspace": ws, "digest": ""}, log=log
+            )
+            log(f"submitted {job}: {code} {out}")
+            return "launch"
         if launch_error:
             # hand the job back at once (another miner takes it); the caller counts it
             log(f"{job}: the agent could not start ({launch_error}): handing the job back")
@@ -1936,6 +1945,11 @@ def main(argv: list[str] | None = None) -> int:
             log(f"{job}: the job was cancelled; nothing submitted")
             return "built"
         kind, body = outcome(job, ws, got.text, setup=setup)
+        if kind == "reject" and improvement:
+            # a device is rejected before its job is accepted, never after: a failed try
+            log(f"{job}: the agent gave up on an accepted improvement job: submitted as it stands")
+            kind = "submit"
+            body = {"job": job, "workspace": ws, "digest": "", "summary": body["message"][:2000]}
         if kind == "reject":
             code, out = send(call, "/v1/jobs/reject", body, log=log)
             log(f"rejected {job}: {code} {out}")

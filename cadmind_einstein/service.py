@@ -24,7 +24,8 @@ the metagraph):
   ``host_refused`` (``{code, why}`` or its why): the builder stopped because the platform refused
   its Watt runs' results, which the validator's own guard run then reproduces);
 - ``POST /v1/jobs/reject {job, category?, message?}`` -- the job handed back; on an improvement
-  job the device is rejected for good for this hotkey, nothing is counted and the miner is free;
+  job, only before it is accepted (409 ``improvement_accepted`` after), the device is rejected
+  for good for this hotkey, nothing is counted and the miner is free;
 - ``POST /v1/miners/admission`` -- its entry test, a job assigned to it alone (with the lanes
   open: ``{"admitted": true, "retired": true, "lane", "rating"}``, no test);
 - ``POST /v1/practice`` and ``GET /v1/practice`` -- 410 ``practice_retired``: improvement jobs

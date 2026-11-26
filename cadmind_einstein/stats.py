@@ -107,7 +107,7 @@ FORMULA = {
         " it: 1 and 1 (then rated 1-2 stars or refunded for its quality: 0 and 0); the client"
         " answers try again: 0 and 0; not interested, or the offer withdrawn: it keeps 0.5 and"
         " 0.25; a try that failed (the gate, a timeout, a copy, not a level higher): 0 and 0. A"
-        " device you reject is not counted at all."
+        " device you reject, before accepting its job, is not counted at all."
     ),
     "rating": (
         "rating = the rating points of your jobs that ended in the last 7 days / their number,"
