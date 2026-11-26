@@ -104,6 +104,15 @@ class TestDaemonFlags(unittest.TestCase):
         with self.assertRaises(SystemExit), contextlib.redirect_stderr(io.StringIO()):
             self.parse("--key-approval", "open")
 
+    def test_the_lanes_flag_and_the_retired_practice_flag(self) -> None:
+        self.assertIsNone(self.parse().lanes_open)  # not given: the saved value is kept
+        self.assertEqual(self.parse("--lanes-open", "on").lanes_open, "on")
+        self.assertEqual(self.parse("--lanes-open", "off").lanes_open, "off")
+        with self.assertRaises(SystemExit), contextlib.redirect_stderr(io.StringIO()):
+            self.parse("--lanes-open", "maybe")
+        # --practice-per-day is still accepted, and ignored: practice jobs are retired
+        self.parse("--practice-per-day", "5")
+
     def test_logging_flags(self) -> None:
         self.assertTrue(self.parse("--logging.debug").logging_debug)
         self.assertTrue(self.parse("--logging.trace").logging_trace)
@@ -118,6 +127,16 @@ class TestDaemonFlags(unittest.TestCase):
 
 
 class TestMinerFlags(unittest.TestCase):
+    def test_the_practice_command_is_gone(self) -> None:
+        self.assertFalse(hasattr(agent_miner, "practice_main"))
+        with self.assertRaises(SystemExit), contextlib.redirect_stderr(io.StringIO()):
+            agent_miner.parser().parse_args(["practice", "--status"])
+        # the setup label stays, a free label sent with each submit
+        a = agent_miner.parser().parse_args(
+            [*MINER_BASE, "--dev-uri", "//Alice", "--setup", "m v2"]
+        )
+        self.assertEqual(a.setup, "m v2")
+
     def test_both_styles(self) -> None:
         p = agent_miner.parser()
         dashed = p.parse_args([*MINER_BASE, "--wallet-name", "mw", "--wallet-hotkey", "m1"])

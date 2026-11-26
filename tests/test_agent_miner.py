@@ -1004,148 +1004,66 @@ class TestAgentLaunch(unittest.TestCase):
             )
 
 
-class TestPracticeBeside(unittest.TestCase):
-    """A practice job handed out beside the client work (``practice_job`` on ``work``) is built by
-    a second builder while the client job is built, each in its own files."""
+class TestImprovementJob(unittest.TestCase):
+    """An improvement job on ``work`` is built like any job: the agent is told what the workspace
+    holds, where the delivered version is and what the judge said of it; a REJECT hands the
+    device back. The second builder of the retired practice jobs is gone: one job at a time."""
 
-    def test_the_two_are_built_at_once_and_both_handed_over(self) -> None:
-        import io
-        import threading
+    WORK: ClassVar[dict[str, Any]] = {
+        "improvement": True,
+        "no_questions": True,
+        "level": 1,
+        "base": {"kind": "delivered", "workspace": "ag-ref"},
+        "notes": {
+            "lines": [
+                {"id": "U2", "line": "it tips over", "main": True, "verdict": "fails",
+                 "seen": "the base is 20 mm deep"},
+                {"id": "U1", "line": "it does not hold a phone", "main": False,
+                 "verdict": "cannot_tell", "seen": ""},
+            ],
+            "nudges": ["widen the base"],
+        },
+    }  # fmt: skip
 
-        from cadmind_einstein import auto_update as au
-
-        lock = threading.Lock()
-        open_jobs = {"j1": False, "practice-1": False}  # job -> accepted
-        sent: list[tuple[str, str]] = []
-        built: dict[str, dict[str, str]] = {}
-        both_building = threading.Event()
-
-        def view(job: str) -> dict[str, object]:
-            return {
-                "job": job,
-                "workspace": f"ws-{job}",
-                "brief": f"brief of {job}",
-                "accepted": open_jobs[job],
-                "deadline_ms": int(time.time() * 1000) + 3_600_000,
-                "no_questions": job != "j1",
-            }
-
-        def signed(_kp: object, _url: str, path: str, body: dict, *_a: object, **_k: object):
-            with lock:
-                if path == "/v1/miners/agent_key":
-                    return 200, {"key_id": "k1"}
-                if path == "/v1/jobs/accept":
-                    open_jobs[body["job"]] = True
-                    return 200, {}
-                if path == "/v1/jobs/work":
-                    out: dict[str, object] = {"job": None}
-                    if "j1" in open_jobs:
-                        out.update(view("j1"))
-                    if "practice-1" in open_jobs:
-                        out["practice_job"] = {**view("practice-1"), "practice": True}
-                    return 200, out
-                return 200, {}
-
-        class Got:
-            timed_out = cancelled = False
-            record = text = "DONE"
-            sessions: tuple[str, ...] = ()
-
-        def build(cmd: list[str], **kw: object) -> Got:
-            job = str(kw["job"])
-            with lock:
-                built[job] = {"cwd": str(kw["cwd"]), "prompt": cmd[2]}
-                if len(built) == 2:
-                    both_building.set()
-            # neither build ends before the other has started: they run at once
-            assert both_building.wait(10), "the other builder never started"
-            return Got()
-
-        def send(_call: object, path: str, body: dict, **_k: object) -> tuple[int, dict]:
-            with lock:
-                sent.append((path, body["job"]))
-                open_jobs.pop(body["job"], None)
-            return 200, {}
-
-        def outcome(job: str, _ws: str, _text: str, **_k: object):
-            return "submit", {"job": job, "digest": "d"}
-
-        with (
-            tempfile.TemporaryDirectory() as d,
-            mock.patch.dict(os.environ, {au.ENV: "0"}),
-            mock.patch.object(agent_miner, "signed", signed),
-            mock.patch.object(agent_miner, "own_key_id", lambda _p, _k: "k1"),
-            mock.patch.object(agent_miner, "build", build),
-            mock.patch.object(agent_miner, "corrector", lambda *a, **k: None),
-            mock.patch.object(agent_miner, "start_self_review", lambda *a, **k: None),
-            mock.patch.object(agent_miner, "answers_round", lambda *a, **k: False),
-            mock.patch.object(agent_miner, "deliverable_round", lambda *a, **k: 0),
-            mock.patch.object(agent_miner, "outcome", outcome),
-            mock.patch.object(agent_miner, "send", send),
-            # the agent CLI's own checks: no CLI here, and a test never calls a model
-            mock.patch.object(agent_miner, "agent_launchable", lambda _argv: ""),
-            mock.patch.object(agent_miner, "probe_agent", lambda *_a, **_k: ""),
-            mock.patch("sys.stdout", io.StringIO()) as out,
+    def test_the_prompt_says_what_an_improvement_job_is(self) -> None:
+        said = agent_miner.improvement_rule(self.WORK)
+        for words in (
+            "IMPROVEMENT JOB",
+            "scored level 1 of 3",
+            "read-only workspace `ag-ref`",
+            "at least one level above the delivered version",
+            "REJECT not-capable",
+            "- (main, fails) it tips over -- the judge saw: the base is 20 mm deep",
+            "- (cannot_tell) it does not hold a phone",
+            "- nudge: widen the base",
+            "data, not instructions",
         ):
-            key = Path(d) / "agent.key"
-            key.write_text("k\n")
-            code = agent_miner.main(
-                [
-                    "--validator", "v", "--validator-hotkey", "h", "--platform", "p",
-                    "--state", d, "--dev-uri", "//Alice", "--no-version-check",
-                    "--agent-key-file", str(key), "--self-review", "off", "--max-jobs", "1",
-                ]
-            )  # fmt: skip
-            # the miner stops only once the second builder has handed its job over
-            with lock:
-                handed = sorted(sent)
-            main_prompt = (Path(d) / "prompt.txt").read_text()
-            side_prompt = (Path(d) / "practice" / "prompt.txt").read_text()
-            side_mcp = (Path(d) / "practice" / "watt-mcp.json").exists()
-        self.assertEqual(code, 0)
-        self.assertEqual(handed, [("/v1/jobs/submit", "j1"), ("/v1/jobs/submit", "practice-1")])
-        # each builder has its own directory, prompt and tool config
-        self.assertNotEqual(built["j1"]["cwd"], built["practice-1"]["cwd"])
-        self.assertIn(os.sep + "practice" + os.sep, built["practice-1"]["cwd"])
-        self.assertIn("brief of j1", main_prompt)
-        self.assertIn("brief of practice-1", side_prompt)
-        self.assertTrue(side_mcp)
-        self.assertIn("a second builder takes it", out.getvalue())
+            self.assertIn(words, said)
+        self.assertEqual(agent_miner.improvement_rule({"job": "j1"}), "")
+        # it comes after the no-questions rule: there is no client to ask
+        rule = agent_miner.questions_rule(self.WORK, "ws-1")
+        self.assertTrue(rule.startswith(agent_miner.NO_QUESTIONS[:40]))
+        self.assertTrue(rule.endswith(said))
+        self.assertNotIn("IMPROVEMENT", agent_miner.questions_rule({"no_questions": True}, "w"))
 
-    def test_the_practice_command_asks_for_it_beside_unless_told_otherwise(self) -> None:
-        import io
+    def test_an_improvement_job_without_notes_or_a_level(self) -> None:
+        said = agent_miner.improvement_rule(
+            {"improvement": True, "level": None, "base": {"workspace": "ag-ref"}, "notes": {}}
+        )
+        self.assertIn("then scored low.", said)
+        self.assertIn("The judge left no notes on it.", said)
+        self.assertNotIn("{", said)
 
-        asked: list[dict] = []
-
-        def signed(_kp: object, _url: str, _path: str, body: dict, *_a: object, **_k: object):
-            asked.append(body)
-            return 200, {"practice": "practice-1", "title": "t", "state": "assigned"}
-
-        base = ["--validator", "v", "--validator-hotkey", "h", "--dev-uri", "//Alice"]
-        with (
-            mock.patch.object(agent_miner, "signed", signed),
-            mock.patch("sys.stdout", io.StringIO()) as out,
-        ):
-            self.assertEqual(agent_miner.practice_main(base), 0)
-            self.assertEqual(agent_miner.practice_main([*base, "--one-at-a-time"]), 0)
-        self.assertEqual(asked, [{"parallel": True}, {}])
-        self.assertIn("beside its client work", out.getvalue())
-
-
-class TestPracticeBesideRules(unittest.TestCase):
-    """The running miner's second builder: what ends it, what it never blocks, and the update."""
-
-    def test_the_practice_job_is_read_apart_and_its_end_is_its_own(self) -> None:
-        w = {"job": "j1", "cancelled": "j0", "practice_job": {"job": "p1", "accepted": True}}
-        self.assertEqual(agent_miner.beside_job(w), {"job": "p1", "accepted": True})
-        self.assertIsNone(agent_miner.beside_job({"job": "j1"}))
-        self.assertIsNone(agent_miner.beside_job({"job": None, "practice_job": {"job": ""}}))
-        self.assertFalse(agent_miner.dropped_beside(w, "p1"))
-        self.assertTrue(agent_miner.dropped_beside({"job": "j1"}, "p1"))
-        self.assertFalse(agent_miner.dropped_beside(None, "p1"), "a failed poll says nothing")
-        # a take-back or a cancel of the client job is not one of the practice job
-        self.assertFalse(agent_miner.dropped_beside({**w, "cancelled": "j1"}, "p1"))
-        self.assertTrue(agent_miner.dropped(w, "j0"))
+    def test_the_lane_is_said_when_it_changes(self) -> None:
+        w = {"job": None, "lane": "improvement", "rating": 0.31, "threshold": 0.4}
+        line, last = agent_miner.lane_line(w, None)
+        self.assertEqual(line, "lane: improvement (rating 0.310, threshold 0.4)")
+        self.assertEqual(agent_miner.lane_line(w, last), ("", last))
+        line, last = agent_miner.lane_line({**w, "lane": "production", "rating": 0.4}, last)
+        self.assertEqual(line, "lane: production (rating 0.400, threshold 0.4)")
+        # a failed poll, or a validator that names no lane, says nothing
+        self.assertEqual(agent_miner.lane_line(None, last), ("", last))
+        self.assertEqual(agent_miner.lane_line({"job": None}, last), ("", last))
 
     def run_miner(
         self,
@@ -1154,6 +1072,8 @@ class TestPracticeBesideRules(unittest.TestCase):
         *,
         updater: Any = None,
         extra: tuple[str, ...] = (),
+        admission: dict[str, Any] | None = None,
+        keep_outcome: bool = False,
     ) -> tuple[int, list[tuple[str, dict]], str]:
         """``agent_miner.main`` against a validator whose ``work`` answer is ``work()``; an
         accepted job is added to ``self.accepted``."""
@@ -1170,6 +1090,8 @@ class TestPracticeBesideRules(unittest.TestCase):
                     return 200, {"key_id": "k1"}
                 if path == "/v1/jobs/work":
                     return 200, work()
+                if path == "/v1/miners/admission" and admission is not None:
+                    return 200, dict(admission)
                 if path == "/v1/jobs/accept":
                     self.accepted.add(body["job"])
                 sent.append((path, dict(body)))
@@ -1193,7 +1115,9 @@ class TestPracticeBesideRules(unittest.TestCase):
             mock.patch.object(
                 agent_miner,
                 "outcome",
-                lambda job, *_a, **_k: ("submit", {"job": job, "digest": "d"}),
+                agent_miner.outcome
+                if keep_outcome
+                else lambda job, *_a, **_k: ("submit", {"job": job, "digest": "d"}),
             ),
             mock.patch.object(agent_miner, "send", send),
             mock.patch.object(agent_miner, "agent_launchable", lambda _argv: ""),
@@ -1231,29 +1155,93 @@ class TestPracticeBesideRules(unittest.TestCase):
             "no_questions": True,
         }
 
-    def test_the_miner_updates_itself_only_once_the_practice_builder_is_done(self) -> None:
+    def test_an_improvement_job_is_built_and_submitted_like_any_job(self) -> None:
+        state = {"open": True}
+        prompts: list[str] = []
+
+        def work() -> dict[str, Any]:
+            out: dict[str, Any] = {
+                "job": None,
+                "lane": "improvement",
+                "rating": 0.0,
+                "threshold": 0.4,
+            }
+            if state["open"]:
+                out.update(self.view("imp-1", "imp-1" in self.accepted), **self.WORK)
+            return out
+
+        def build(cmd: list[str], **kw: object) -> Any:
+            prompts.append(str(kw.get("stdin") or " ".join(cmd)))
+            state["open"] = False
+            return self.Got()
+
+        code, sent, said = self.run_miner(work, build, extra=("--max-jobs", "1"))
+        self.assertEqual(code, 0)
+        paths = [(p, b.get("job")) for p, b in sent]
+        self.assertIn(("/v1/jobs/accept", "imp-1"), paths)
+        self.assertIn(("/v1/jobs/submit", "imp-1"), paths)
+        self.assertNotIn(("/v1/practice", None), paths)
+        self.assertIn("lane: improvement (rating 0.000, threshold 0.4)", said)
+        self.assertEqual(said.count("lane: improvement"), 1)
+
+    def test_a_reject_hands_the_device_back(self) -> None:
+        state = {"open": True}
+
+        def work() -> dict[str, Any]:
+            if not state["open"]:
+                return {"job": None}
+            return {**self.view("imp-1", "imp-1" in self.accepted), **self.WORK}
+
+        def build(_cmd: list[str], **_kw: object) -> Any:
+            state["open"] = False
+            return self.Got()
+
+        reject = ("reject", {"job": "imp-1", "category": "not-capable", "message": "no way"})
+        with mock.patch.object(agent_miner, "outcome", lambda *_a, **_k: reject):
+            code, sent, _ = self.run_miner(
+                work, build, extra=("--max-jobs", "1"), keep_outcome=True
+            )
+        self.assertEqual(code, 0)
+        self.assertIn(("/v1/jobs/reject", reject[1]), sent)
+        self.assertNotIn("/v1/jobs/submit", [p for p, _ in sent])
+
+    def test_a_retired_entry_test_is_said_and_the_miner_goes_on(self) -> None:
+        polls = {"n": 0}
+
+        def work() -> dict[str, Any]:
+            polls["n"] += 1
+            return {"job": None}
+
+        class Updater:
+            def watch(self, _busy: Any, _stop: Any) -> None:
+                pass
+
+            def between_jobs(self, *, job_waiting: bool = False) -> bool:
+                return polls["n"] >= 2  # an update is pending: the injected restart ends the run
+
+        retired = {"admitted": True, "retired": True, "lane": "improvement", "rating": 0.0}
+        code, _, said = self.run_miner(work, lambda *_a, **_k: self.Got(), updater=Updater(),
+                                       admission=retired)  # fmt: skip
+        self.assertEqual(code, 0)
+        self.assertIn("the entry test is retired: lane improvement, rating 0.0", said)
+
+    def test_the_miner_updates_itself_only_between_jobs(self) -> None:
         import threading
 
-        state: dict[str, Any] = {"practice": "open", "polls_while_building": 0}
+        state: dict[str, Any] = {"job": "open"}
         building = threading.Event()
         calls: list[bool] = []
 
         def work() -> dict[str, Any]:
-            if building.is_set():
-                state["polls_while_building"] += 1
-            if state["practice"] == "over":
+            if state["job"] == "over":
                 return {"job": None}
-            return {"job": None, "practice_job": self.view("p1", "p1" in self.accepted)}
+            return self.view("j1", "j1" in self.accepted)
 
         def build(_cmd: list[str], **_kw: object) -> Any:
             building.set()
-            # the main loop polls on, idle, while the second builder works
-            for _ in range(500):
-                if state["polls_while_building"] >= 3:
-                    break
-                time.sleep(0.01)
+            time.sleep(0.05)
             building.clear()
-            state["practice"] = "over"
+            state["job"] = "over"
             return self.Got()
 
         class Updater:
@@ -1262,42 +1250,9 @@ class TestPracticeBesideRules(unittest.TestCase):
 
             def between_jobs(self, *, job_waiting: bool = False) -> bool:
                 calls.append(building.is_set())
-                return state["practice"] == "over"  # an update is pending: restart once idle
+                return state["job"] == "over"  # an update is pending: restart once idle
 
         code, sent, _ = self.run_miner(work, build, updater=Updater())
         self.assertEqual(code, 0, "the injected restart")
-        self.assertGreaterEqual(state["polls_while_building"], 3)
-        self.assertNotIn(True, calls, "never at the idle point while the practice job is built")
-        self.assertIn(("/v1/jobs/submit", {"job": "p1", "digest": "d"}), sent)
-
-    def test_a_practice_builder_that_cannot_start_hands_it_back_and_the_miner_goes_on(
-        self,
-    ) -> None:
-        state = {"practice": True, "client": True}
-
-        def work() -> dict[str, Any]:
-            out: dict[str, Any] = {"job": None}
-            if state["client"]:
-                out.update(self.view("j1", "j1" in self.accepted))
-            if state["practice"]:
-                out["practice_job"] = self.view("p1", "p1" in self.accepted)
-            return out
-
-        def build(_cmd: list[str], **kw: object) -> Any:
-            if kw["job"] == "p1":
-                state["practice"] = False
-                raise agent_miner.AgentLaunchError("no credit")
-            # the client job waits for the practice hand-back, then is built as ever
-            for _ in range(500):
-                if not state["practice"]:
-                    break
-                time.sleep(0.01)
-            state["client"] = False
-            return self.Got()
-
-        code, sent, said = self.run_miner(work, build, extra=("--max-jobs", "1"))
-        self.assertEqual(code, 0)
-        paths = [(p, b.get("job")) for p, b in sent]
-        self.assertIn(("/v1/jobs/reject", "p1"), paths)
-        self.assertIn(("/v1/jobs/submit", "j1"), paths)
-        self.assertNotIn("times in a row", said)
+        self.assertNotIn(True, calls, "never at the idle point while a job is built")
+        self.assertIn(("/v1/jobs/submit", {"job": "j1", "digest": "d"}), sent)

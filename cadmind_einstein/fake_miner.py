@@ -382,7 +382,11 @@ def main(argv: list[str] | None = None) -> int:
     code, adm = signed(kp, a.validator, "/v1/miners/admission", {}, a.validator_hotkey)
     log(f"admission requested: {code} {adm.get('job') or adm}")
     done, idle_until = 0, time.monotonic() + a.idle_s
-    target = a.jobs + 1  # the admission test, then the client jobs
+    # the admission test, then the jobs; with the lanes open the test is retired (no test job)
+    retired = code == 200 and adm.get("retired") is True
+    target = a.jobs + (0 if retired else 1)
+    if retired:
+        log(f"the entry test is retired: lane {adm.get('lane')}, rating {adm.get('rating')}")
     while done < target and time.monotonic() < idle_until:
         code, work = signed(kp, a.validator, "/v1/jobs/work", {}, a.validator_hotkey)
         if code != 200 or not work.get("job"):
@@ -401,7 +405,8 @@ def main(argv: list[str] | None = None) -> int:
             done += 1
             continue
         signed(kp, a.validator, "/v1/jobs/accept", {"job": job}, a.validator_hotkey)
-        log(f"accepted {job} in {ws}")
+        what = " (an improvement job)" if work.get("improvement") else ""
+        log(f"accepted {job} in {ws}{what}")
         body: dict[str, Any] = {"job": job, "workspace": ws, "digest": ""}
         try:
             if not (a.fail and not job.startswith("admission-")):
