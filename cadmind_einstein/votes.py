@@ -8,10 +8,11 @@ lower median of their 0-3 scores, ``v = V_MAP[median]``. ``--judge 1.2b-tools`` 
 start (:func:`.judge.for_validator`): that version reads the delivered project through Watt tools
 and is for CADmind's own pipeline and the miner-side reviewer.
 
-**The vote has no role in scores, weights or routing** (DESIGN.md section 5: the client's signals
-alone decide a job's points). It is recorded, published in the hourly report, shown to miners,
-archived for calibration and compared with practice runs; nothing in :mod:`.scoring` or the router
-reads it.
+**The vote has no role in a client job's score, weight or route** (DESIGN.md section 5: the
+client's signals alone decide a job's points). It is recorded, published in the hourly report,
+shown to miners and archived for calibration; nothing in :mod:`.scoring` or the router reads it.
+The same judge is the filter of the improvement lane (:mod:`.improvement`): a try is offered to
+the client only when it is judged at least one level above the delivered version.
 
 **Modes** (``--votes``):
 
@@ -533,9 +534,10 @@ class Reviewer:
     def judge_bundle(self, got: Mapping[str, Any]) -> dict[str, Any]:
         """One vote's samples on a ready bundle (``got``: the platform's answer naming it), made
         exactly as a delivery's vote is -- the same judge, prompt, rubric and sample count -- and
-        recorded nowhere: a practice result and its reference (:mod:`.practice`). Answers
+        recorded nowhere: an improvement try and the delivered version it improves
+        (:mod:`.improvement`). Answers
         ``{score, value, scores, samples, image_set, notes}`` (``score``: the 0-3 the vote's value
-        is made from; ``notes``: :func:`practice_notes`). Raises ``ValueError`` when the bundle is
+        is made from; ``notes``: :func:`judge_notes`). Raises ``ValueError`` when the bundle is
         unreadable or not the one named, or too few samples are valid; anything the model raises
         goes through."""
         data = self.platform.fetch_bundle(str(got.get("bundle_url") or ""), MAX_BUNDLE_BYTES)
@@ -561,7 +563,7 @@ class Reviewer:
             why = "; ".join(made["unavailable"])[:250]
             raise ValueError(f"{len(samples)} valid sample(s): {why}")
         vote = Vote(
-            review="practice",
+            review="compare",
             image_set=bundle.image_set,
             judge=self.digest,
             model=str(getattr(self.model, "name", "") or "unknown"),
@@ -577,7 +579,7 @@ class Reviewer:
             "scores": scores,
             "samples": len(samples),
             "image_set": bundle.image_set,
-            "notes": practice_notes({"samples": samples}),
+            "notes": judge_notes({"samples": samples}),
         }
 
     def judge(self) -> dict[str, Any]:
@@ -823,15 +825,15 @@ def main_failure(vote: Mapping[str, Any]) -> dict[str, Any] | None:
 
 
 NOTES_MAX = 8
-"""lines a practice result's notes keep (the main ones first)"""
+"""lines the judge's notes keep (the main ones first)"""
 
 
-def practice_notes(vote: Mapping[str, Any]) -> dict[str, Any]:
-    """What the judge said of a practice result, for its miner (docs/MINER.md "Trying a new
-    setup"): the deciding sample's lines of the brief it did not rule ``ok`` -- ``{id, line,
-    main, verdict, seen}``, the main lines first, at most :data:`NOTES_MAX` -- and its nudges'
-    text. Practice is never scored, so the judge's reasons are given in full; a client delivery's
-    finding stays :func:`main_failure`. Empty lists when no sample decided."""
+def judge_notes(vote: Mapping[str, Any]) -> dict[str, Any]:
+    """What the judge said of a version, for the miner that improves it (docs/MINER.md
+    "Improvement jobs"): the deciding sample's lines of the brief it did not rule ``ok`` -- ``{id,
+    line, main, verdict, seen}``, the main lines first, at most :data:`NOTES_MAX` -- and its
+    nudges' text. A client delivery's finding, shown to its client, stays :func:`main_failure`.
+    Empty lists when no sample decided."""
     sample = deciding_sample(vote)
     if sample is None:
         return {"lines": [], "nudges": []}

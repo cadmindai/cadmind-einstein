@@ -7,6 +7,7 @@
     cadmind-einstein-operator ... revoke HOTKEY --reason "WORDS THE MINER READS"
     cadmind-einstein-operator ... unblock HOTKEY --reason "WHY, FOR THE LOG" [--readmit]
     cadmind-einstein-operator ... launch-equal on|off|status
+    cadmind-einstein-operator ... lanes-open on|off|status
     cadmind-einstein-operator ... void JOB --reason "WHY, FOR THE LOG"
 
 ``pending`` lists the key requests (hotkey, coldkey, first and last ask, client address, the miner's
@@ -18,10 +19,12 @@ back, the abuse counts so far are marked acted on so they do not disable it agai
 gives back the admission of a hotkey that had passed its entry test, else it takes the test again;
 it is not keyed again: the miner asks as usual); ``launch-equal`` turns the launch rule (equal
 weight per admitted hotkey) on or off at runtime, saved across restarts (unless ``--launch-equal``
-sets it); ``void`` makes every rejection of a job count for nothing (out of the miners' records,
-weights and rejection counts: a decline that was right). An approved miner still passes the entry
-test once before any job or weight. The token file (the validator's ``--token-file``, mode 0600) is
-read, never printed.
+sets it; refused while the lanes are open); ``lanes-open`` opens or closes the lanes (DESIGN.md
+"Open lanes") at runtime, saved across restarts (unless ``--lanes-open`` sets it), and opening
+them turns the launch rule off; ``void`` makes every rejection of a job count for nothing (out
+of the miners' records, weights and rejection counts: a decline that was right). An approved
+miner still passes the entry test once before any job or weight, while the lanes are closed. The
+token file (the validator's ``--token-file``, mode 0600) is read, never printed.
 """
 
 from __future__ import annotations
@@ -116,6 +119,10 @@ def parser() -> argparse.ArgumentParser:
     )
     p = sub.add_parser("launch-equal", help="the launch rule: on, off, or its status")
     p.add_argument("switch", choices=("on", "off", "status"))
+    p = sub.add_parser(
+        "lanes-open", help="the open lanes: on, off, or status (on turns the launch rule off)"
+    )
+    p.add_argument("switch", choices=("on", "off", "status"))
     return ap
 
 
@@ -125,13 +132,12 @@ def main(argv: list[str] | None = None) -> int:
     if a.command == "pending":
         q = urllib.parse.urlencode({"state": a.state})
         code, out = call(a.validator, token, "GET", f"/v1/operator/key_requests?{q}")
-    elif a.command == "launch-equal":
+    elif a.command in ("launch-equal", "lanes-open"):
+        route = "/v1/operator/" + a.command.replace("-", "_")
         if a.switch == "status":
-            code, out = call(a.validator, token, "GET", "/v1/operator/launch_equal")
+            code, out = call(a.validator, token, "GET", route)
         else:
-            code, out = call(
-                a.validator, token, "POST", "/v1/operator/launch_equal", {"on": a.switch == "on"}
-            )
+            code, out = call(a.validator, token, "POST", route, {"on": a.switch == "on"})
     elif a.command == "unblock":
         code, out = call(
             a.validator,

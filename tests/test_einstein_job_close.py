@@ -325,8 +325,53 @@ class TestClient(unittest.TestCase):
         self.assertEqual((ws, ws.existing), ("ws-3", True))
         ws, ref = c.grant_continuation(A, seed="ws-0", base="ws-5", name="j3")
         self.assertEqual((ws, ws.existing, ref), ("ws-3", True, "ws-4"))
-        c, _ = self.client({"workspace": "ws-6"})
-        self.assertIs(c.grant_practice(A, brief="b", name="p1").existing, False)
+        c, seen = self.client({"workspace": "ws-6", "reference": "ws-7", "improvement": True})
+        ws, ref = c.grant_improvement(A, "imp-0123456789ab")
+        self.assertEqual((ws, ws.existing, ref), ("ws-6", False, "ws-7"))
+        self.assertEqual(
+            seen[-1][:3],
+            (
+                "POST",
+                "/api/agent/subnet/workspaces",
+                {
+                    "hotkey": A,
+                    "name": "imp-0123456789ab",
+                    "job": "imp-0123456789ab",
+                    "improvement": True,
+                },
+            ),
+        )
+
+    def test_the_improvement_routes(self) -> None:
+        c, seen = self.client({"try_id": "imp-0123456789ab", "ready": True})
+        c.improvement_next(A)
+        c.improvement_reject("imp-0123456789ab", A)
+        c.improvement_bundle("imp-0123456789ab", "ws-1")
+        c.improvement_result("imp-0123456789ab", {"hotkey": A, "outcome": "failed"})
+        c.review_bundle("j1", "compare")
+        base = "/api/engine/einstein/improvement"
+        self.assertEqual(
+            [(m, path, body, role) for m, path, body, role in seen],
+            [
+                ("POST", f"{base}/next", {"hotkey": A}, "queue"),
+                ("POST", f"{base}/imp-0123456789ab/reject", {"hotkey": A}, "queue"),
+                ("POST", f"{base}/imp-0123456789ab/bundle", {"workspace": "ws-1"}, "queue"),
+                (
+                    "POST",
+                    f"{base}/imp-0123456789ab/result",
+                    {"hotkey": A, "outcome": "failed"},
+                    "queue",
+                ),
+                (
+                    "POST",
+                    "/api/engine/einstein/jobs/j1/review_bundle",
+                    {"audience": "compare"},
+                    "queue",
+                ),
+            ],
+        )
+        for gone in ("practice_brief", "grant_practice", "practice_bundle", "practice_result"):
+            self.assertFalse(hasattr(c, gone), gone)
 
 
 if __name__ == "__main__":

@@ -778,7 +778,7 @@ class TestHold(_Case):
         self.assertEqual([j["job"] for j in self.p.queue], ["c1"])  # left in the platform's queue
         self.assertEqual(self.desk.work(A)["job"], None)
         self.assertEqual(self.desk.capacity()["active_miners"], 0)
-        # a newly approved miner keeps its approval (it may practise: test_einstein_practice.py)
+        # a newly approved miner keeps its approval
         self.desk.approve(B)
         self.assertIn("key_id", self.key(B))
         with tempfile.TemporaryDirectory() as d:

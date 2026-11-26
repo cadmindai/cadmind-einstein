@@ -47,7 +47,7 @@ class TestMinerToldOfACancel(_Cases):
         hk, w = self.start("cancel-1")
         self.desk.cancel("cancel-1")
         said = self.desk.work(hk)
-        self.assertEqual(said, {"job": None, "cancelled": "cancel-1"})
+        self.assertEqual((said["job"], said["cancelled"]), (None, "cancel-1"))
         with self.assertRaises(DeskError) as e:
             self.desk.submit(hk, "cancel-1", w["workspace"], "d")
         self.assertEqual(e.exception.status, 410)

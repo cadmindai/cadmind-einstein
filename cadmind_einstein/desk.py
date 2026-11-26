@@ -98,7 +98,19 @@ key is taken here only once the operator approved it (:meth:`approve`); until th
 recorded as pending (:class:`KeyRequest`, store namespace ``approval``). The operator may refuse a
 request or revoke a miner (:meth:`revoke`: no longer keyed here, its open job workspaces frozen,
 admission dropped, its job reassigned unscored). An approved key holder passes the entry test once
-(:meth:`admission`) before any job or weight."""
+(:meth:`admission`) before any job or weight.
+
+**Open lanes** (DESIGN.md section 14; ``lanes_open``, off by default, :meth:`Desk.set_lanes_open`).
+Off, everything above holds. On, a miner's rating (:func:`.scoring.rating`) reads its lane each
+time it is free: client jobs go to the **production lane** (:meth:`Desk._route_open`), and a free
+miner of the **improvement lane** that polls ``work`` is served an **improvement job** -- a
+delivered device a judge scored low, which the platform names (:meth:`Desk._improvement_ask`). An
+improvement job is assigned to its miner alone, gated as any job, and never sent to another miner
+here; the miner may reject its device, which counts for nothing. A try that passes the gate goes
+to the improvement book (:mod:`.improvement`), which votes on it beside the delivered version and
+offers only a result a level higher; the try's outcome is written when the platform answered
+(:meth:`Desk._improvement_outcome`). The entry test is retired while the lanes are open, the launch
+rule is off, and the weights are made over every eligible hotkey (:meth:`Desk.weighted`)."""
 
 from __future__ import annotations
 
@@ -120,7 +132,18 @@ from . import __version__
 from .answers import answers_only, report_digest
 from .answers import check as answers_check
 from .platform import JOB_CLOSE_UNSUPPORTED, SEED_NOT_FOUND, PlatformError, RoleFrozenError
-from .scoring import TRIAL_EVERY, JobOutcome, Ledger, outcome_of, record_of
+from .scoring import (
+    CLIENT_SIGNALS,
+    OFFER_SIGNALS,
+    THRESHOLD,
+    TRIAL_EVERY,
+    JobOutcome,
+    Ledger,
+    lane_of,
+    outcome_of,
+    rating_of,
+    record_of,
+)
 from .similarity import CopyCheck, CopyPolicy, Entry, fingerprint
 from .store import Store
 from .style import check as style_check
@@ -179,7 +202,19 @@ dropped a part it was given with the part's contract unchanged and no change req
 (``change_unfounded``). The builder's failure: its attempt fails (counted, scored 0), the job goes
 to another miner from scratch, and the platform's words are in the miner's ``failures`` (see
 :meth:`Desk._refused_build`)"""
-PRACTICE_ID = re.compile(r"^practice-[0-9a-f]{6,32}$")
+IMPROVEMENT_ID = re.compile(r"^imp-[0-9a-f]{12}$")
+"""an improvement try's id, made by the platform: the job's id here"""
+IMPROVEMENT_ASK_S = 60.0
+"""a miner the platform had no device for (or whose try is still being judged) is not asked for
+again for this long"""
+IMPROVEMENT_PAUSE_S = 600.0
+"""a miner that let an improvement job's acceptance window pass is served none for this long; an
+improvement job that got no workspace in this long is dropped (the platform frees its device)"""
+NO_PRODUCTION_LOG_S = 600.0
+"""lanes open, a client job waits for a production miner: said at most this often"""
+FALLBACK_ALERT_S = 3600.0
+"""lanes open and no approved miner has a production rating: client jobs go to the highest-rated
+free approved miner, and the operator is alerted at most this often"""
 OURS_BUSY = (
     "run_in_progress",
     "busy",
@@ -575,9 +610,9 @@ class Platform(Protocol):
     def lease(self, jobs: list[str], working: list[str] | None = None) -> dict[str, Any]: ...
     def claimed(self) -> list[dict[str, Any]]: ...
     def complete(self, job: str, result: dict[str, Any]) -> Any: ...
-    # practice jobs (:mod:`.practice`); a platform without them gives no practice
-    def practice_brief(self, hotkey: str) -> dict[str, Any]: ...
-    def grant_practice(self, hotkey: str, *, brief: str, name: str) -> str: ...
+    # improvement jobs (:mod:`.improvement`)
+    def improvement_next(self, hotkey: str) -> dict[str, Any]: ...
+    def grant_improvement(self, hotkey: str, try_id: str) -> tuple[str, str]: ...
 
 
 SYNC_S = 300.0
@@ -658,7 +693,7 @@ class Attempt:
     """the builder's own words on what blocks delivery, given with its submit (optional)"""
     setup: str = ""
     """the miner's own label for the setup it built this attempt with (its model, its prompt),
-    given with its submit (optional): what its practice results are grouped by"""
+    given with its submit (optional): a free label, kept with the attempt"""
     host_refused: str = ""
     """the miner's report, with its submit, that the platform refused its Watt runs' results (the
     run answers' ``host_refused`` why): the validator's own guard run reproduces it, or the claim
@@ -682,8 +717,9 @@ class Job:
     created_ms: int = 0
     result: dict[str, Any] = field(default_factory=dict)
     kind: str = "client"
-    """client | admission (one miner's entry test: assigned to it alone, never scored) | practice
-    (a miner's practice on a public brief: assigned to it alone, never scored, :mod:`.practice`)"""
+    """client | admission (one miner's entry test: assigned to it alone, never scored) |
+    improvement (a miner's try at improving a delivered device: assigned to it alone, its id the
+    platform's try id, :mod:`.improvement`)"""
     target: str = ""
     queued_ms: int = 0
     no_questions: bool = False
@@ -715,9 +751,14 @@ class Job:
     never compares this job's output with theirs: a round may rebuild what an earlier version had
     (a client undoing a change), and those versions are in its seed's history. Empty on most jobs
     (and on jobs stored before it)."""
-    practice: dict[str, Any] = field(default_factory=dict)
-    """a practice job's ``title`` and ``reference_job`` (the delivered version of the brief, voted
-    beside the miner's result), from the platform's practice brief. Empty on every other job."""
+    priority: bool = False
+    """the claim's ``priority`` (the platform's word on the client's plan): with the lanes open
+    the job goes to the best-rated free production miner, outside the one-in-five rule. Stored
+    always, read only while the lanes are open."""
+    improvement: dict[str, Any] = field(default_factory=dict)
+    """an improvement job's ``device`` (the platform's job id of the delivered version it
+    improves), ``level`` (the judge's level of that version, or None) and ``notes`` (what the
+    judge said of it: ``{lines, nudges}``). Empty on every other job."""
     granting: str = ""
     """the hotkey a grant is being made for while the job is ``assigning`` ('' otherwise): after a
     restart that cut the grant off, that miner's open job workspaces are swept
@@ -854,8 +895,11 @@ def _hotkey(m: Miner) -> str:
 
 def _job_from(row: Mapping[str, Any]) -> Job:
     # older records carry an effort, and held failures (``pending``): both are gone
-    r = {k: v for k, v in row.items() if k not in ("effort", "pending")}
+    r = {k: v for k, v in row.items() if k not in ("effort", "pending", "practice")}
     r["attempts"] = [Attempt(**a) for a in r.get("attempts") or []]
+    if r.get("kind") == "practice":
+        # a practice job an older release stored: practice is retired, nothing of it is run
+        r["state"] = "done"
     if "closed" not in r and r.get("state") == "done":
         r["closed"] = True  # ended before the close at the end: not swept again
     return Job(**r)
@@ -969,21 +1013,27 @@ class Desk:
         on_delivered: Callable[[str, str], None] | None = None,
         archive: Any = None,
         judge: Callable[[], Mapping[str, Any]] | None = None,
-        practice_per_day: int = 0,
+        lanes_open: bool = False,
         sync_s: float = SYNC_S,
         grant_per_min: int = GRANT_PER_MIN,
     ) -> None:
-        from .practice import PRACTICE_PER_DAY, PracticeBook  # noqa: PLC0415 -- it reads votes
+        from .improvement import ImprovementBook  # noqa: PLC0415 -- it reads votes
 
         self.platform, self.ledger, self.registered = platform, ledger, registered
         self.sync_s = sync_s
         """the metagraph re-read interval, said in a not-registered refusal"""
-        self.practice_per_day = practice_per_day or PRACTICE_PER_DAY
-        """practice jobs a miner may start per UTC day (the platform's own cap, mirrored)"""
-        self.practice_book = PracticeBook(platform, store=store, clock=clock, log=log)
-        """the practice records, their votes and reports (:mod:`.practice`); the daemon gives it
-        the reviewer and runs its steps"""
-        self._practice_asking: set[str] = set()
+        self.improvement_book = ImprovementBook(
+            platform, store=store, clock=clock, log=log, on_outcome=self._improvement_outcome
+        )
+        """the improvement records, their votes and reports (:mod:`.improvement`); the daemon
+        gives it the reviewer and runs its steps"""
+        self._improvement_asking: set[str] = set()
+        """hotkeys whose next device is being asked for on the platform"""
+        self._improvement_wait: dict[str, int] = {}
+        """per hotkey, when it may be asked a device for again (the platform had none, its last
+        try is still being judged, or it let an acceptance window pass)"""
+        self._said_at: dict[str, int] = {}
+        """per throttled log line, when it was last said"""
         self.on_delivered = on_delivered
         self.archive = archive
         """the calibration archive (:class:`.archive.Archive`): each job's row as it ended and as
@@ -1021,9 +1071,20 @@ class Desk:
         across restarts otherwise"""
         self.launch_saved = False
         """whether the state held a launch switch when this desk loaded it"""
+        self.lanes_open = bool(lanes_open)
+        """the lanes are open (DESIGN.md "Open lanes"): client jobs go to the production lane by
+        rating, improvement jobs are served to the others, the entry test is retired and the
+        launch rule is off. Set and saved by the daemon's ``--lanes-open on|off`` or the
+        operator's route (:meth:`set_lanes_open`), and kept across restarts otherwise. Off: the
+        router, the entry test and the weights' list are as before."""
+        self.lanes_saved = False
+        """whether the state held a lanes switch when this desk loaded it"""
+        self.trial_count = 0
+        """with the lanes open: the client assignments made that were neither priority nor
+        calibration; every :data:`.scoring.TRIAL_EVERY`-th goes to the longest wait (persisted)"""
         self.hold = False
         """the operator's hold (the daemon's ``--hold``): every hour burns, admitted miners or
-        not, and no client job is claimed or handed out, and no practice job is started. Key
+        not, and no client job is claimed or handed out, and no improvement job is served. Key
         requests, approvals and the entry test go on, so a miner is admitted and ready on the
         day the subnet opens; a job already handed out runs to its end."""
         self.approvals: dict[str, KeyRequest] = {}
@@ -1080,6 +1141,11 @@ class Desk:
         """delivered (scored, passing) client jobs per hotkey, ever: what genesis weights"""
         self.not_finished: dict[str, int] = {}
         """rounds a hotkey worked that ended not finished, ever (the miners' stats)"""
+        self.improved: dict[str, int] = {}
+        """improvements judged a level higher and taken as an offer, per hotkey, ever: genesis
+        counts them as it counts deliveries"""
+        self.improvements_accepted: dict[str, int] = {}
+        """improvements a client accepted, per hotkey, ever (the public leaderboard)"""
         self.suspensions: dict[str, int] = {}
         self.admission_failed: dict[str, int] = {}
         self.strikes: dict[str, int] = {}
@@ -1175,7 +1241,14 @@ class Desk:
             if j.state == "done" and j.job in self._final:
                 yield "job", j.job, None  # a finished job never changes: not serialized again
                 continue
-            yield "job", j.job, asdict(j)
+            row = asdict(j)
+            # the fields of the open lanes are written only when they say something, so a job of
+            # before them is stored as it always was
+            if not row["priority"]:
+                del row["priority"]
+            if not row["improvement"]:
+                del row["improvement"]
+            yield "job", j.job, row
         for m in self.miners.values():
             row = asdict(m)
             row["last_seen_ms"] = m.last_seen_ms // 30_000 * 30_000  # a poll is not a write
@@ -1199,6 +1272,8 @@ class Desk:
                 "failed": self.failed,
                 "delivered": self.delivered,
                 "not_finished": self.not_finished,
+                "improved": self.improved,
+                "improvements_accepted": self.improvements_accepted,
                 "suspensions": self.suspensions,
                 "admission_failed": self.admission_failed,
                 "strikes": self.strikes,
@@ -1209,6 +1284,8 @@ class Desk:
         )
         yield "meta", "watch", {"pairs": self.watch_pairs, "dropped": self.watch_dropped}
         yield "meta", "launch", {"launch_equal": self.launch_equal}
+        yield "meta", "lanes", {"lanes_open": self.lanes_open}
+        yield "meta", "trial", {"trial_count": self.trial_count}
 
     def _persist(self) -> None:
         """Write the rows that changed since the last write (called inside the transaction)."""
@@ -1275,6 +1352,8 @@ class Desk:
         self.failed = dict(meta.get("failed") or {})
         self.delivered = dict(meta.get("delivered") or {})
         self.not_finished = dict(meta.get("not_finished") or {})
+        self.improved = dict(meta.get("improved") or {})
+        self.improvements_accepted = dict(meta.get("improvements_accepted") or {})
         self.suspensions = dict(meta.get("suspensions") or {})
         self.admission_failed = dict(meta.get("admission_failed") or {})
         self.strikes = dict(meta.get("strikes") or {})
@@ -1284,6 +1363,13 @@ class Desk:
         launch = self.store.get("meta", "launch")
         self.launch_saved = launch is not None
         self.launch_equal = (launch or {}).get("launch_equal") is True
+        lanes = self.store.get("meta", "lanes")
+        self.lanes_saved = lanes is not None
+        if lanes is not None:
+            self.lanes_open = lanes.get("lanes_open") is True
+        if self.lanes_open:
+            self.launch_equal = False  # never both
+        self.trial_count = int((self.store.get("meta", "trial") or {}).get("trial_count") or 0)
         watch = self.store.get("meta", "watch") or {}
         self.watch_pairs = list(watch.get("pairs") or [])
         self.watch_dropped = int(watch.get("dropped") or 0)
@@ -1327,7 +1413,7 @@ class Desk:
                     if job.state == "judging" and last.submitted_ms:
                         continue
                     holder = self.miners.get(last.hotkey)
-                    if holder is not None and not self._beside(job):
+                    if holder is not None:
                         holder.job = job.job
             if self.key_approval == "manual":
                 self._unapproved_out()
@@ -1344,7 +1430,6 @@ class Desk:
             out.append(m.hotkey)
             m.key_id, m.admitted, m.admission_ms = "", False, 0
             self._free_job(m, "manual approval: the key was never approved", "revoked")
-            self._fail_beside(m, "manual approval: the key was never approved", "revoked")
             self._queue_revoke(m.hotkey)
             r = self.approvals.get(m.hotkey)
             if r is None:
@@ -1390,9 +1475,13 @@ class Desk:
         return ck or f"hotkey:{hotkey}"
 
     def proven(self) -> list[str]:
-        """Hotkeys that delivered at least one scored client job (genesis weights only these)."""
+        """Hotkeys that delivered at least one scored client job, or had an improvement judged a
+        level higher and taken as an offer (genesis weights only these)."""
         with self._lock:
-            return sorted(h for h, n in self.delivered.items() if n > 0)
+            return sorted(
+                {h for h, n in self.delivered.items() if n > 0}
+                | {h for h, n in self.improved.items() if n > 0}
+            )
 
     # -- the worker pool and the heartbeat ---------------------------------------------------------
 
@@ -1583,7 +1672,6 @@ class Desk:
         if job is not None and a is not None and a.hotkey == hotkey:
             self._spawn(self._freeze_quietly, a.workspace)
             self._fail(job, a, "the miner was disabled", kind="disabled")
-        self._fail_beside(m, "the miner was disabled", "disabled")
         self.disabled_log.append(
             {"hotkey": hotkey, "reason": reason, "at_ms": self.now_ms(), "until_ms": until}
         )
@@ -1858,7 +1946,6 @@ class Desk:
                     self._fail(job, a, "the miner deregistered", kind="dereg")
                 elif job is None or job.state != "judging":
                     m.job = ""
-                self._fail_beside(m, "the miner deregistered", "dereg")
             # a pending key request of a hotkey that left is dropped (it asks again if it comes
             # back); a decision (approved, refused, revoked) is kept: a hotkey keeps its coldkey
             for hk in [h for h, r in self.approvals.items() if r.state == "pending"]:
@@ -1992,10 +2079,56 @@ class Desk:
         """Turn the launch rule on or off (persisted); the next hourly vector follows it. Answers
         the value before and after."""
         with self._mut():
+            if on and self.lanes_open:
+                raise DeskError(
+                    "the lanes are open: the launch rule stays off (close the lanes first)",
+                    409,
+                    "lanes_open",
+                )
             was, self.launch_equal = self.launch_equal, bool(on)
         if was != self.launch_equal:
             self.log(f"launch-equal {'on' if self.launch_equal else 'off'} (by {by})")
         return {"launch_equal": self.launch_equal, "was": was}
+
+    def set_lanes_open(self, on: bool, *, by: str = "operator") -> dict[str, Any]:
+        """Open or close the lanes (persisted). Opening them turns the launch rule off in the
+        same act: the two are never on together. Answers the value before and after, and the
+        launch rule's."""
+        with self._mut():
+            was, self.lanes_open = self.lanes_open, bool(on)
+            launch_was = self.launch_equal
+            if self.lanes_open:
+                self.launch_equal = False
+        if was != self.lanes_open:
+            self.log(
+                f"lanes {'OPEN' if self.lanes_open else 'closed'} (by {by})"
+                + ("; launch-equal turned off with it" if launch_was and self.lanes_open else "")
+            )
+        return {"lanes_open": self.lanes_open, "was": was, "launch_equal": self.launch_equal}
+
+    def eligible(self) -> list[str]:
+        """The hotkeys that may work once the lanes are open: approved, keyed, not blocked."""
+        now = self.now_ms()
+        with self._lock:
+            return [
+                m.hotkey
+                for m in self.miners.values()
+                if m.key_id and m.blocked_until_ms <= now and self.approved(m.hotkey)
+            ]
+
+    def weighted(self) -> list[str]:
+        """The hotkeys the weights are made over (the report's ``admitted``): the admitted ones
+        while the lanes are closed, every eligible one once they are open."""
+        return self.eligible() if self.lanes_open else self.admitted()
+
+    def _say_every(self, key: str, every_s: float, line: str) -> None:
+        """Log ``line`` at most every ``every_s`` seconds per ``key``."""
+        now = self.now_ms()
+        with self._lock:
+            if now - self._said_at.get(key, -(10**15)) < every_s * 1000:
+                return
+            self._said_at[key] = now
+        self.log(line)
 
     def _request(self, hotkey: str) -> KeyRequest:
         """Inside the lock: the hotkey's request, made for a registered hotkey that never asked (an
@@ -2057,14 +2190,13 @@ class Desk:
             if m is not None:
                 m.key_id, m.admitted, m.admission_ms = "", False, 0
                 freed = self._free_job(m, "the operator revoked the miner's key", "revoked")
-                self._fail_beside(m, "the operator revoked the miner's key", "revoked")
             self._queue_revoke(r.hotkey)
             for job in self.jobs.values():
                 if job.kind == "admission" and job.target == r.hotkey and job.state == "queued":
                     job.state = "done"
                     job.result = {"label": "not admitted", "charge": False, "why": "revoked"}
-                if job.kind == "practice" and job.target == r.hotkey and job.state == "queued":
-                    self._end_practice(job, None, deliverable=False, why="revoked")
+                if job.kind == "improvement" and job.target == r.hotkey and job.state == "queued":
+                    self._end_improvement(job, None, report="failed", why="revoked")
             self.log(f"key revoked by the operator: {r.hotkey}: {why}")
             out = asdict(r)
             out["freed_job"] = freed
@@ -2222,52 +2354,32 @@ class Desk:
             m.job = ""
         return held
 
-    @staticmethod
-    def _beside(job: Job) -> bool:
-        """Whether ``job`` is a practice job its miner asked to build beside its client work
-        (``parallel``): it holds no job slot, so the miner is still given client jobs."""
-        return job.kind == "practice" and job.practice.get("parallel") is True
-
-    def _practice_beside(self, hotkey: str) -> Job | None:
-        """The open practice job ``hotkey`` builds beside its client work, if any (one practice
-        job is open at a time)."""
-        for job in self.jobs.values():
-            if self._beside(job) and job.target == hotkey and job.state != "done":
-                return job
-        return None
-
-    def _fail_beside(self, m: Miner, why: str, kind: str) -> None:
-        """Inside a mutation: the practice job ``m`` builds beside its client work ends too when
-        the miner is disabled, revoked or gone (it holds no job slot, so nothing else finds it).
-        One being granted is dropped by :meth:`_assign` (the miner has no key left); one already
-        submitted (no ``current`` attempt) is judged as ever; an operator's take-back of the
-        client job leaves it alone."""
-        job = self._practice_beside(m.hotkey)
-        a = job.current if job else None
-        if job is not None and a is not None and a.hotkey == m.hotkey:
-            self._spawn(self._freeze_quietly, a.workspace)
-            self._fail(job, a, why, kind=kind)
-
     def _freeze_quietly(self, ws: str) -> None:
         with contextlib.suppress(PlatformError):
             self.platform.freeze(ws)
 
     def work(self, hotkey: str) -> dict[str, Any]:
-        """The miner's poll: its assignment, if it has one."""
+        """The miner's poll: its assignment, if it has one, and its lane, rating and the
+        threshold between the lanes. With the lanes open, a free miner of the improvement lane
+        that polls is asked a device for on the platform (off the lock: it reads the job on a
+        later poll)."""
+        ask = False
         with self._mut():
             m = self._miner(hotkey)
             job = self.jobs.get(m.job)
             a = job.current if job else None
             # its last job, cancelled by the client: the miner stops working on it
-            told = {"cancelled": m.cancelled_job} if m.cancelled_job else {}
-            # a practice job built beside its client work: its own entry, never in ``job``
-            side = self._practice_beside(hotkey)
-            sa = side.current if side else None
-            if side is not None and sa is not None and sa.hotkey == hotkey:
-                told["practice_job"] = self._work_view(side, sa)
+            told: dict[str, Any] = {"cancelled": m.cancelled_job} if m.cancelled_job else {}
+            rating = rating_of(self.ledger.ratings(self.now_ms()), hotkey)
+            told.update(lane=lane_of(rating), rating=rating, threshold=THRESHOLD)
             if job is None or a is None or a.hotkey != hotkey:
-                return {"job": None, **told}
-            return {**told, **self._work_view(job, a)}
+                ask = self._improvement_due(m, told["lane"])
+                out = {"job": None, **told}
+            else:
+                out = {**told, **self._work_view(job, a)}
+        if ask:
+            self._spawn(self._improvement_ask, hotkey)
+        return out
 
     def _work_view(self, job: Job, a: Attempt) -> dict[str, Any]:
         """An assignment as its miner reads it on ``work``."""
@@ -2280,8 +2392,6 @@ class Desk:
             "deadline_ms": a.deadline_ms,
             # the client asked not to be asked questions: decide them, leave none open
             "no_questions": job.no_questions,
-            # a practice job: never scored (docs/MINER.md "Trying a new setup")
-            **({"practice": True} if job.kind == "practice" else {}),
             # whether the client allows sub-projects (brief/job.toml; W0233 if false)
             **({"subprojects": job.subprojects} if job.subprojects is not None else {}),
             # a style round: printed shapes only; Watt refuses a change of function (W0220)
@@ -2289,6 +2399,21 @@ class Desk:
             # a round continuing an unfinished one: the workspace starts as that project; the
             # builder may continue it or start over from the base
             **(self._continuation_work(job, a) if job.continuation else {}),
+            # an improvement job: the workspace starts as the delivered version; ``base`` is a
+            # read-only copy of it, ``level`` and ``notes`` what the judge said of it
+            **(self._improvement_work(job, a) if job.kind == "improvement" else {}),
+        }
+
+    @staticmethod
+    def _improvement_work(job: Job, a: Attempt) -> dict[str, Any]:
+        """``work``'s words for an improvement job."""
+        level = job.improvement.get("level")
+        return {
+            "improvement": True,
+            "base": {"kind": "delivered", "workspace": a.reference},
+            "level": int(level) if isinstance(level, int) else None,
+            "notes": dict(job.improvement.get("notes") or {"lines": [], "nudges": []}),
+            "no_questions": True,
         }
 
     @staticmethod
@@ -2307,9 +2432,7 @@ class Desk:
                 {"job": j.job, "kind": a.kind, "why": a.outcome[:1200], "at_ms": a.submitted_ms}
                 for j in self.jobs.values()
                 for a in j.attempts
-                if a.hotkey == hotkey
-                and a.kind in ("gate", "timeout", "copy", "refused")
-                and j.kind != "practice"  # its results are on GET /v1/practice
+                if a.hotkey == hotkey and a.kind in ("gate", "timeout", "copy", "refused")
             ]
         return sorted(rows, key=lambda r: r["at_ms"])[-limit:]
 
@@ -2323,8 +2446,7 @@ class Desk:
                 raise DeskError("no such assignment", 404)
             now = self.now_ms()
             m = self.miners[hotkey]
-            if not self._beside(job):  # a practice job built beside says nothing of its client work
-                m.cancelled_job, m.after_cancel = "", False
+            m.cancelled_job, m.after_cancel = "", False
             a.accepted_ms = now
             a.deadline_ms = now + self.deadline_s * 1000
             job.state = "working"
@@ -2344,11 +2466,11 @@ class Desk:
     ) -> dict[str, Any]:
         """The hand-over. ``summary``, optional: the builder's own words on what blocks delivery
         (shown to the client when the round ends not finished). ``setup``, optional: the miner's
-        own label for the setup it built with (its practice results are grouped by it).
+        own label for the setup it built with (a free label, kept with the attempt).
         ``host_refused``, optional: the builder stopped because the platform refused its Watt runs'
         results (the why a run answer's ``host_refused`` gave); the validator's own guard run on
         its fork reproduces it, and only then is the round blocked by the platform."""
-        from .practice import clean_setup  # noqa: PLC0415
+        from .improvement import clean_setup  # noqa: PLC0415
 
         with self._mut():
             self._miner(hotkey)
@@ -2410,7 +2532,16 @@ class Desk:
         a message the client reads if the job ends declined. The job goes to a second miner, which
         decides on its own and is not shown the first one's message. A job whose client asked not
         to be asked questions is never declined for a need: the builder assumes, records it and
-        delivers."""
+        delivers.
+
+        **An improvement job**: the miner rejects the device. It is never served that device
+        again (the platform keeps the rejection), nothing is counted -- no outcome, no rejection
+        telemetry -- and the miner is free at once. A category and a message are optional."""
+        with self._lock:
+            held = self.jobs.get(job_id)
+            improvement = held is not None and held.kind == "improvement"
+        if improvement:
+            return self._reject_device(hotkey, job_id, category, message)
         if category not in CATEGORIES:
             raise DeskError("category is not-allowed or not-capable")
         text = " ".join(str(message or "").split())[:2000]
@@ -2425,13 +2556,30 @@ class Desk:
                 raise DeskError("no such assignment", 404)
             self._spawn(self._freeze_quietly, a.workspace)
             a.category, a.message = category, text
-            if job.kind != "practice":  # practice is in no telemetry
-                self.rejected[hotkey] = self.rejected.get(hotkey, 0) + 1
+            self.rejected[hotkey] = self.rejected.get(hotkey, 0) + 1
             self._event("rejected", job_id, hotkey=hotkey, category=category)
             self._leased_ms = 0  # no builder now: the platform hears so on the next beat
             self._fail(job, a, f"rejected ({category})", kind="reject")
         self.tick()
         return {"job": job_id, "state": self.status(job_id)["state"]}
+
+    def _reject_device(
+        self, hotkey: str, job_id: str, category: str, message: str
+    ) -> dict[str, Any]:
+        """A miner rejects the device of its improvement job (:meth:`reject`)."""
+        with self._mut():
+            self._miner(hotkey)
+            job = self.jobs.get(job_id)
+            a = job.current if job else None
+            if job is None or a is None or a.hotkey != hotkey:
+                raise DeskError("no such assignment", 404)
+            self._spawn(self._freeze_quietly, a.workspace)
+            a.category = category if category in CATEGORIES else ""
+            a.message = " ".join(str(message or "").split())[:2000]
+            a.outcome, a.kind = "rejected the device", "reject"
+            self._event("device-rejected", job_id, hotkey=hotkey)
+            self._end_improvement(job, a, report="reject", why="the miner rejected the device")
+        return {"job": job_id, "state": "done", "rejected": True}
 
     def telemetry(self) -> dict[str, dict[str, Any]]:
         """Rejections per miner, and how many another miner then passed. A rate over twice the
@@ -2584,6 +2732,7 @@ class Desk:
                 old.calibration = _calibration_of(body.get("calibration"))
                 old.credit = self._credit_checked(job_id, body.get("remix_credit"))
                 old.lineage = _lineage_of(body.get("lineage"))
+                old.priority = body.get("priority") is True
                 old.state, old.result, old.closed = "queued", {}, False
                 old.queued_ms = self.now_ms()
                 if job_id in self._outbox:
@@ -2617,6 +2766,7 @@ class Desk:
                 calibration=_calibration_of(body.get("calibration")),
                 credit=self._credit_checked(job_id, body.get("remix_credit")),
                 lineage=_lineage_of(body.get("lineage")),
+                priority=body.get("priority") is True,
             )
         return self.status(job_id)
 
@@ -2650,13 +2800,25 @@ class Desk:
         question). It passes only through the client jobs' gate (:meth:`_gate`: deliverable on the
         validator's own guard run, no unproven must; and :meth:`_answers_gate`: no client decision
         left open), submitted before its deadline. Passing admits the miner; only admitted miners
-        get client jobs and weight. Under manual approval only an approved key holder may ask."""
+        get client jobs and weight. Under manual approval only an approved key holder may ask.
+
+        **With the lanes open the entry test is retired**: an approved, keyed hotkey is answered
+        ``{"admitted": true, "retired": true, "lane", "rating"}`` and no test is made. Its rating
+        decides its lane from then on."""
         with self._mut():
             m = self._miner(hotkey)
             if not self.approved(hotkey):
                 raise DeskError("your agent key is not approved yet: ask for it first", 403)
             if not m.key_id:
                 raise DeskError("ask for your agent key first")
+            if self.lanes_open:
+                rating = rating_of(self.ledger.ratings(self.now_ms()), hotkey)
+                return {
+                    "admitted": True,
+                    "retired": True,
+                    "lane": lane_of(rating),
+                    "rating": rating,
+                }
             if m.admitted:
                 return {"admitted": True}
             now = self.now_ms()
@@ -2683,172 +2845,206 @@ class Desk:
         self.tick()
         return self.status(job_id)
 
-    # -- practice (a miner trying a setup on a public brief; never scored) ------------------------
+    # -- improvement jobs (a delivered device improved by a miner of the improvement lane) -------
 
-    def _client_job_for(self, m: Miner) -> Job | None:
-        """A queued client job ``m`` could take: it is admitted and has not tried it. While one
-        waits, no practice job is handed out to ``m``."""
-        if not m.admitted:
-            return None
-        for job in self.jobs.values():
-            if job.kind == "client" and job.state == "queued" and m.hotkey not in self._tried(job):
-                return job
-        return None
+    def _fallback(self, ratings: Mapping[str, float], now: int) -> bool:
+        """Inside the lock, lanes open: whether NO eligible miner (registered, approved, keyed,
+        not blocked) has a production rating at all. Client jobs then go to the highest-rated
+        free approved miner instead of waiting for a lane nobody is in."""
+        reg = set(self.registered())
+        return not any(
+            m.key_id
+            and m.hotkey in reg
+            and m.hotkey not in self.excluded
+            and m.blocked_until_ms <= now
+            and self.approved(m.hotkey)
+            and lane_of(rating_of(ratings, m.hotkey)) == "production"
+            for m in self.miners.values()
+        )
 
-    def _practice_view(self, job: Job) -> dict[str, Any]:
-        """A practice job as its miner reads it (never the delivered version's job id)."""
-        return {
-            "practice": job.job,
-            "state": job.state,
-            "title": str(job.practice.get("title") or ""),
-            "result": {k: v for k, v in job.result.items() if k in ("deliverable", "why")},
-        }
+    def _improvement_due(self, m: Miner, lane: str) -> bool:
+        """Inside a mutation: whether the platform is to be asked a device for ``m`` now -- the
+        lanes are open, the validator has a judge (no judge, no filter), the subnet is not on
+        hold, and ``m`` is a keyed, approved, unblocked miner of the improvement lane with no job
+        and nothing of its own still being asked for. Improvement jobs run on spare places only.
+        While no miner at all has a production rating, none is served while a client job waits
+        (that job goes to one of these miners). True marks the ask as made."""
+        hk, now = m.hotkey, self.now_ms()
+        if not self.lanes_open or self.hold or lane != "improvement":
+            return False
+        if not self.improvement_book.active:
+            return False
+        if m.job or not m.key_id or m.blocked_until_ms > now or not self.approved(hk):
+            return False
+        if hk in self._improvement_asking or self._improvement_wait.get(hk, 0) > now:
+            return False
+        if self._held_off(hk, now) or now - m.cancelled_ms < self.cancel_cooloff_s * 1000:
+            return False
+        if now < self._grant_pause_ms or self._inflight(improvement=True) >= self.max_inflight:
+            return False
+        if any(
+            j.kind == "improvement" and j.target == hk and j.state != "done"
+            for j in self.jobs.values()
+        ):
+            return False
+        waiting = any(j.kind == "client" and j.state == "queued" for j in self.jobs.values())
+        if waiting and self._fallback(self.ledger.ratings(now), now):
+            return False
+        self._improvement_asking.add(hk)
+        return True
 
-    def practice(self, hotkey: str, *, parallel: bool = False) -> dict[str, Any]:
-        """A practice job for ``hotkey`` (docs/MINER.md "Trying a new setup"): a delivered public
-        project's brief from the platform, run as a job assigned to this miner alone, with no
-        client to ask (``no_questions``), on the platform's practice lane, and gated as any job.
-        It is never in the ledger, points, weights or routing; its result is voted on beside the
-        delivered version and reported (:mod:`.practice`). An approved key holder, admitted or
-        not; one open at a time, ``practice_per_day`` a UTC day, and none while the miner holds a
-        job or a client job it could take is queued -- unless the miner asks to build it beside
-        its client work (``parallel``: a second builder of its own): then the practice job holds
-        no job slot, is handed out whatever else the miner holds, and the miner is given client
-        jobs as if it were not practising (it reads the practice job on ``work`` as
-        ``practice_job``). Open while the subnet is on hold."""
-        now = self.now_ms()
-        with self._mut():
-            m = self._miner(hotkey)
-            if not self.approved(hotkey):
-                raise DeskError("your agent key is not approved yet: ask for it first", 403)
-            if not m.key_id:
-                raise DeskError("ask for your agent key first")
-            if m.blocked_until_ms > now:
-                raise DeskError("this hotkey is disabled for now", 403)
-            mine = [j for j in self.jobs.values() if j.kind == "practice" and j.target == hotkey]
-            live = [j for j in mine if j.state != "done"]
-            if live:
-                return self._practice_view(live[-1])
-            # practice stays open on hold (owner 2026-11-16): it is never scored, and the hold
-            # holds back client jobs and weights only
-            if not parallel:
-                if m.job:
-                    raise DeskError("you hold a job: practice once it is over", 409)
-                if self._client_job_for(m) is not None:
-                    raise DeskError(
-                        "a client job you can take is waiting: practice runs only when none is",
-                        409,
-                    )
-            today = now // 86_400_000
-            if sum(1 for j in mine if j.created_ms // 86_400_000 == today) >= self.practice_per_day:
-                raise DeskError(f"{self.practice_per_day} practice jobs a day", 429)
-            if hotkey in self._practice_asking:
-                raise DeskError("a practice brief is being asked for: retry in a moment", 409)
-            self._practice_asking.add(hotkey)
+    def _improvement_ask(self, hotkey: str) -> None:
+        """In the pool, off the lock: ask the platform the next device for ``hotkey`` and queue
+        the try as an improvement job assigned to it alone. A miner the platform has no device
+        for, or whose open try is one this validator already holds (it is still being judged),
+        is not asked for again for :data:`IMPROVEMENT_ASK_S`."""
+        wait_s = IMPROVEMENT_ASK_S
         try:
             try:
-                got = self.platform.practice_brief(hotkey)
+                got = self.platform.improvement_next(hotkey)
             except PlatformError as e:
-                if e.status == 404:
-                    raise DeskError("no practice brief is left for you", 404) from None
-                if e.status == 429:
-                    raise DeskError(
-                        f"the platform's practice cap is reached: {str(e)[:200]}", 429
-                    ) from None
-                raise DeskError("no practice brief now: retry later", 503) from None
-            pid = str(got.get("practice_id") or "")
-            brief = str(got.get("brief") or "")
-            if not PRACTICE_ID.match(pid) or not brief.strip():
-                raise DeskError("the platform's practice brief is malformed: retry later", 503)
+                if e.status not in (404, 429):
+                    wait_s = IMPROVEMENT_PAUSE_S
+                    self._say(
+                        f"improvement-next:{e.code or e.status}",
+                        f"improvement: no device for {hotkey[:10]} ({e.status} "
+                        f"{e.code or 'no code'}: {' '.join(str(e).split())[:200]})",
+                    )
+                return
+            tid, brief = str(got.get("try_id") or ""), str(got.get("brief") or "")
+            device = str(got.get("job") or "")[:100]
+            if not IMPROVEMENT_ID.match(tid) or not brief.strip() or not device:
+                self._say("improvement-next:malformed", "improvement: a malformed device answer")
+                return
+            level = got.get("level")
+            notes = self.improvement_book.notes_for(device, got.get("finding"))
             with self._mut():
-                if pid in self.jobs:
-                    raise DeskError("the platform handed out a practice id twice", 503)
-                self.jobs[pid] = Job(
-                    job=pid,
+                m = self.miners.get(hotkey)
+                if tid in self.jobs or self.improvement_book.known(tid):
+                    return  # its open try, already here (being worked or judged)
+                if m is None or m.job or not m.key_id or not self.lanes_open:
+                    return  # no longer free: the platform frees a try that gets no grant
+                now = self.now_ms()
+                self.jobs[tid] = Job(
+                    job=tid,
                     brief=brief,
-                    kind="practice",
+                    kind="improvement",
                     no_questions=True,
                     target=hotkey,
-                    created_ms=self.now_ms(),
-                    queued_ms=self.now_ms(),
-                    practice={
-                        "title": " ".join(str(got.get("title") or "").split())[:200],
-                        "reference_job": str(got.get("reference_job") or "")[:100],
-                        **({"parallel": True} if parallel else {}),
+                    created_ms=now,
+                    queued_ms=now,
+                    lineage=[device, *_lineage_of(got.get("lineage"))],
+                    improvement={
+                        "device": device,
+                        "level": level if isinstance(level, int) else None,
+                        "notes": notes,
                     },
                 )
-                self._event("practice-queued", pid, hotkey=hotkey, parallel=parallel or None)
+                wait_s = 0.0
+                self._event(
+                    "improvement-queued",
+                    tid,
+                    hotkey=hotkey,
+                    device=device,
+                    level=level if isinstance(level, int) else None,
+                    existing=got.get("existing") is True or None,
+                )
         finally:
             with self._lock:
-                self._practice_asking.discard(hotkey)
+                self._improvement_asking.discard(hotkey)
+                if wait_s:
+                    self._improvement_wait[hotkey] = self.now_ms() + int(wait_s * 1000)
         self.tick()
-        with self._lock:
-            return self._practice_view(self.jobs[pid])
 
-    def practice_status(self, hotkey: str) -> dict[str, Any]:
-        """A miner's practice: its open practice job, if any, and its results by ``setup``."""
-        with self._lock:
-            self._miner(hotkey)
-            live = [
-                self._practice_view(j)
-                for j in self.jobs.values()
-                if j.kind == "practice" and j.target == hotkey and j.state != "done"
-            ]
-            today = self.now_ms() // 86_400_000
-            started = sum(
-                1
-                for j in self.jobs.values()
-                if j.kind == "practice"
-                and j.target == hotkey
-                and j.created_ms // 86_400_000 == today
-            )
-        out = self.practice_book.status(hotkey, live)
-        out["today"] = {"started": started, "cap": self.practice_per_day}
-        return out
-
-    def _end_practice(
+    def _end_improvement(
         self,
         job: Job,
         a: Attempt | None,
         *,
-        deliverable: bool,
+        report: str,
         why: str,
         fork: str = "",
         verdict: Mapping[str, Any] | None = None,
         on_time: bool = False,
     ) -> None:
-        """Inside a mutation: a practice job ends -- never scored, never sent to another miner.
-        Its record goes to the practice book, which votes on a deliverable result (its copy,
-        ``fork``, kept until then) and reports it; any other ending is reported with its reason
-        and no vote."""
+        """Inside a mutation: an improvement job ends on the desk -- never sent to another miner.
+        ``report`` says what its record asks of the improvement book: ``judge`` (it passed the
+        gate: its copy, ``fork``, is voted on beside the delivered version, and the result
+        offered or reported not better), ``failed`` (reported failed: the device goes back on the
+        lane), ``reject`` (its miner rejected the device) or ``none`` (nothing to say: the
+        platform already let the try go). The ledger's outcome is not written here: a failed
+        try's by :meth:`_fail`, a judged one's when the platform answered
+        (:meth:`_improvement_outcome`)."""
         if a is not None:
             self._release(a.hotkey, job.job)
-            self._drop_gate(job.job, a, keep_fork=deliverable)
+            self._drop_gate(job.job, a, keep_fork=report == "judge")
         job.state = "done"
-        job.result = {"label": "practice", "charge": False, "deliverable": deliverable, "why": why}
+        job.result = {"label": "improvement", "charge": False, "outcome": report, "why": why}
         end = (a.submitted_ms or a.deadline_ms or self.now_ms()) if a is not None else 0
-        minutes = None
+        minutes, wall_s = None, 0.0
         if a is not None and a.accepted_ms:
-            minutes = round(max(0, end - a.accepted_ms) / 60_000, 1)
-        self.practice_book.ended(
-            {
-                "practice_id": job.job,
-                "hotkey": job.target,
-                "title": str(job.practice.get("title") or ""),
-                "reference_job": str(job.practice.get("reference_job") or ""),
-                "setup": a.setup if a is not None else "",
-                "deliverable": deliverable,
-                "why": why[:1200],
-                "workspace": fork if deliverable else "",
-                "digest": str((verdict or {}).get("digest") or ""),
-                "watt": str((verdict or {}).get("watt") or ""),
-                "minutes": minutes,
-                "on_time": on_time,
-                "created_ms": job.created_ms,
-                "ended_ms": self.now_ms(),
-            }
-        )
-        self._event("ended", job.job, label="practice", hotkey=job.target, deliverable=deliverable)
+            wall_s = max(0, end - a.accepted_ms) / 1000
+            minutes = round(wall_s / 60, 1)
+        if report != "none":
+            self.improvement_book.ended(
+                {
+                    "try_id": job.job,
+                    "hotkey": job.target,
+                    "device": str(job.improvement.get("device") or ""),
+                    "level": job.improvement.get("level"),
+                    "report": report,
+                    "kind": a.kind if a is not None else "",
+                    "why": why[:1200],
+                    "workspace": fork if report == "judge" else "",
+                    "digest": str((verdict or {}).get("digest") or ""),
+                    "stage": str((verdict or {}).get("stage") or ""),
+                    "watt": str((verdict or {}).get("watt") or ""),
+                    "minutes": minutes,
+                    "wall_s": wall_s,
+                    "on_time": on_time,
+                    "created_ms": job.created_ms,
+                    "ended_ms": self.now_ms(),
+                }
+            )
+        self._event("ended", job.job, label="improvement", hotkey=job.target, outcome=report)
+
+    def _improvement_outcome(
+        self, row: Mapping[str, Any], kind: str, levels: Mapping[str, Any]
+    ) -> None:
+        """The improvement book's word on a judged try, once the platform answered: its outcome
+        in the ledger. ``pass``: the platform took the offer (0.5 rating points and 0.25 weight
+        points while it is pending). ``not_better`` (not a level above the delivered version)
+        and ``refused`` (the platform refused the workspace) score 0. Written once per try."""
+        tid, hk = str(row["try_id"]), str(row["hotkey"])
+        with self._mut():
+            if any(o.job == tid and o.hotkey == hk for o in self.ledger.outcomes):
+                return
+            self.ledger.add(
+                JobOutcome(
+                    job=tid,
+                    hotkey=hk,
+                    ended_ms=self.now_ms(),
+                    accepted=True,
+                    on_time=bool(row.get("on_time")),
+                    deliverable=True,
+                    stage=str(row.get("stage") or ""),
+                    wall_s=float(row.get("wall_s") or 0.0),
+                    kind=kind,
+                    lane="improvement",
+                    device=str(row.get("device") or ""),
+                    levels=dict(levels),
+                )
+            )
+            if kind == "pass":
+                self.improved[hk] = self.improved.get(hk, 0) + 1
+            self._event(
+                "improvement-judged",
+                tid,
+                hotkey=hk,
+                kind=kind,
+                base=levels.get("base"),
+                result=levels.get("result"),
+            )
 
     def signal(self, job_id: str, body: Mapping[str, Any]) -> dict[str, Any]:
         """The client's reaction to a delivered job, from the platform: download, stars (1-5),
@@ -2859,13 +3055,22 @@ class Desk:
         download by someone other than the job's client (``by: "visitor"``, a public project's
         reader) is recorded as that and never scored: only the job's own client scores. A
         ``trust`` the platform may send is ignored: free and paid
-        clients count the same."""
+        clients count the same.
+
+        **An improvement's offer** (``job``: its try id) takes the client's answer -- accepted,
+        try_again, not_interested -- or withdrawn (the platform's); the first is final. Once
+        accepted, the stars and refunds of the accepted version come with the same try id and
+        are read as a delivered job's. Every signal is dated as it arrives: the change of
+        points it makes is paid in the week it is dated, whatever the job's age. 404 for a job
+        or a try this validator holds no passing outcome of; 400 for an offer's answer on a
+        client job."""
         kind = str(body.get("kind") or "")
         if kind == "forget":
             return self.forget(job_id)
-        if kind not in ("download", "stars", "change", "refund"):
+        if kind not in (*CLIENT_SIGNALS, *OFFER_SIGNALS):
             raise DeskError(
-                "kind is download, stars, change or refund (a re-run is a new job with rerun_of)"
+                "kind is download, stars, change or refund (a re-run is a new job with "
+                "rerun_of), or an offer's answer: accepted, try_again, not_interested, withdrawn"
             )
         sig: dict[str, Any] = {"kind": kind, "at_ms": self.now_ms()}
         if kind == "download" and body.get("by") == "visitor":
@@ -2880,10 +3085,20 @@ class Desk:
                 raise DeskError("a refund says quality: true or false")
             sig["quality"] = body["quality"]
         with self._mut():
+            o = self.ledger.find(job_id)
+            if o is None:
+                raise DeskError("no delivered job by that id", 404)
+            if kind in OFFER_SIGNALS and o.lane != "improvement":
+                raise DeskError("an offer's answer is for an improvement try, not a client job")
+            first = kind == "accepted" and not any(
+                x.get("kind") in OFFER_SIGNALS for x in o.signals
+            )
             s = self.ledger.signal(job_id, sig)
-        if s is None:
-            raise DeskError("no delivered job by that id", 404)
-        return {"job": job_id, "score": s}
+            if first:
+                self.improvements_accepted[o.hotkey] = (
+                    self.improvements_accepted.get(o.hotkey, 0) + 1
+                )
+        return {"job": job_id, "score": s, "weight": o.w, "event": o.parts.get("event")}
 
     def forget(self, job_id: str) -> dict[str, Any]:
         """The platform says the job's client deleted it (the ``forget`` signal): its calibration
@@ -2977,27 +3192,29 @@ class Desk:
             return self.status(job_id)
 
     def capacity(self) -> dict[str, Any]:
-        """What the platform's single queue needs for its ETA: admitted miners active now, how many
-        are
-        free, and the median wall time of the last 20 passing jobs (None before there are any). The
-        platform computes positions; the validator keeps no waiting list."""
+        """What the platform's single queue needs for its ETA: the miners that take client jobs
+        (the admitted ones; with the lanes open, those of the production lane) active now, how
+        many are free, and the median wall time of the last 20 delivered client jobs (None before
+        there are any). The platform computes positions; the validator keeps no waiting list."""
         now = self.now_ms()
         with self._lock:
+            takes = self._takes_client(now)
             active = [
                 m
                 for m in self.miners.values()
-                if m.admitted
+                if takes(m)
                 and m.key_id
                 and now - m.last_seen_ms <= ALIVE_S * 1000
                 and not self.hold
             ]
             free = sum(1 for m in active if not m.job)
             held = sum(
-                1 for j in self.jobs.values() if j.state == "queued" and j.kind != "practice"
+                1 for j in self.jobs.values() if j.state == "queued" and j.kind != "improvement"
             )
-        recent = sorted((o for o in self.ledger.outcomes if o.passed), key=lambda o: o.ended_ms)[
-            -20:
-        ]
+        recent = sorted(
+            (o for o in self.ledger.outcomes if o.passed and o.lane == "production"),
+            key=lambda o: o.ended_ms,
+        )[-20:]
         return {
             "active_miners": len(active),
             "free_miners": max(0, free - held),
@@ -3031,7 +3248,23 @@ class Desk:
 
     # -- routing (section 6) -----------------------------------------------------------------------
 
-    def _available(self, job: Job, *, beside: bool = False) -> list[Miner]:
+    def _takes_client(self, now: int) -> Callable[[Miner], bool]:
+        """Inside the lock: which miners client jobs may go to. Lanes closed: the admitted ones.
+        Lanes open: the approved, keyed miners whose rating puts them in the production lane --
+        or, while no eligible miner has a production rating at all (:meth:`_fallback`), every
+        approved, keyed one."""
+        if not self.lanes_open:
+            return lambda m: m.admitted
+        ratings = self.ledger.ratings(now)
+        if self._fallback(ratings, now):
+            return lambda m: bool(m.key_id) and self.approved(m.hotkey)
+        return lambda m: (
+            bool(m.key_id)
+            and self.approved(m.hotkey)
+            and lane_of(rating_of(ratings, m.hotkey)) == "production"
+        )
+
+    def _available(self, job: Job) -> list[Miner]:
         now = self.now_ms()
         reg = set(self.registered())
         tried = self._tried(job)
@@ -3045,7 +3278,7 @@ class Desk:
             m
             for m in self.miners.values()
             if m.key_id
-            and (beside or not m.job)  # a practice job built beside holds no job slot
+            and not m.job
             and m.hotkey in reg
             and m.blocked_until_ms <= now
             and now - m.last_seen_ms <= ALIVE_S * 1000
@@ -3068,13 +3301,15 @@ class Desk:
         return {a.hotkey for a in job.attempts if a.kind != "lost"} | set(job.exclude)
 
     def _exhausted(self, job: Job, reg: set[str]) -> bool:
-        """Whether no miner that could ever take ``job`` is left: none registered, admitted, keyed,
-        not excluded and not yet tried. A busy, idle, cooling-off or second-opinion-waiting miner
-        still counts (it may take the job later), so a job never ends while a miner of another
-        coldkey -- or, after the wait, of the same one -- could still take it."""
+        """Whether no miner that could ever take ``job`` is left: none registered, admitted (with
+        the lanes open: in the production lane), keyed, not excluded and not yet tried. A busy,
+        idle, cooling-off or second-opinion-waiting miner still counts (it may take the job
+        later), so a job never ends while a miner of another coldkey -- or, after the wait, of
+        the same one -- could still take it."""
         tried = self._tried(job)
+        takes = self._takes_client(self.now_ms())
         return not any(
-            m.admitted and m.key_id and m.hotkey in reg and m.hotkey not in tried
+            takes(m) and m.key_id and m.hotkey in reg and m.hotkey not in tried
             for m in self.miners.values()
             if m.hotkey not in self.excluded
         )
@@ -3123,17 +3358,15 @@ class Desk:
         calibration (``job.calibration``) always goes to the longest wait: those briefs go round
         in turn. Votes play no part. There is no team
         miner: with no miner free the job waits in the queue -- never rejected for lack of miners
-        -- until a miner is free or the client cancels."""
-        if self._beside(job):  # its own miner, whatever else it holds
-            own = self._available(job, beside=True)
-            return next((m for m in own if m.hotkey == job.target), None)
+        -- until a miner is free or the client cancels.
+
+        An improvement job: its own miner. **With the lanes open** a client job is routed by
+        :meth:`_route_open` instead: to the production lane, by rating."""
         free = self._available(job)
-        if job.kind == "admission":
+        if job.kind in ("admission", "improvement"):
             return next((m for m in free if m.hotkey == job.target), None)
-        if job.kind == "practice":
-            # its own miner, and only while no client job it could take waits
-            m = next((m for m in free if m.hotkey == job.target), None)
-            return m if m is not None and self._client_job_for(m) is None else None
+        if self.lanes_open:
+            return self._route_open(job, free)
         free = [m for m in free if m.admitted]
         if not free:
             return None
@@ -3151,7 +3384,7 @@ class Desk:
             return owner_clock.get(self.coldkey(m.hotkey, cmap), m.free_ms), m.free_ms
 
         # the operator's calibration briefs go round in turn, to the longest wait whatever the
-        # record (owner 2026-11-14): every miner gets its share of them and is judged on similar
+        # record: every miner gets its share of them and is judged on similar
         # briefs, and the record decides only the clients' jobs. Every TRIAL_EVERY-th client
         # assignment, counted over all miners (kept across restarts), goes to the longest wait.
         if not job.calibration and sum(self.assigned.values()) % TRIAL_EVERY != TRIAL_EVERY - 1:
@@ -3160,6 +3393,87 @@ class Desk:
             free = [m for m in free if record_of(records, m.hotkey) == best]
         oldest = min(wait(m) for m in free)
         return self.rng.choice(sorted((m for m in free if wait(m) == oldest), key=_hotkey))
+
+    def _route_open(self, job: Job, free: list[Miner]) -> Miner | None:
+        """A client job's miner with the lanes open (DESIGN.md "Open lanes").
+
+        The candidates are the available, approved miners whose rating puts them in the
+        **production lane** (:func:`.scoring.lane_of`). With none free the job waits, said at
+        most every :data:`NO_PRODUCTION_LOG_S`. Among them:
+
+        - the miner ``job.prefer`` names (a revision's previous builder), if it is a candidate;
+        - a **priority** job (``job.priority``, the claim's word on the client's plan): the best
+          rating, outside the one-in-five rule -- it neither reads nor advances the counter;
+        - a calibration job: the longest wait;
+        - otherwise every :data:`.scoring.TRIAL_EVERY`-th assignment (``trial_count``, counted
+          over the client assignments that are neither priority nor calibration, kept across
+          restarts) goes to **the longest wait**, so a miner just over the threshold gets work;
+          the others to **the best rating**.
+
+        Equal ratings fall to the longest wait (a coldkey's clock is the latest of its hotkeys'),
+        equal waits are drawn at random.
+
+        **No production miner at all**: while no eligible miner (registered, approved, keyed,
+        not blocked) has a production rating, a client job does not wait for a lane nobody is
+        in: it goes to the highest-rated free approved miner (ties: the longest wait). Each such
+        assignment is logged, and an ALERT is raised at most every :data:`FALLBACK_ALERT_S`.
+        While at least one production miner exists and all of them are busy, the job waits."""
+        now = self.now_ms()
+        ratings = self.ledger.ratings(now)
+        free = [m for m in free if self.approved(m.hotkey)]
+        cmap = self._cmap()
+        owner_clock: dict[str, int] = {}
+        for m in self.miners.values():
+            if m.key_id and self.approved(m.hotkey):
+                ck = self.coldkey(m.hotkey, cmap)
+                owner_clock[ck] = max(owner_clock.get(ck, 0), m.free_ms)
+
+        def wait(m: Miner) -> tuple[int, int]:
+            return owner_clock.get(self.coldkey(m.hotkey, cmap), m.free_ms), m.free_ms
+
+        def rate(m: Miner) -> float:
+            return rating_of(ratings, m.hotkey)
+
+        def longest(pool: list[Miner]) -> Miner:
+            oldest = min(wait(m) for m in pool)
+            return self.rng.choice(sorted((m for m in pool if wait(m) == oldest), key=_hotkey))
+
+        def best(pool: list[Miner]) -> Miner:
+            top = max(rate(m) for m in pool)
+            return longest([m for m in pool if rate(m) == top])
+
+        candidates = [m for m in free if lane_of(rate(m)) == "production"]
+        if not candidates:
+            if not self._fallback(ratings, now):
+                self._say_every(
+                    "no-production",
+                    NO_PRODUCTION_LOG_S,
+                    f"no production miner free: job {job.job} waits",
+                )
+                return None
+            if not free:
+                return None
+            m = best(free)
+            self._say_every(
+                "no-production-at-all",
+                FALLBACK_ALERT_S,
+                "ALERT: the lanes are open and no approved miner has a production rating "
+                f"(threshold {THRESHOLD:g}): client jobs go to the highest-rated free approved "
+                "miner until one has",
+            )
+            self.log(
+                f"job {job.job}: no production miner at all: routed to {m.hotkey[:10]} "
+                f"(rating {rate(m):.3f})"
+            )
+            return m
+        for m in candidates:
+            if m.hotkey == job.prefer:
+                return m
+        if job.priority:
+            return best(candidates)
+        if job.calibration or self.trial_count % TRIAL_EVERY == TRIAL_EVERY - 1:
+            return longest(candidates)
+        return best(candidates)
 
     def tick(self) -> None:
         """Assign queued jobs, enforce the acceptance windows and deadlines, claim new jobs for
@@ -3173,11 +3487,11 @@ class Desk:
                 if job.state == "assigned" and a and now > a.accept_by_ms:
                     self._spawn(self._freeze_quietly, a.workspace)
                     m = self.miners.get(a.hotkey)
-                    if m is not None and m.after_cancel and not self._beside(job):
+                    if m is not None and m.after_cancel:
                         # the first job after a cancel, missed while the miner stopped the
                         # cancelled one: nobody is scored, nothing counted
                         m.after_cancel = False
-                        if self.assigned.get(a.hotkey, 0) > 0:
+                        if job.kind != "improvement" and self.assigned.get(a.hotkey, 0) > 0:
                             self.assigned[a.hotkey] -= 1
                         self._fail(
                             job, a, "not accepted in time, just after a cancel", kind="stale"
@@ -3188,6 +3502,14 @@ class Desk:
                     job.state = "judging"
                     late.append((job, a))
                     self._event("deadline", job.job, hotkey=a.hotkey)
+            for job in self.jobs.values():
+                if (
+                    job.kind == "improvement"
+                    and job.state == "queued"
+                    and now - job.created_ms > IMPROVEMENT_PAUSE_S * 1000
+                ):
+                    # no workspace in all this time: the platform has let the try go
+                    self._end_improvement(job, None, report="none", why="never granted")
             for key in [
                 k
                 for k, j in self.jobs.items()
@@ -3225,8 +3547,8 @@ class Desk:
             self._lease(now)
         with self._mut():
             inflight = self._inflight()
-            # practice runs on spare places only: it never takes one a client job could use
-            spare = self._inflight(practice=True)
+            # improvement runs on spare places only: it never takes one a client job could use
+            spare = self._inflight(improvement=True)
             reg = set(self.registered())
             for job in [
                 j
@@ -3237,15 +3559,16 @@ class Desk:
             ]:
                 if self._exhausted(job, reg):
                     self._end_exhausted(job)
-            # client work first: a practice job is routed after every client and entry-test job
+            # client work first: an improvement job is routed after every client and entry-test
+            # job
             queued = sorted(
                 (j for j in self.jobs.values() if j.state == "queued"),
-                key=lambda j: (j.kind == "practice", j.created_ms),
+                key=lambda j: (j.kind == "improvement", j.created_ms),
             )
             plan: list[tuple[Job, Miner]] = []
             now = self.now_ms()
             for job in queued if now >= self._grant_pause_ms else ():
-                if (spare if job.kind == "practice" else inflight) >= self.max_inflight:
+                if (spare if job.kind == "improvement" else inflight) >= self.max_inflight:
                     continue
                 if self.hold and job.kind == "client":
                     continue  # on hold, no client job is handed to a miner
@@ -3256,12 +3579,11 @@ class Desk:
                     continue
                 if not self._grant_token(now):
                     break  # the grants' rate, all jobs together: the rest on a later tick
-                if not self._beside(job):
-                    m.job = job.job
+                m.job = job.job
                 job.state, job.granting = "assigning", m.hotkey
                 plan.append((job, m))
                 spare += 1
-                if job.kind != "practice":
+                if job.kind != "improvement":
                     inflight += 1
         with self._lock:
             stalled = [
@@ -3286,15 +3608,17 @@ class Desk:
             self._spawn(self._sweep_grants)
 
     def _want(self, now: int) -> int:
-        """How many jobs to claim now: one per free admitted miner, after the held jobs, within
-        ``max_inflight`` (practice jobs take none of it)."""
+        """How many jobs to claim now: one per free miner that takes client jobs (the admitted
+        ones; with the lanes open, those of the production lane), after the held jobs, within
+        ``max_inflight`` (improvement jobs take none of it)."""
         inflight = self._inflight()
         held = sum(1 for j in self.jobs.values() if j.state == "queued" and j.kind == "client")
         reg = set(self.registered())
+        takes = self._takes_client(now)
         free = sum(
             1
             for m in self.miners.values()
-            if m.admitted
+            if takes(m)
             and m.key_id
             and not m.job
             and m.hotkey in reg
@@ -3305,15 +3629,16 @@ class Desk:
         )
         return max(0, min(free - held, self.max_inflight - inflight - held))
 
-    def _inflight(self, *, practice: bool = False) -> int:
+    def _inflight(self, *, improvement: bool = False) -> int:
         """Inside a mutation: the jobs being granted, worked or judged -- client and entry-test
-        jobs only, unless ``practice``. ``max_inflight`` bounds the client work; a practice job
-        holds none of it, and is handed out only while the count with practice is under it."""
+        jobs only, unless ``improvement``. ``max_inflight`` bounds the client work; an
+        improvement job holds none of it, and is handed out only while the count with the
+        improvement jobs is under it."""
         return sum(
             1
             for j in self.jobs.values()
             if j.state in ("assigning", "assigned", "working", "judging")
-            and (practice or j.kind != "practice")
+            and (improvement or j.kind != "improvement")
         )
 
     def _lease(self, now: int) -> None:
@@ -3909,10 +4234,36 @@ class Desk:
           job's own deadline (:attr:`deadline_s` from its claim); a client job still refused then
           ends "didn't finish", as above.
 
+        **An improvement job** is never held for a grant that cannot be made: a refusal that is
+        not a passing one (the validator's rate, the platform's load, a busy workspace) ends it
+        with no outcome -- the try is gone, taken, or over the miner's quota there -- and its
+        miner is asked nothing for :data:`IMPROVEMENT_PAUSE_S`.
+
         One log line per refusal kind, throttled (:meth:`_say`)."""
         if e.code == SUSPENDED:
             self._suspended(m.hotkey)
         kind = self._grant_refusal(e)
+        if job.kind == "improvement" and (
+            kind in ("miner", "permanent") or e.code.startswith("improvement_")
+        ):
+            with self._mut():
+                if e.code == NOT_LINKED:
+                    m.key_id = ""
+                if m.job == job.job:
+                    m.job = ""
+                job.granting = ""
+                self._improvement_wait[m.hotkey] = self.now_ms() + int(IMPROVEMENT_PAUSE_S * 1000)
+                # a try the platform no longer holds (404, 410) needs no report
+                gone = e.status in (404, 410)
+                self._end_improvement(
+                    job, None, report="none" if gone else "failed", why=f"no workspace: {e.code}"
+                )
+            self._say(
+                f"improvement-grant:{e.code or e.status}",
+                f"improvement {job.job}: grant to {m.hotkey[:10]} refused ({e.status} "
+                f"{e.code or 'no code'}: {' '.join(str(e).split())[:200]}): dropped",
+            )
+            return
         now = self.now_ms()
         words = " ".join(str(e).split())[:200]
         head = (
@@ -4038,8 +4389,8 @@ class Desk:
     def _assign(self, job: Job, m: Miner) -> None:
         reference = ""
         try:
-            if job.kind == "practice":
-                ws = self.platform.grant_practice(m.hotkey, brief=job.brief, name=job.job)
+            if job.kind == "improvement":
+                ws, reference = self.platform.grant_improvement(m.hotkey, job.job)
             elif job.continuation:
                 ws, reference = self.platform.grant_continuation(
                     m.hotkey,
@@ -4081,8 +4432,7 @@ class Desk:
                 if job.state == "assigning":
                     job.state = "queued"
                 return
-            held = bool(m.key_id) if self._beside(job) else m.job == job.job
-            if job.state != "assigning" or not held:
+            if job.state != "assigning" or m.job != job.job:
                 # cancelled, or the miner left, while the workspace was being made
                 self._spawn(self._freeze_quietly, ws)
                 if m.job == job.job:
@@ -4090,8 +4440,11 @@ class Desk:
                 if job.state == "assigning":
                     job.state = "queued"
                 return
-            if job.kind != "practice":  # practice is in no telemetry
+            if job.kind != "improvement":  # the client work's telemetry
                 self.assigned[m.hotkey] = self.assigned.get(m.hotkey, 0) + 1
+            counted = job.kind == "client" and not job.priority and not job.calibration
+            if self.lanes_open and counted:
+                self.trial_count += 1  # the one-in-five counter of the open lanes
             if m.cancelled_job == job.job:  # its job again, after a lapsed lease: not "cancelled"
                 m.cancelled_job = ""
             job.attempts.append(
@@ -4139,8 +4492,22 @@ class Desk:
         a.outcome, a.kind = why, kind
         if kind != "reject":  # a rejection logged its own line
             self._event("attempt-failed", job.job, hotkey=a.hotkey, kind=kind, why=why[:200])
-        if job.kind == "practice":
-            self._end_practice(job, a, deliverable=False, why=why, on_time=False)
+        if job.kind == "improvement":
+            # a try that failed: the gate, a copy, or accepted and not delivered by the deadline
+            # score 0 (``improvement_failed``); any other end (not accepted in time, the miner
+            # gone, the validator's side) makes no outcome. Either way the platform is told, and
+            # the device goes back on the lane
+            if kind in ("gate", "copy") or (kind == "timeout" and bool(a.accepted_ms)):
+                o = outcome or JobOutcome(
+                    job=job.job, hotkey=a.hotkey, ended_ms=self.now_ms(), accepted=True
+                )
+                o.kind, o.lane = kind, "improvement"
+                o.device = str(job.improvement.get("device") or "")
+                self.ledger.add(o)
+            elif kind == "timeout":
+                # its acceptance window passed: released, and asked nothing for a while
+                self._improvement_wait[a.hotkey] = self.now_ms() + int(IMPROVEMENT_PAUSE_S * 1000)
+            self._end_improvement(job, a, report="failed", why=why)
             return
         if job.kind == "admission":
             self._release(a.hotkey, job.job)
@@ -4297,9 +4664,9 @@ class Desk:
         nobody; the miner is freed and the fork deleted."""
         a.outcome = f"the validator could not judge it: {why[:200]}"
         a.kind = "ours"
-        if job.kind == "practice":
-            self._end_practice(job, a, deliverable=False, why=a.outcome)
-            self.log(f"practice {job.job} ended without a judgement on the validator's side")
+        if job.kind == "improvement":
+            self._end_improvement(job, a, report="failed", why=a.outcome)
+            self.log(f"improvement {job.job} ended without a judgement on the validator's side")
             return
         self._event("ended", job.job, label="didn't finish", hotkey=a.hotkey, ours=True)
         self._release(a.hotkey, job.job)
@@ -4328,7 +4695,7 @@ class Desk:
         attempt is UNCOUNTED (:data:`UNCOUNTED`): no 0 in the ledger, not toward the job's attempt
         cap, not "not finished" nor a gate failure against the miner, and the miner's wait clock
         is put back where its submit found it. An entry test so blocked may be asked for again at
-        once; a practice job ends without a result."""
+        once; an improvement job ends without an outcome."""
         why = " ".join(str(why or "").split())[:500] or "the platform refused a run's result"
         with self._mut():
             if job.state != "judging" or not job.attempts or job.attempts[-1] is not a:
@@ -4347,8 +4714,8 @@ class Desk:
                 self._release(a.hotkey, job.job, clock=False)
             elif m is not None and a.clock_set_ms and m.free_ms == a.clock_set_ms:
                 m.free_ms = a.clock_before_ms  # its submit moved it, nothing since
-            if job.kind == "practice":
-                self._end_practice(job, a, deliverable=False, why=a.outcome)
+            if job.kind == "improvement":
+                self._end_improvement(job, a, report="failed", why=a.outcome)
                 return
             if job.kind == "admission":
                 self._drop_gate(job.job, a)
@@ -4817,9 +5184,9 @@ class Desk:
             verdict = self._gate(fork, job, a)
             if verdict["deliverable"]:
                 export = self.platform.export(fork)
-                if job.kind in ("client", "admission", "practice"):
-                    # an entry test or a practice job has no client: no_questions, so no client
-                    # decision left open
+                if job.kind in ("client", "admission", "improvement"):
+                    # an entry test or an improvement job has no client: no_questions, so no
+                    # client decision left open
                     kept_open = self._settled_open(job)
                     verdict = self._read_export(
                         verdict, lambda: self._answers_gate(job, a, verdict, export, kept_open)
@@ -4900,7 +5267,26 @@ class Desk:
                         " the digest of the version this round started from",
                     }
                     outcome.deliverable, outcome.stage = False, "unchanged"
-        if verdict["deliverable"] and job.kind == "client" and not no_change:
+        compared = job.kind == "client"
+        if verdict["deliverable"] and job.kind == "improvement":
+            # what the try started from: the delivered version. Its features are subtracted, as
+            # a seed's are, and a result still at its digest improved nothing
+            began = self._improvement_base(job, a)
+            if began:
+                base = fingerprint(began).features
+                device = str(job.improvement.get("device") or "")
+                origins = sorted({f"device:{device}", *_origins("", "", began, b"")})
+                compared = True
+                if report_digest(began) == str(verdict["digest"]):
+                    verdict = {
+                        **verdict,
+                        "deliverable": False,
+                        "stage": "unchanged",
+                        "error": "nothing was improved: the project is still at the digest of "
+                        "the delivered version",
+                    }
+                    outcome.deliverable, outcome.stage = False, "unchanged"
+        if verdict["deliverable"] and compared and not no_change:
             try:
                 mine = fingerprint(export).features
             except Exception as e:  # noqa: BLE001 -- the miner's export: unreadable fails it
@@ -4932,24 +5318,8 @@ class Desk:
             if no_change:
                 self._end_no_change(job, a, fork, verdict, on_time)
                 return
-            if job.kind == "practice":
-                a.outcome = "practised" if verdict["deliverable"] else "did not pass the Watt gate"
-                a.kind = "pass" if verdict["deliverable"] else ("gate" if on_time else "timeout")
-                self._end_practice(
-                    job,
-                    a,
-                    deliverable=bool(verdict["deliverable"]),
-                    why=""
-                    if verdict["deliverable"]
-                    else "not deliverable"
-                    + (f": {verdict['error']}" if verdict.get("error") else ""),
-                    fork=fork,
-                    verdict=verdict,
-                    on_time=on_time,
-                )
-                return
             copy = None
-            if verdict["deliverable"] and job.kind == "client":
+            if verdict["deliverable"] and compared:
                 copy = self.copies.check(
                     job.job,
                     a.hotkey,
@@ -4997,6 +5367,8 @@ class Desk:
                 kind = "copy" if copy else ("gate" if on_time else "timeout")
                 # a worked attempt that does not deliver ends the round not finished: its fork is
                 # the project kept for the client (a copy's never is: it is another job's work)
+                if job.kind == "improvement":
+                    outcome.lane = "improvement"
                 self._drop_gate(job.job, a, keep_fork=copy is None and job.kind == "client")
                 self._fail(
                     job,
@@ -5009,6 +5381,14 @@ class Desk:
                     outcome=outcome,
                     fork=fork,
                     verdict={**verdict, "copy": copy},
+                )
+                return
+            if job.kind == "improvement":
+                # it passed the gate: the judge compares it with the delivered version next, and
+                # only a result a level higher is offered (:mod:`.improvement`)
+                a.outcome, a.kind = "passed the gate: the judge compares it now", "pass"
+                self._end_improvement(
+                    job, a, report="judge", why="", fork=fork, verdict=verdict, on_time=on_time
                 )
                 return
             void = self.ledger.voided(job.job)  # the operator's voids are not overturned
@@ -5042,6 +5422,22 @@ class Desk:
                 job.result["summary"], job.result["summary_by"] = a.summary, "builder"
             self._outbox.append(job.job)
             self._event("ended", job.job, label="delivered", hotkey=a.hotkey, score=s)
+
+    def _improvement_base(self, job: Job, a: Attempt) -> bytes:
+        """The export of the delivered version an improvement job started from: the validator's
+        own copy of that delivery when it still knows it, else the read-only copy granted beside
+        the miner's workspace. Empty when neither can be read (ours: nothing is subtracted, and
+        the copy check is not run on what it cannot tell apart from its start)."""
+        known = self.jobs.get(str(job.improvement.get("device") or ""))
+        own = str((known.result if known is not None else {}).get("workspace") or "")
+        for ws in (own, a.reference):
+            if not ws:
+                continue
+            with contextlib.suppress(Exception):
+                data = self.platform.export(ws)
+                if data:
+                    return bytes(data)
+        return b""
 
     @staticmethod
     def _built_nothing(job: Job, digest: str, seeded: bytes, started: bytes) -> bool:

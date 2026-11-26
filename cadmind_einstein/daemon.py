@@ -40,6 +40,13 @@ only ``--second-opinion-coldkeys`` (2) distinct coldkeys end it declined or out 
 (the hourly report names the rule). Given, it sets and saves the switch; not given, the saved value
 is kept (off when there is none), so a regenerated unit never changes it. The operator's route
 (``cadmind-einstein-operator launch-equal on|off``) changes it at runtime, saved the same way.
+``--lanes-open on|off``: the open lanes (DESIGN.md "Open lanes"), saved and kept the same way and
+changed at runtime by ``cadmind-einstein-operator lanes-open on|off``. Off (the default) the
+router, the entry test and the list the weights are made over are as before, and the new rating
+and dated weight are only computed and published. On, client jobs go to the production lane by
+rating, improvement jobs are served to the other approved miners (only while the validator has a
+judge: no judge, no filter), the entry test is retired, and the launch rule is turned off with it
+(the two are never on together).
 
 Onboarding (``--key-approval``, default ``manual``): a registered hotkey's agent key request is
 recorded as pending until the operator approves it (``--pending-message-file``: what the miner reads
@@ -47,10 +54,8 @@ meanwhile) (``cadmind-einstein-operator``, over the
 Bearer routes ``/v1/operator/...``); ``auto`` keeps the self-serve rule. An approved key holder
 passes the entry test once (``--admission-brief-file``; the one job deadline,
 ``--job-deadline-min``) before any job or weight. Every job has that one deadline: there are no
-effort levels. An approved key holder may also practise on public briefs (``POST /v1/practice``,
-``--practice-per-day`` a UTC day, :mod:`.practice`): never scored, voted beside the delivered
-version, reported to the platform. ``cadmind-einstein practice [--status]`` is the miner's command
-for it (:func:`.agent_miner.practice_main`).
+effort levels. Practice jobs are retired (``/v1/practice`` answers 410): improvement jobs
+(:mod:`.improvement`) replace them once the lanes are open.
 Every answer on a miner's route is signed with the validator's hotkey.
 
 The platform's operator credential is split by role (:mod:`.platform`): ``--operator-key-file``
@@ -121,8 +126,7 @@ from .judge import VALIDATOR_VERSION, ValidatorJudgeError, for_validator, valida
 from .judge import VERSIONS as JUDGE_VERSIONS
 from .models import Prices, Spend, base_url_for, cost_problem, reports_cost
 from .platform import OperatorClient, PlatformError
-from .practice import PRACTICE_PER_DAY
-from .scoring import GENESIS, HOUR_MS, WINDOW_H, Ledger
+from .scoring import GENESIS, HOUR_MS, WINDOW_H, Ledger, in_window
 from .service import serve
 from .similarity import CopyPolicy, load_corpus
 from .stats import MinerStats
@@ -216,9 +220,8 @@ def parser() -> argparse.ArgumentParser:
     ap.add_argument(
         "--practice-per-day",
         type=int,
-        default=PRACTICE_PER_DAY,
-        help="practice jobs a miner may start per UTC day (the platform's cap is the same; "
-        f"default {PRACTICE_PER_DAY})",
+        default=0,
+        help="deprecated and ignored: practice jobs are retired (improvement jobs replace them)",
     )
     ap.add_argument(
         "--key-approval",
@@ -238,8 +241,8 @@ def parser() -> argparse.ArgumentParser:
         "--hold",
         action="store_true",
         help="the operator's hold: every hour burns (all weight on the subnet owner's uid), "
-        "admitted miners or not, and no client job is claimed or handed out, and no practice "
-        "job is started; key requests, approvals and entry tests go on, and a job already "
+        "admitted miners or not, and no client job is claimed or handed out, and no improvement "
+        "job is served; key requests, approvals and entry tests go on, and a job already "
         "handed out runs to its end. Restart without it to open the subnet",
     )
     ap.add_argument(
@@ -248,6 +251,14 @@ def parser() -> argparse.ArgumentParser:
         default=None,
         help="the launch rule (equal weight per admitted, registered, reachable hotkey, whatever"
         " its history): sets and saves it; not given, the saved value is kept (off when none)",
+    )
+    ap.add_argument(
+        "--lanes-open",
+        choices=("on", "off"),
+        default=None,
+        help="the open lanes (client jobs to the production lane by rating, improvement jobs to"
+        " the other approved miners, no entry test): sets and saves it; not given, the saved"
+        " value is kept (off when none). On turns the launch rule off",
     )
     ap.add_argument(
         "--pending-message-file",
@@ -430,6 +441,16 @@ def apply_launch_flag(desk: Desk, flag: str | None) -> str:
     return "saved" if desk.launch_saved else "default"
 
 
+def apply_lanes_flag(desk: Desk, flag: str | None) -> str:
+    """The lanes switch at startup: ``--lanes-open on|off`` sets and saves it; without the flag
+    the saved value is kept (closed when none was ever saved). Opening the lanes turns the launch
+    rule off. Answers its source: flag, saved or default."""
+    if flag is not None:
+        desk.set_lanes_open(flag == "on", by="the --lanes-open flag at startup")
+        return "flag"
+    return "saved" if desk.lanes_saved else "default"
+
+
 def version_watch(say: Callable[[str], None], every_s: float = 86400.0) -> None:
     """Read the latest release now and every ``every_s`` after (a daemon thread); a newer release
     is said as a WARNING. Reads a version string only -- it never downloads or runs anything."""
@@ -468,12 +489,12 @@ def check_review_cost(a: Any) -> None:
 
 def main(argv: list[str] | None = None) -> int:
     args = sys.argv[1:] if argv is None else list(argv)
-    if args[:1] == ["practice"]:
-        # the miner's command, under the subnet's main program name too
-        from .agent_miner import practice_main  # noqa: PLC0415
-
-        return practice_main(args[1:])
     a = parser().parse_args(args)
+    if a.launch_equal == "on" and a.lanes_open == "on":
+        raise SystemExit(
+            "cadmind-einstein: --launch-equal on and --lanes-open on: the launch rule is off "
+            "while the lanes are open"
+        )
     check_judge(a.judge)
     check_review_cost(a)
     setup_logging(a, prefix="[cadmind-einstein]")
@@ -584,16 +605,22 @@ def main(argv: list[str] | None = None) -> int:
         judge_give_up_s=a.judge_give_up_s,
         deadline_s=max(60, int(a.job_deadline_min * 60)),
         key_approval=a.key_approval,
-        practice_per_day=max(1, a.practice_per_day),
         sync_s=a.sync_s,
         **extra,
     )
-    source = apply_launch_flag(desk, a.launch_equal)
+    lanes_source = apply_lanes_flag(desk, a.lanes_open)
+    launch_flag = a.launch_equal
+    if launch_flag == "on" and desk.lanes_open:
+        # a unit that still says so: the saved lanes switch wins, the two are never on together
+        _log("--launch-equal on ignored: the lanes are open (close them first)")
+        launch_flag = None
+    source = apply_launch_flag(desk, launch_flag)
     desk.hold = bool(a.hold)
     _log(
         f"onboarding: key approval {a.key_approval}; job deadline {a.job_deadline_min:g} min"
         + (" (brief from file)" if a.admission_brief_file else " (built-in brief)")
         + f"; launch-equal {'ON' if desk.launch_equal else 'off'} (source: {source})"
+        + f"; lanes {'OPEN' if desk.lanes_open else 'closed'} (source: {lanes_source})"
         + f"; burn when no miner: {'ON' if a.burn_when_empty else 'off'}"
         + (
             "; HOLD: burning every hour, no client job given out (entry tests go on)"
@@ -643,7 +670,7 @@ def main(argv: list[str] | None = None) -> int:
         )
         desk.on_delivered = reviewer.enqueue
         desk.judge = reviewer.judge
-        desk.practice_book.reviewer = reviewer  # practice results are voted as deliveries are
+        desk.improvement_book.reviewer = reviewer  # the improvement lane's filter
         _log(
             f"votes {a.votes}: "
             + (
@@ -704,12 +731,14 @@ def main(argv: list[str] | None = None) -> int:
 
     def close() -> dict[str, Any]:
         watch = desk.watch(chain.state.coldkey_by_hotkey)
-        votes = reviewer.report(o.job for o in ledger.outcomes) if reviewer is not None else {}
+        # the votes of the window's jobs, as before: the ledger holds older outcomes too now
+        recent = [o.job for o in ledger.outcomes if in_window(o, desk.now_ms())]
+        votes = reviewer.report(recent) if reviewer is not None else {}
         rep = ledger.report(
             desk.now_ms(),
             chain.state.uid_by_hotkey,
             owner_hotkey=owner,
-            admitted=desk.admitted(),
+            admitted=desk.weighted(),
             reachable=desk.reachable(),
             chain=chain_info(),
             watch=watch,
@@ -719,6 +748,8 @@ def main(argv: list[str] | None = None) -> int:
             votes=votes,
             launch_equal=desk.launch_equal,
             hold=desk.hold,
+            lanes_open=desk.lanes_open,
+            eligible=desk.eligible(),
         )
         desk.clear_watch(len(watch["copy_pairs"]))
         try:
@@ -805,16 +836,16 @@ def main(argv: list[str] | None = None) -> int:
 
         threading.Thread(target=review_loop, name="review", daemon=True).start()
 
-    def practice_loop() -> None:
+    def improvement_loop() -> None:
         while True:
             try:
-                done = desk.practice_book.pass_once()
-            except Exception as e:  # noqa: BLE001 -- practice outlives a hiccup
-                _log(f"practice: {type(e).__name__}: {e}")
+                done = desk.improvement_book.pass_once()
+            except Exception as e:  # noqa: BLE001 -- the improvement lane outlives a hiccup
+                _log(f"improvement: {type(e).__name__}: {e}")
                 done = "error"
             time.sleep(2 if done not in ("idle", "error") else 15)
 
-    threading.Thread(target=practice_loop, name="practice", daemon=True).start()
+    threading.Thread(target=improvement_loop, name="improvement", daemon=True).start()
     server = serve(
         desk,
         a.host,

@@ -13,18 +13,22 @@ the metagraph):
   may: :meth:`.desk.Desk._waitlist`), and a refused or revoked one 403 with the operator's reason;
 - ``POST /v1/jobs/work`` -- the miner's assignment, if any (poll every few seconds: it is also how
   the validator knows the miner is alive), and ``cancelled``: the id of its last job when the
-  client cancelled it (stop working on it; said until the miner accepts another job), and
-  ``practice_job``: a practice job it asked to build beside its client work (``parallel``);
+  client cancelled it (stop working on it; said until the miner accepts another job), and its
+  ``lane`` (production or improvement), ``rating`` and the ``threshold`` between the lanes. An
+  improvement job (served to a free miner of the improvement lane once the lanes are open) adds
+  ``improvement: true``, ``base`` (a read-only copy of the delivered version it improves),
+  ``level`` and ``notes`` (what the judge said of that version);
 - ``POST /v1/jobs/accept {job}``, ``POST /v1/jobs/submit {job, workspace, digest, summary?,
   setup?, host_refused?}``
   (410 for a job its client cancelled; ``summary``: the builder's words on what blocks delivery;
   ``host_refused`` (``{code, why}`` or its why): the builder stopped because the platform refused
   its Watt runs' results, which the validator's own guard run then reproduces);
-- ``POST /v1/miners/admission`` -- its entry test, a job assigned to it alone;
-- ``POST /v1/practice {parallel?}`` -- a practice job on a public brief (never scored;
-  :mod:`.practice`; ``parallel``: built beside the miner's client work, holding no job slot), and
-  ``GET /v1/practice`` (signed, no body) -- its practice results, grouped by the ``setup`` label
-  its submits carried (``submit``'s optional ``setup``);
+- ``POST /v1/jobs/reject {job, category?, message?}`` -- the job handed back; on an improvement
+  job the device is rejected for good for this hotkey, nothing is counted and the miner is free;
+- ``POST /v1/miners/admission`` -- its entry test, a job assigned to it alone (with the lanes
+  open: ``{"admitted": true, "retired": true, "lane", "rating"}``, no test);
+- ``POST /v1/practice`` and ``GET /v1/practice`` -- 410 ``practice_retired``: improvement jobs
+  replace practice;
 - ``POST /v1/miners/receipt`` -- its jobs, their points, its weight (the sum of its points over 7
   days) and average (points per job over 7 days), and its recent attempts that did not pass with
   why (``failures``: a gate failure says what the gate found);
@@ -37,7 +41,9 @@ The platform and the operator (Bearer): ``GET /v1/capacity`` (active and free ad
 median job time: the platform's single queue computes positions and ETAs), ``POST /v1/cancel {job}``
 (a claimed job: not charged), ``POST /v1/signals {job, kind, stars?, quality?}`` (the client's
 download, stars, change request or refund; a ``trust`` is ignored; ``kind: forget`` when the client
-deleted the job: its calibration archive goes), ``GET /v1/jobs/{job}``, ``GET /v1/scores``, ``POST
+deleted the job: its calibration archive goes; on an improvement try, ``job`` its try id, also
+the answer to its offer: ``accepted``, ``try_again``, ``not_interested`` or ``withdrawn``),
+``GET /v1/jobs/{job}``, ``GET /v1/scores``, ``POST
 /v1/weights/close`` (the hour's report now: dry runs), ``GET /v1/chain`` (our stake share, kappa,
 the weights path), ``GET /v1/stats/miners?hotkeys=a,b`` (the stats of up to 20 hotkeys: the
 platform's miner dashboard; each with ``key_request``, its own request's state and place on the
@@ -51,7 +57,10 @@ lifted: the block ends, the last strike is taken back, the abuse counts so far a
 keyed again: the miner asks as usual); ``POST /v1/operator/admit {hotkey, reason}`` (an approved,
 keyed hotkey admitted without another entry test, its entry-test failures taken back: a test the
 subnet's own fault failed); ``GET /v1/operator/launch_equal`` and ``POST
-/v1/operator/launch_equal {on}`` (the launch rule, on or off at runtime); ``POST
+/v1/operator/launch_equal {on}`` (the launch rule, on or off at runtime; 409 while the lanes are
+open); ``GET /v1/operator/lanes_open`` and ``POST /v1/operator/lanes_open {on}`` (the lanes, open
+or closed at runtime: ``{lanes_open, was, launch_equal}``; opening them turns the launch rule
+off); ``POST
 /v1/operator/release {job, reason}`` (a client job taken back from the miner working it, nobody
 scored); ``POST /v1/operator/void {job, reason}`` (every rejection of a job counts for nothing: out
 of the records, weights and rejection counts). Jobs are not posted here:
@@ -119,10 +128,16 @@ BEARER = (
     "/v1/operator/unblock",
     "/v1/operator/admit",
     "/v1/operator/launch_equal",
+    "/v1/operator/lanes_open",
     "/v1/operator/release",
     "/v1/operator/void",
 )
 """POST routes for the platform and the operator"""
+PRACTICE_RETIRED = {
+    "error": "practice is retired: improvement jobs replace it",
+    "code": "practice_retired",
+}
+"""what the practice routes answer (410)"""
 MAX_STATS_HOTKEYS = 20
 SIGNATURE_HEADERS = ("X-Bittensor-Hotkey", "X-Bittensor-Nonce", "X-Bittensor-Signature")
 TIMEOUT_S = 20.0
@@ -546,31 +561,11 @@ def serve(
             self.wfile.write(data)
             return True
 
-        def _practice_status(self) -> None:
-            """``GET /v1/practice``, signed by the miner (an empty body): its practice results."""
-            if not self._gate(True):
-                return
-            try:
-                caller = verify(
-                    dict(self.headers.items()),
-                    b"",
-                    method="GET",
-                    path=self.path,
-                    self_hotkey_ss58=validator_hotkey,
-                )
-            except Exception:  # noqa: BLE001 -- one refusal for every auth failure, echoing nothing
-                self._send(401, {"error": "btauth/1 signature required"})
-                return
-            try:
-                self._send(200, desk.practice_status(str(caller.hotkey_ss58)))
-            except DeskError as e:
-                self._send(e.status, _refusal(e))
-
         def do_GET(self) -> None:
             if self._public():
                 return
             if self.path == "/v1/practice":
-                self._practice_status()
+                self._send(410, PRACTICE_RETIRED)
                 return
             if not self._bearer():
                 return
@@ -586,6 +581,10 @@ def serve(
                     )
                 elif self.path == "/v1/operator/launch_equal":
                     self._send(200, {"launch_equal": desk.launch_equal})
+                elif self.path == "/v1/operator/lanes_open":
+                    self._send(
+                        200, {"lanes_open": desk.lanes_open, "launch_equal": desk.launch_equal}
+                    )
                 elif self.path == "/v1/capacity":
                     self._send(200, desk.capacity())
                 elif self.path.startswith("/v1/jobs/"):
@@ -607,6 +606,8 @@ def serve(
                         {
                             "weight": weight,
                             "average": average,
+                            "rating": desk.ledger.ratings(desk.now_ms()),
+                            "lanes_open": desk.lanes_open,
                             "jobs": [asdict(o) for o in jobs[-200:]],
                             "miners": [asdict(m) for m in desk.miners.values()],
                             "rejections": desk.telemetry(),
@@ -717,9 +718,7 @@ def serve(
                     elif self.path == "/v1/miners/admission":
                         self._send(200, desk.admission(hk))
                     elif self.path == "/v1/practice":
-                        # ``parallel``: built beside the miner's client work, by a builder of
-                        # its own (the practice job holds no job slot)
-                        self._send(200, desk.practice(hk, parallel=body.get("parallel") is True))
+                        self._send(410, PRACTICE_RETIRED)
                     elif self.path == "/v1/miners/stats":
                         if stats is None:
                             self._send(404, {"error": "no stats here"})
@@ -736,6 +735,7 @@ def serve(
                                 "hotkey": hk,
                                 "weight": weight.get(hk, 0.0),
                                 "average": average.get(hk, 0.0),
+                                "rating": desk.ledger.ratings(desk.now_ms()).get(hk, 0.0),
                                 "jobs": mine,
                                 # its recent attempts that did not pass, and why
                                 "failures": desk.failures(hk),
@@ -761,6 +761,12 @@ def serve(
                         self._send(400, {"error": "on is true or false"})
                     else:
                         self._send(200, desk.set_launch_equal(on))
+                elif self.path == "/v1/operator/lanes_open":
+                    on = body.get("on")
+                    if not isinstance(on, bool):
+                        self._send(400, {"error": "on is true or false"})
+                    else:
+                        self._send(200, desk.set_lanes_open(on))
                 elif self.path == "/v1/operator/revoke":
                     hk = str(body.get("hotkey") or "")
                     self._send(200, desk.revoke(hk, str(body.get("reason") or "")))

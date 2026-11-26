@@ -193,7 +193,10 @@ class TestBodyGate(unittest.TestCase):
     def test_the_signed_route_still_works(self) -> None:
         code, out = self.svc.signed(ALICE, "/v1/miners/agent_key", {})
         self.assertEqual(code, 200, out)
-        self.assertEqual(self.svc.signed(ALICE, "/v1/jobs/work", {}), (200, {"job": None}))
+        self.assertEqual(
+            self.svc.signed(ALICE, "/v1/jobs/work", {}),
+            (200, {"job": None, "lane": "improvement", "rating": 0.0, "threshold": 0.4}),
+        )
 
 
 class TestConnectionLimits(unittest.TestCase):

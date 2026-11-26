@@ -189,7 +189,7 @@ class TestMinerQuota(unittest.TestCase):
         self.b.tick()
         self.assertEqual(self.b.holder("q4"), A)
         self.p.grant(A, brief="elsewhere", name="x")  # now at its quota
-        # a second grant to A (a practice job beside its work) is refused at its quota
+        # a second grant to A is refused at its quota
         self.b.desk.create({"job": "q5", "brief": "A shelf."})
         job = self.b.desk.jobs["q5"]
         with self.b.desk._mut():

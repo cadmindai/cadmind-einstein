@@ -9,8 +9,8 @@ role            key            calls
 ``keys``        ``keys_key``   which agent key a miner's hotkey has on the platform, and closing
                                a hotkey's open job workspaces
 ``queue``       ``queue_key``  claim, lease, claimed and complete (a delivered result charges the
-                               client), review bundles, and the practice routes (a brief, a
-                               bundle, a report), at ``queue_url``
+                               client), review bundles, and the improvement routes (the next
+                               device, a rejection, a bundle, a result), at ``queue_url``
 ==============  =============  ===================================================================
 
 An unset role key is the operator key (the platform's single-key mode).
@@ -386,11 +386,16 @@ class OperatorClient:
         out = self._call("POST", "/api/agent/subnet/workspaces", body, timeout=320)
         return _granted(out), str(out.get("reference") or "")
 
-    def grant_practice(self, hotkey: str, *, brief: str, name: str) -> str:
-        """A practice job's workspace (``name`` the practice id the platform handed out for this
-        hotkey): on the platform's practice lane and its own quota, never a client grant's."""
-        body = {"hotkey": hotkey, "name": name, "brief": brief, "practice": True}
-        return _granted(self._call("POST", "/api/agent/subnet/workspaces", body, timeout=320))
+    def grant_improvement(self, hotkey: str, try_id: str) -> tuple[str, str]:
+        """An improvement try's grant (``try_id``: the id the platform handed out for this hotkey
+        with :meth:`improvement_next`): the miner's workspace, a fork of the delivered version it
+        improves with no client to ask, and ``reference``, a second fork of it, frozen and
+        read-only. The platform resolves the delivered version itself. One open per miner, apart
+        from its quota of client job workspaces. 404 ``improvement_unknown``, 409
+        ``improvement_granted``, 410 ``improvement_gone``, 429 ``improvement_quota``."""
+        body = {"hotkey": hotkey, "name": try_id, "job": try_id, "improvement": True}
+        out = self._call("POST", "/api/agent/subnet/workspaces", body, timeout=320)
+        return _granted(out), str(out.get("reference") or "")
 
     def state(self, ws: str) -> dict[str, Any]:
         return dict(self._call("GET", f"/api/agent/subnet/workspaces/{self._ws(ws)}"))
@@ -458,55 +463,57 @@ class OperatorClient:
         )
         return dict(out) if isinstance(out, Mapping) else {}
 
-    # -- practice jobs (a miner trying a setup on a public brief; never scored) ------------------
+    # -- improvement jobs (a delivered device improved by a miner of the improvement lane) -------
 
-    def practice_brief(self, hotkey: str) -> dict[str, Any]:
-        """A practice brief for ``hotkey``: ``{practice_id, title, brief, reference_job}``, a
-        public delivered project's brief as its gallery page shows it. 404 ``no_practice_left``
-        when none is left for this miner; 429 ``practice_cap`` past the daily cap."""
+    def _improvement(self, path: str, body: Mapping[str, Any], timeout: float = 60) -> Any:
         out = self._call(
-            "GET",
-            f"/api/engine/einstein/practice?hotkey={quote(hotkey, safe='')}",
+            "POST",
+            f"/api/engine/einstein/improvement/{path}",
+            dict(body),
             base=self.queue,
             role=QUEUE,
-            timeout=30,
+            timeout=timeout,
             job=True,
         )
         return dict(out) if isinstance(out, Mapping) else {}
 
-    def practice_bundle(self, practice_id: str, workspace: str) -> dict[str, Any]:
-        """A practice result's review bundle, made from the validator's frozen copy of it: the same
+    def improvement_next(self, hotkey: str) -> dict[str, Any]:
+        """The next device for ``hotkey`` to improve: ``{try_id, job, brief, level, stars,
+        finding, lineage, existing}`` -- the try's id (``imp-<12 hex>``), the delivered version's
+        job id, its brief as its builder received it, the judge's level of it (or its client's
+        low stars), the judge's finding and the project's earlier versions. A hotkey with an
+        open try gets that try again (``existing``). 404 ``lane_closed`` or ``no_device``; 403
+        ``miner_not_approved`` or ``hotkey_network``."""
+        return dict(self._improvement("next", {"hotkey": hotkey}, timeout=30))
+
+    def improvement_reject(self, try_id: str, hotkey: str) -> dict[str, Any]:
+        """``hotkey`` rejects the device of ``try_id``: it is never served that device again, and
+        the device is free at once. Sent again, the same answer."""
+        return dict(self._improvement(f"{quote(try_id, safe='')}/reject", {"hotkey": hotkey}))
+
+    def improvement_bundle(self, try_id: str, workspace: str) -> dict[str, Any]:
+        """A try's review bundle, made from the validator's frozen copy of its result: the same
         answer as :meth:`review_bundle`."""
-        out = self._call(
-            "POST",
-            f"/api/engine/einstein/practice/{quote(practice_id, safe='')}/bundle",
-            {"workspace": workspace},
-            base=self.queue,
-            role=QUEUE,
-            job=True,
-        )
-        return dict(out) if isinstance(out, Mapping) else {}
+        return dict(self._improvement(f"{quote(try_id, safe='')}/bundle", {"workspace": workspace}))
 
-    def practice_result(self, practice_id: str, report: Mapping[str, Any]) -> dict[str, Any]:
-        """A practice job's report: ``{hotkey, setup, deliverable, why, score, reference_score,
-        judge, watt, minutes}``. Kept by the platform for the operator; never scored."""
-        out = self._call(
-            "POST",
-            f"/api/engine/einstein/practice/{quote(practice_id, safe='')}/result",
-            dict(report),
-            base=self.queue,
-            role=QUEUE,
-            job=True,
-        )
-        return dict(out) if isinstance(out, Mapping) else {}
+    def improvement_result(self, try_id: str, report: Mapping[str, Any]) -> dict[str, Any]:
+        """A try's result: ``{hotkey, outcome: offer | not_better | failed, workspace, digest,
+        base_score, score, judge, watt, minutes, why}``. ``failed`` and ``not_better`` put the
+        device back on the lane. ``offer``: the platform checks the workspace descends from the
+        try's grant at ``digest`` and that ``score`` is at least ``base_score + 1``, keeps the
+        delivery and answers ``{try_id, offer_id, job, price, state: "pending"}``; it refuses
+        with 409 ``delivery_not_of_job`` or ``delivery_digest_mismatch``, 422 ``not_better``,
+        410 ``improvement_gone``, 409 ``offer_exists``, and 503 when it cannot tell now (sent
+        again). Sent again for the same try, the same answer."""
+        return dict(self._improvement(f"{quote(try_id, safe='')}/result", report))
 
     # -- review bundles (DESIGN.md section 13) -----------------------------------------------------
 
     def review_bundle(self, job: str, audience: str = "ours") -> dict[str, Any]:
         """A delivered job's review bundle: ``{ready: true, image_set, bundle_sha256, bundle_url,
         expires_ms, public}``, or ``{ready: false, state, retry_s}`` while the platform renders it
-        (asking queues it). ``audience`` ``practice`` is the copy judged beside a practice run (no
-        studio render). ``third_party`` is refused (403 ``not_public``) for a
+        (asking queues it). ``audience`` ``compare`` is the copy judged beside an improvement try
+        (no studio render). ``third_party`` is refused (403 ``not_public``) for a
         project that is not public."""
         out = self._call(
             "POST",
