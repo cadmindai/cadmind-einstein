@@ -483,7 +483,7 @@ class OperatorClient:
         job id, its brief as its builder received it, the judge's level of it (or its client's
         low stars), the judge's finding and the project's earlier versions. A hotkey with an
         open try gets that try again (``existing``). 404 ``lane_closed`` or ``no_device``; 403
-        ``miner_not_approved`` or ``hotkey_network``."""
+        ``miner_not_approved``; 409 ``hotkey_network`` (the hotkey works on another network)."""
         return dict(self._improvement("next", {"hotkey": hotkey}, timeout=30))
 
     def improvement_reject(self, try_id: str, hotkey: str) -> dict[str, Any]:
