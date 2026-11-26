@@ -13,6 +13,12 @@ deliveries, unfinished rounds) are lifetime counts already.
 
 **Imports** (devices other projects imported) do not exist yet: the answer says so.
 
+**Lanes** (DESIGN.md "Open lanes"). Each miner's answer names its ``lane`` and whether the lanes
+are open, its ``rating`` (the value, the threshold, its distance from it, the jobs it counts and
+how many are padded), its ``weight`` (the dated points and its share), its dated point
+``changes`` (newest first) and its ``improvement`` work. With the lanes closed these are computed
+and shown, and decide nothing.
+
 **Privacy.** A miner sees its own jobs' signals as kinds and counts, and the votes with their
 evidence; never a client's identity, a flag's words, or anything of another miner but the public
 leaderboard (:func:`network`).
@@ -32,12 +38,25 @@ from collections import defaultdict
 from collections.abc import Callable, Iterable, Mapping
 from typing import Any
 
-from .scoring import CONSTANTS, HOUR_MS, WINDOW_H, JobOutcome
+from .scoring import (
+    CONSTANTS,
+    HOUR_MS,
+    PAD_JOBS,
+    THRESHOLD,
+    WINDOW_H,
+    JobOutcome,
+    counts,
+    lane_of,
+    rating_of,
+)
 
 DAY_MS = 24 * HOUR_MS
 JOBS_SHOWN = 100
 DAYS_SHOWN = 30
 MAX_HOTKEYS = 20
+CHANGES_DAYS = 30
+CHANGES_SHOWN = 200
+"""a miner's dated point changes shown: the last 30 days, at most 200, newest first"""
 
 COUNTERS = (
     "assigned",
@@ -78,23 +97,39 @@ ROLLED = (
 
 FORMULA = {
     "text": (
-        "a delivered job that passed the validator's Watt gate: 0.5 while the client has done"
-        " nothing; 1 when the client downloaded it or rated it 3-5 stars; 0 when the client rated"
-        " it 1-2 stars or a refund was granted for its quality. A rating or a quality"
-        " refund outranks a download: the client's latest verdict decides, and a download"
-        " counts only while there is none. Only the job's own client scores: a download by"
-        " anyone else is recorded and never counted. Not delivered, failed the gate, timed"
-        " out, handed back, a copy: 0"
+        "Every job is read as one event, worth rating points (your standing) and weight points"
+        " (your pay). A client job: delivered and passed the validator's Watt gate, the client"
+        " silent: 0.5 and 0.5; downloaded by its client, or its latest stars 3-5: 1 and 1; its"
+        " latest stars 1-2, or a refund granted for its quality: 0 and 0 (a rating or a quality"
+        " refund outranks a download; only the job's own client scores). Not delivered -- failed"
+        " the gate, timed out, handed back, a copy: 0 and 0. An improvement: judged at least one"
+        " level above the delivered version, its offer pending: 0.5 and 0.25; the client accepts"
+        " it: 1 and 1 (then rated 1-2 stars or refunded for its quality: 0 and 0); the client"
+        " answers try again: 0 and 0; not interested, or the offer withdrawn: it keeps 0.5 and"
+        " 0.25; a try that failed (the gate, a timeout, a copy, not a level higher): 0 and 0. A"
+        " device you reject is not counted at all."
     ),
-    "weight": "weight = the sum of your job points over the last 7 days (flat, no decay)",
+    "rating": (
+        "rating = the rating points of your jobs that ended in the last 7 days / their number,"
+        " fewer than 10 jobs counted as 10 (the missing ones 0). At or above the threshold you"
+        " are in the production lane; below it, in the improvement lane"
+    ),
+    "weight": (
+        "weight = the sum of your weight-point changes dated in the last 7 days, whatever the"
+        " age of the job they are about, never below zero: a change of points is dated when it"
+        " happens"
+    ),
     "share": (
         "share = your part of the current vector; proportional to weight under the history rule"
     ),
     "parts": {
-        "signal": "what decided a delivered job's points: none, download, stars or refund",
-        "failed": "why an attempt scored 0: reject, gate, timeout, copy or refused",
+        "event": "the event that decides a job's points now (a key of constants.points)",
+        "signal": "what decided a delivered job's points: none, download, stars or refund;"
+        " on an improvement, the answer to its offer",
+        "failed": "why an attempt scored 0: reject, gate, timeout, copy, refused or not_better",
     },
-    "votes": "the validators' votes are shown and published; they never score",
+    "votes": "the validators' votes are shown and published; they never score a client job."
+    " On an improvement the judge is a filter only: it decides whether an offer is made",
 }
 
 
@@ -129,6 +164,8 @@ def outcome_row(o: JobOutcome, vote: float | None = None) -> dict[str, float]:
     """One scored outcome's contribution to a day's rollup (``vote``: its ``V``, shown, never
     scored)."""
     r = _empty()
+    if o.lane != "production":  # the counters are the client work's; improvement has its own
+        return r
     if o.kind == "timeout":
         r["timeouts"] = 1
     if not o.passed:
@@ -196,6 +233,9 @@ class MinerStats:
         self.current = current or self._current
         self.votes_mode = votes_mode
         self._frozen: dict[str, dict[str, float]] = {}
+
+    def _lanes_open(self) -> bool:
+        return bool(getattr(self.desk, "lanes_open", False))
 
     # -- the rollup ----------------------------------------------------------------------------
 
@@ -327,6 +367,7 @@ class MinerStats:
         wanted = [h for h in dict.fromkeys(hotkeys) if h][:MAX_HOTKEYS]
         now = self.desk.now_ms()
         window, weight, average = self.desk.ledger.snapshot(now)
+        ratings = self.desk.ledger.ratings(now)
         votes = self._votes()
         days = self._days(now, votes)
         uids, cold = dict(self.uids() or {}), dict(self.coldkeys() or {})
@@ -353,6 +394,7 @@ class MinerStats:
                         total,
                         ranked,
                         votes,
+                        ratings,
                     ),
                     # its own key request and place on the waitlist (0.6.10), None if it never asked
                     "key_request": keys.get(hk),
@@ -375,6 +417,7 @@ class MinerStats:
         total: float,
         ranked: list[str],
         votes: Mapping[str, list[dict[str, Any]]],
+        ratings: Mapping[str, float],
     ) -> dict[str, Any]:
         d = self.desk
         m = d.miners.get(hk)
@@ -387,12 +430,73 @@ class MinerStats:
             return max(0, count - int(seen.get(name, 0)))
 
         mine = sorted((o for o in window if o.hotkey == hk), key=lambda o: -o.ended_ms)
+        counted = [o for o in mine if counts(o, now)]
+        value = rating_of(ratings, hk)
+        book = getattr(d, "improvement_book", None)
+        since = now - WINDOW_H * HOUR_MS
+        tries = [o for o in d.ledger.outcomes if o.hotkey == hk and o.lane == "improvement"]
+        changes = d.ledger.changes(now, hk, now - CHANGES_DAYS * DAY_MS)
+        with d._lock:  # noqa: SLF001 -- the desk's own lock, read only
+            live = next(
+                (
+                    j
+                    for j in d.jobs.values()
+                    if j.kind == "improvement" and j.target == hk and j.state != "done"
+                ),
+                None,
+            )
         return {
             "hotkey": hk,
             "coldkey": ck,
             "uid": uids.get(hk),
             "registered": hk in uids,
             "admitted": bool(m and m.admitted),
+            "lane": lane_of(value),
+            "lanes_open": self._lanes_open(),
+            "rating": {
+                "value": round(value, 6),
+                "threshold": THRESHOLD,
+                "distance": round(value - THRESHOLD, 6),
+                "counted": len(counted),
+                "padded": max(0, PAD_JOBS - len(counted)),
+                "jobs": [
+                    {
+                        "job": o.job,
+                        "ended_ms": o.ended_ms,
+                        "lane": o.lane,
+                        "kind": o.kind,
+                        "event": str(o.parts.get("event") or ""),
+                        "s": o.s,
+                        "w": o.w,
+                    }
+                    for o in counted[:JOBS_SHOWN]
+                ],
+            },
+            "weight": {
+                "points": round(float(weight.get(hk, 0.0)), 6),
+                "share": round(vec.get(hk, 0.0) / total, 6) if total else 0.0,
+                "rule": str(self.current().get("rule") or ""),
+            },
+            "changes": list(reversed(changes))[:CHANGES_SHOWN],
+            "improvement": {
+                "open": {
+                    "job": live.job,
+                    "device": str(live.improvement.get("device") or ""),
+                    "level": live.improvement.get("level"),
+                }
+                if live is not None
+                else None,
+                "tries_7d": sum(1 for o in tries if o.ended_ms >= since),
+                "pending": sum(1 for o in tries if o.parts.get("event") == "improvement_pending"),
+                "accepted_7d": sum(
+                    1
+                    for c in changes
+                    if c["at_ms"] >= since
+                    and c["signal"] == "accepted"
+                    and c["lane"] == "improvement"
+                ),
+                "rejected_devices_7d": book.rejected(hk, since) if book is not None else 0,
+            },
             "last_seen_ms": int(m.last_seen_ms) if m else 0,
             "blocked_until_ms": int(m.blocked_until_ms) if m else 0,
             "standing": {
@@ -462,28 +566,40 @@ class MinerStats:
             "job": o.job,
             "ended_ms": o.ended_ms,
             "kind": o.kind,
+            "lane": o.lane,
             "on_time": o.on_time,
             "s": o.s,
+            "w": o.w,
             "parts": dict(o.parts),
             "signals": _signals(o),
             "votes": votes,
         }
 
     def network(self) -> dict[str, Any]:
-        """The public leaderboard: every weighted or admitted miner by hotkey -- its share of the
-        current vector, weight (7-day points), average points per job, 7-day deliveries, mean stars
-        and mean vote (shown, never scored) -- and the waitlist, each place's UID and position."""
+        """The public leaderboard: every weighted or admitted miner by hotkey (with the lanes
+        open, every eligible one) -- its share of the current vector, weight (the dated points of
+        7 days), average points per job, its lane and rating, 7-day deliveries, the improvements
+        its clients accepted (7 days and ever), mean stars and mean vote (shown, never scored) --
+        and the waitlist, each place's UID and position."""
         now = self.desk.now_ms()
         window, weight, average = self.desk.ledger.snapshot(now)
+        ratings = self.desk.ledger.ratings(now)
+        since = now - WINDOW_H * HOUR_MS
+        accepted_7d: dict[str, int] = defaultdict(int)
+        for c in self.desk.ledger.changes(now):
+            if c["signal"] == "accepted" and c["lane"] == "improvement" and c["at_ms"] >= since:
+                accepted_7d[c["hotkey"]] += 1
+        accepted = dict(getattr(self.desk, "improvements_accepted", {}) or {})
+        weighted = getattr(self.desk, "weighted", self.desk.admitted)
         cur = dict(self.current() or {})
         vec = {str(k): float(v) for k, v in (cur.get("by_hotkey") or {}).items()}
         total = sum(vec.values())
         uids = dict(self.uids() or {})
         by_job = self._votes()
-        hks = {h for h, w in weight.items() if w > 0} | set(self.desk.admitted()) | set(vec)
+        hks = {h for h, w in weight.items() if w > 0} | set(weighted()) | set(vec)
         rows = []
         for hk in hks:
-            mine = [o for o in window if o.hotkey == hk and o.passed]
+            mine = [o for o in window if o.hotkey == hk and o.passed and o.lane == "production"]
             stars = [_signals(o)["stars"][-1] for o in mine if _signals(o)["stars"]]
             votes = [v for v in (self._vote_of(o.job, by_job) for o in mine) if v is not None]
             rows.append(
@@ -493,7 +609,11 @@ class MinerStats:
                     "share": round(vec.get(hk, 0.0) / total, 6) if total else 0.0,
                     "weight": round(float(weight.get(hk, 0.0)), 6),
                     "average": round(float(average.get(hk, 0.0)), 6),
+                    "lane": lane_of(rating_of(ratings, hk)),
+                    "rating": round(rating_of(ratings, hk), 6),
                     "delivered_7d": len(mine),
+                    "improvements_accepted_7d": int(accepted_7d.get(hk, 0)),
+                    "improvements_accepted": int(accepted.get(hk, 0)),
                     "stars_mean": round(statistics.fmean(stars), 3) if stars else None,
                     "vote_mean": round(statistics.fmean(votes), 4) if votes else None,
                 }
@@ -509,6 +629,8 @@ class MinerStats:
             "at_ms": now,
             "hour": cur.get("hour"),
             "rule": cur.get("rule", ""),
+            "lanes_open": self._lanes_open(),
+            "launch_equal": bool(getattr(self.desk, "launch_equal", False)),
             "miners": rows,
             # the waitlist by UID and place only: no hotkey, note, address or coldkey
             "waitlist": waitlist,
@@ -521,6 +643,21 @@ def by_day(rows: Mapping[str, Mapping[str, float]]) -> dict[str, dict[str, float
     for key, row in rows.items():
         _add(out[key.split("/", 1)[0]], row)
     return dict(out)
+
+
+def _lane_line(out: Mapping[str, Any]) -> str:
+    """The lane and rating line of the stats command ('' for an answer without them)."""
+    r = out.get("rating")
+    if not isinstance(r, Mapping):
+        return ""
+    imp = out.get("improvement") if isinstance(out.get("improvement"), Mapping) else {}
+    return (
+        f"{out['hotkey']}  lane {out.get('lane')} (lanes "
+        f"{'open' if out.get('lanes_open') else 'closed'})  rating {float(r['value']):.3f} "
+        f"(threshold {float(r['threshold']):g}, {r['counted']} job(s) counted, {r['padded']} "
+        f"padded)  improvements: {imp.get('pending', 0)} pending, "
+        f"{imp.get('accepted_7d', 0)} accepted in 7 days\n"
+    )
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -567,6 +704,7 @@ def main(argv: list[str] | None = None) -> int:
         + "\n"
         f"{out['hotkey']}  rank {s['rank']} of {s['miners']}  share {100 * s['share']:.2f}%  "
         f"weight {s['weight']:.4f}  average {s['average']:.3f}\n"
+        + _lane_line(out)
         + "\n".join(
             f"{name:>8}: delivered {c['delivered']}, assigned {c['assigned']}, not finished "
             f"{c['not_finished']}, gate failed {c['gate_failed']}, rejected {c['rejected']}, "

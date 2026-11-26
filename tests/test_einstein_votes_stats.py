@@ -548,7 +548,8 @@ class TestReviewerShadow(ReviewRig):
         self.assertEqual([n["raised_by"] for n in row["nudges"]], [[1, 2, 3]])
         self.assertTrue(verify_vote(row | {"sig": row["sig"]}))
         o = self.ledger.outcomes[-1]
-        self.assertEqual((o.s, o.parts), (0.5, {"signal": "none"}))  # the vote scores nothing
+        # the vote scores nothing
+        self.assertEqual((o.s, o.parts), (0.5, {"signal": "none", "event": "delivered"}))
         rep = self.reviewer.report(["j1"])
         self.assertEqual(rep["mode"], "shadow")
         self.assertEqual(rep["per_job"]["j1"], {"V": 0.65, "count": 1})
@@ -618,7 +619,12 @@ class TestStats(ReviewRig):
         )
         out = stats.docs([hk, "unknown-hotkey"])
         doc = out["miners"][hk]
-        self.assertIn("0.5 while the client has done nothing", out["formula"]["text"])
+        self.assertIn("the client silent: 0.5 and 0.5", out["formula"]["text"])
+        self.assertEqual(out["formula"]["constants"]["rating"]["threshold"], 0.4)
+        # the lanes are closed: the new numbers are shown all the same, and decide nothing
+        self.assertEqual((doc["lane"], doc["lanes_open"]), ("improvement", False))
+        self.assertEqual((doc["rating"]["counted"], doc["rating"]["padded"]), (1, 9))
+        self.assertEqual(doc["improvement"]["open"], None)
         self.assertEqual(out["formula"]["votes_mode"], "shadow")
         for window in ("24h", "7d", "lifetime"):
             c = doc["windows"][window]
@@ -632,7 +638,9 @@ class TestStats(ReviewRig):
         (job,) = doc["jobs"]
         self.assertEqual(job["signals"]["downloaded"], True)
         self.assertEqual(job["votes"]["count"], 1)
-        self.assertEqual((job["s"], job["parts"]), (1.0, {"signal": "download"}))
+        self.assertEqual(
+            (job["s"], job["parts"]), (1.0, {"signal": "download", "event": "approved"})
+        )
         item = job["votes"]["items"][0]
         sample = item["samples"][0]
         self.assertIn("screw holes", sample["lines"][0]["seen"])  # the miner reads the evidence
@@ -682,8 +690,8 @@ class TestStats(ReviewRig):
             ledger.signal("old", {"kind": "stars", "stars": 4, "trust": "paid"})
             stats.roll()
             clock.t += (WINDOW_H + 48) * 3600
-            ledger.snapshot(desk.now_ms())  # the ledger forgets the job
-            self.assertEqual(ledger.outcomes, [])
+            window, _, _ = ledger.snapshot(desk.now_ms())  # the job has left the window
+            self.assertEqual(window, [])
             stats.roll()
             doc = stats.docs([A])["miners"][A]
             self.assertEqual(doc["windows"]["7d"]["delivered"], 0)
@@ -721,7 +729,8 @@ class TestStatsRoutes(ReviewRig):
             code, out = signed(miner, base, "/v1/miners/stats", {}, VALIDATOR.ss58_address)
             self.assertEqual(code, 200)  # and signed: `signed` checked our signature
             self.assertEqual(out["hotkey"], hk)
-            self.assertIn("0.5 while the client", out["formula"]["text"])  # the rule, as documented
+            # the rule, as documented
+            self.assertIn("the client silent: 0.5 and 0.5", out["formula"]["text"])
             self.assertEqual(out["windows"]["lifetime"]["delivered"], 1)
 
             def get(path: str, auth: bool = True) -> tuple[int, Any]:
