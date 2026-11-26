@@ -7,6 +7,73 @@ All notable changes to this project are listed here. The format follows
 
 ## [Unreleased]
 
+The package version is 0.6.27 (spec version 627): the scoring rule changed, and `cadmind-recompute` checks a report
+only with the version that made it.
+
+### Added
+
+- **Two values per event, and dated point changes.** Every outcome is read as one event worth **rating points** (a
+  miner's standing) and **weight points** (its pay); the table is `scoring.POINTS`, published in every report's
+  `constants`. On a client job the two are the points of before (0.5 delivered, 1 downloaded or rated 3 to 5
+  stars, 0 rated 1 to 2 stars or refunded for quality, 0 failed). A change of points is **dated when it happens**
+  and derived from the outcome's facts and its dated signals (`scoring.changes_of`); nothing new is stored.
+- **The rating.** The rating points of a miner's jobs that ended in the last 7 days over their number, fewer than 10
+  jobs counted as 10 (the missing ones 0). At or above 0.4 it reads `production`, below it `improvement`. It is
+  published in the hourly report (`rating`, `lane`), on `work` (`lane`, `rating`, `threshold`), in the miner stats
+  and on the public leaderboard. **With the lanes closed it decides nothing.**
+- **The hourly report** adds `changes` (every dated change of the window), `rating`, `record` (the router's number
+  while the lanes are closed), `lane` (per eligible hotkey), `lanes_open`, and per job `w`, `lane`, `device`,
+  `levels` and `parts.event`; `constants` carries the whole rule. Its `jobs` are those that ended in the window or
+  had a change dated in it. `cadmind-recompute` rebuilds the points, the changes, the ratings, the weights and the
+  vector from a report alone and lists any difference (`differences`).
+- **Miner stats** (`POST /v1/miners/stats`, `GET /v1/stats/miners`): `lane`, `lanes_open`, `rating` (value,
+  threshold, distance, the counted jobs and the padding), `weight` (points, share, rule), `changes` (30 days, newest
+  first) and `improvement`. `formula.text` is the events table. `GET /v1/stats/network` adds `lane`, `rating`,
+  `improvements_accepted_7d` and `improvements_accepted` per miner, and `lanes_open` and `launch_equal`.
+- **Open lanes, built and off** (`DESIGN.md` section 14). A saved switch, `lanes_open`: `--lanes-open on|off`,
+  `cadmind-einstein-operator lanes-open on|off|status`, `GET`/`POST /v1/operator/lanes_open`. Opening the lanes
+  turns the launch rule off in the same act, and the launch rule cannot be turned on while they are open (`409`).
+  With the lanes open:
+  - client jobs go to the **production lane** (rating 0.4 or more): best rating first, ties to the longest wait,
+    one job in five to the longest wait (a persisted counter), a `priority` claim to the best rating outside that
+    rule; while no approved miner has a production rating at all, to the highest-rated free approved miner, with an
+    alert at most hourly;
+  - the other approved miners are served **improvement jobs**: a delivered device a judge scored low, forked for
+    the miner with a read-only copy beside it and the judge's notes. The miner may reject the device (final for
+    that miner and device, never counted). The result is gated as any job, then judged beside the delivered
+    version, and only a result at least one level higher is offered to the client. A judged improvement is worth
+    0.5 rating points and 0.25 weight points while its offer is pending, 1 and 1 once accepted, 0 after "try
+    again", and keeps its pending value after "not interested" or a withdrawal;
+  - `POST /v1/signals` takes the answer to an offer (`accepted`, `try_again`, `not_interested`, `withdrawn`), with
+    the try's id as `job`;
+  - the entry test is retired (`POST /v1/miners/admission` answers `{admitted: true, retired: true, lane, rating}`)
+    and the weights are made over every approved, keyed, unblocked hotkey.
+- **Reference miner: improvement jobs.** `cadmind-einstein-miner` builds an improvement job like any job, telling
+  its agent what the workspace holds, where the delivered version is and what the judge said of it; an agent's
+  `REJECT` hands the device back. It logs its lane and rating whenever they change, and goes on without an entry
+  test when the validator says the test is retired.
+
+### Changed
+
+- **A miner's weight follows dated changes.** It was the sum of the current points of the jobs that ended in the
+  last 7 days; it is the sum of the weight-point changes dated in the last 7 days, whatever the job's age, never
+  below zero. A reaction that arrives after its job left the window is now paid, in the week it arrives; a late low
+  rating takes points away the same way. Under the launch rule (equal weights) the vector is unchanged.
+- **Outcomes are kept 180 days** from their end (they were dropped after 7), so a late signal finds its job. A
+  signal on a job delivered before this release's first week still answers 404: its outcome was already dropped.
+- A claim's `priority` is stored with the job (read only while the lanes are open).
+- The hourly report's `votes` still covers the window's jobs only.
+
+### Removed
+
+- **Practice jobs.** `POST /v1/practice` and `GET /v1/practice` answer `410` (`code: practice_retired`);
+  `cadmind-einstein practice` and `cadmind-einstein-miner practice` are gone, with the reference miner's second
+  builder and its `practice` state directory. `--practice-per-day` is still accepted and ignored. A `work` answer
+  no longer carries `practice_job`. The platform routes the validator called for practice are replaced by the
+  improvement routes (`/api/engine/einstein/improvement/...`), and the review bundle audience `practice` is now
+  `compare`.
+- `--setup` and a submit's `setup` stay as a free label kept with the attempt; nothing is grouped by it.
+
 ## [0.6.26] - 2026-11-23
 
 ### Fixed

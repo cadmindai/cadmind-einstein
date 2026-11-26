@@ -67,7 +67,7 @@ validator: freeze on submit, fork, read Watt's verdict (the gate), copy check, s
   platform names the calling key's id) and stops when it is not. A hotkey the platform has no key for (linked to
   no account, or named by no live key) is answered `409 miner_not_linked` with the platform's own instruction; the
   miner logs it and asks again later. A miner is *keyed* at the validator once this call answered: only then may
-  it take the entry test, practise or get a job.
+  it take the entry test or get a job.
 - **Compute is paid in credits, and the allowance comes with the job.** Every Watt run costs credits. A miner has
   none of its own (they cannot be bought yet): each job workspace the validator grants carries an allowance of
   credits from the platform, and a job workspace is the only place a miner's key runs compute. The allowance is
@@ -101,7 +101,7 @@ validator: freeze on submit, fork, read Watt's verdict (the gate), copy check, s
 - **The validator pulls.** All jobs wait in the platform's single queue. Whenever the validator has a free admitted
   miner it claims one einstein job, and the router picks the miner (section 6). The platform makes a job workspace
   from the brief (or, for a later round of a client's project, from the delivered project), granted to that miner's
-  key. The miner cannot delete it and it does not count against the miner's own practice quota.
+  key. The miner cannot delete it.
 - **Accept, work, submit -- or reject.** The miner sees the job on `work`, must `accept` within 2 minutes, and
   `submit {job, workspace, digest, summary?}` before the job's deadline: one deadline for every job, 240 minutes from the accept (there are no
   effort levels; the builder may submit sooner). On
@@ -114,8 +114,8 @@ validator: freeze on submit, fork, read Watt's verdict (the gate), copy check, s
   need: the builder assumes, records each assumption as its own decision (a need no option keeps included, with
   `misses`, which Watt's W0240 accepts on such a job) and delivers.
 - **Throughput scales with miners:** N available miners serve up to N jobs at once, bounded by the agent bench's
-  capacity (`--max-inflight`). A miner holds one job at a time. Practice jobs hold none of `--max-inflight`: one
-  is handed out only after the queued client work and while the count with practice is under it.
+  capacity (`--max-inflight`). A miner holds one job at a time. Improvement jobs (section 14) hold none of
+  `--max-inflight`: one is handed out only after the queued client work and while the count with them is under it.
 
 ## 4. The gate, reassignment and how a job ends
 
@@ -242,19 +242,50 @@ never scored.
 Not delivered, failed the gate, timed out, handed back (rejected), a copy: **0**, at once.
 
 - **No model scores.** The validators' votes (section 13) are recorded, published, shown to the miner and kept in the
-  calibration archive and the practice comparison; nothing in the score, the weights or the router reads them.
-- **Late signals** change the job's points when they arrive, while it is in the window; the next hourly vector reads
-  the current points.
+  calibration archive; nothing in a client job's score, the weights or the router reads them.
+- **Late signals** change the job's points when they arrive, for as long as the validator holds the job (180 days
+  from its end). Each change is **dated when it happens** and is paid in the week it is dated (see Weights).
 - Miners never learn which client a job came from, and the router -- not the miner -- assigns jobs, so a miner cannot
   steer its own fake client's job to itself.
 - Every hourly report names the einstein version that computed it and publishes the rule's numbers (`constants`: the
-  window and the three point values); the code is that version's `scoring.py`.
+  window, how long an outcome is kept, the points of every event, the rating's padding and threshold, the router's
+  numbers); the code is that version's `scoring.py`.
+
+**Two values per event.** Every outcome is read as one event, and an event is worth two numbers: **rating points**
+(the miner's standing) and **weight points** (its pay). On a client job the two are the same: the points above.
+They differ only on an improvement job (section 14). The table is `scoring.POINTS`, published in every report:
+
+| Event | Rating | Weight |
+|---|---|---|
+| `delivered`: a client job delivered, the client silent | 0.5 | 0.5 |
+| `approved`: downloaded by its client, or its latest stars 3 to 5 | 1 | 1 |
+| `disapproved`: its latest stars 1 to 2, or a quality refund | 0 | 0 |
+| `failed`: an attempt that did not deliver | 0 | 0 |
+| `improvement_pending`: an improvement judged a level higher, its offer pending | 0.5 | 0.25 |
+| `improvement_accepted`: the client accepted it | 1 | 1 |
+| `improvement_try_again`: the client answered "try again" | 0 | 0 |
+| `improvement_not_interested`, `improvement_withdrawn`: it keeps the pending value | 0.5 | 0.25 |
+| `improvement_disapproved`: accepted, then rated 1 to 2 stars or refunded for its quality | 0 | 0 |
+| `improvement_failed`: the gate, a timeout, a copy, a refusal, not a level higher | 0 | 0 |
+| `void`: not counted as a job at all | 0 | 0 |
 
 ### Weights
 
-- A job counts for **7 days from its end** (its delivery), flat: no decay. A miner's **weight** is the sum of its job
-  points over the last 7 days; its **average** (points per job in the window) is shown on the stats pages; the router
-  reads its **record**, that average with a miner of fewer than 10 jobs padded with unrated ones (section 6).
+- **A change of points is dated when it happens.** An outcome's facts and its dated signals replay into its dated
+  changes (`scoring.changes_of`): step 0 at its end, then one change per signal that moved its points. Nothing is
+  stored apart from the facts and the signals. A miner's **weight** is the sum of the weight-point changes dated in
+  the last **7 days**, whatever the age of the job they are about, and never below zero. So a download three weeks
+  after a delivery pays 0.5 in the week it arrives, and a late 1-star rating takes its points away the same way.
+- A miner's **rating** is the rating points of its jobs that **ended** in the last 7 days, at their current value,
+  over the number of those jobs, a miner with fewer than 10 jobs read as having 10 (the missing ones 0). At or
+  above **0.4** the rating puts a miner in the production lane, below it in the improvement lane (section 14). A
+  reaction to a job older than 7 days therefore changes the pay and not the rating. While the lanes are closed
+  the rating is computed and published, and decides nothing.
+- The earlier numbers are published beside them: a miner's **average** (points per client job in the window), and
+  its **record**, that average with a miner of fewer than 10 jobs padded with unrated ones, which the router reads
+  while the lanes are closed (section 6).
+- Outcomes are kept **180 days** from their end (an improvement whose offer is still pending, for as long as it
+  is), so a late reaction still finds its job. A reaction to a job the validator no longer holds answers 404.
 - A remix (a project started from a copy of a public project) scores its own builder like any job. The platform's
   claim still names the original's miners (`remix_credit`); the validator checks and records it with the job, and
   never scores it.
@@ -270,10 +301,12 @@ Not delivered, failed the gate, timed out, handed back (rejected), a copy: **0**
   hotkey** among the admitted, registered, reachable miners (each one approved by hand and through the entry
   test), history and the last vector ignored; with none reachable, equal among the admitted ones (never empty).
   Off, the rules below. The report records `launch_equal` and names the rule ("launch: equal among admitted
-  miners"); `cadmind-recompute` follows the record (a report without it was made with the switch off).
+  miners"); `cadmind-recompute` follows the record (a report without it was made with the switch off). Opening
+  the lanes (section 14) turns it off, and it cannot be turned on while they are open.
 - **Genesis** (no admitted miner has points in the window), `--genesis`:
   - `delivered` (default): equal weight **per coldkey** among admitted, registered, reachable miners that have
-    delivered at least one scored client job (ever), each coldkey's share split among its hotkeys. Admission is a
+    delivered at least one scored client job, or had an improvement judged a level higher and taken as an offer
+    (ever), each coldkey's share split among its hotkeys. Admission is a
     cheap, unscored entry test, so it earns nothing on its own while a miner that has delivered is reachable.
   - `coldkey`: equal per coldkey among admitted, registered, reachable miners.
   - `hotkey`: equal per hotkey among them (an earlier rule; it pays in proportion to hotkeys registered).
@@ -288,8 +321,8 @@ Not delivered, failed the gate, timed out, handed back (rejected), a copy: **0**
   subnet's emission down for owner incentive), nor is the validator's own uid. These are dropped again at the last
   step before the chain call, whatever the scorer produced.
 - **Recompute at startup.** A stored outcome keeps its facts and signals, never its points: at every start the
-  validator scores the window's outcomes by the rule it runs, so after an upgrade no miner holds a mix of an older
-  rule's points and this one's.
+  validator scores the outcomes it holds by the rule it runs, so after an upgrade no miner holds a mix of an older
+  rule's points and this one's. The signals carry their dates, so their changes replay.
 
 ### Continuing an unfinished round
 
@@ -331,20 +364,8 @@ scratch, throwing the first builder's work away; after two or four tries the job
   open question. It passes only through the client jobs' gate -- deliverable on the validator's own guard run, no
   unproven must, no client decision left open -- and only when submitted before its deadline. Passing admits the
   miner; it is never scored. Only admitted miners get client jobs and weight.
-- **Practice.** An approved key holder, admitted or not, may ask for a practice job (`POST /v1/practice`): the
-  platform picks a delivered public project's brief, exactly as its gallery page shows it, which this miner has not
-  practised on, and the validator runs it as a job of kind `practice` -- assigned to that miner alone, `no_questions`,
-  on the platform's practice lane (spare capacity only) and its own workspace quota, gated as any job. A deliverable
-  result is voted on with the validators' judge, and so is the delivered version under today's judge (that vote
-  cached per delivered job and judge digest); a result that fails the gate is reported with the gate's reason and no
-  vote. The record goes to the platform for the operator and to the miner (`GET /v1/practice`, by `setup` label).
-  It is never in the ledger, points, weights or routing, never sent to another miner, and at most 3 a UTC day per
-  miner, one open at a time. A miner that asks with `parallel` builds it beside its client work, with a builder of
-  its own: the practice job holds no job slot, so it is handed out whatever else the miner holds, the miner is
-  routed client jobs as if it were not practising, and `work` names it apart (`practice_job`). A miner that asks
-  without it practises the earlier way: none is handed out while it holds a job or a client job it could take
-  waits, and it is given no client job until the practice job is over. A practice job built beside ends when its
-  miner is revoked, disabled or deregistered, never when the client job is cancelled or taken back.
+- **Practice jobs are retired.** `POST /v1/practice` and `GET /v1/practice` answer `410 practice_retired`.
+  Improvement jobs (section 14) take their place once the lanes are open.
 - **Available** = admitted, holds a live key, polled `work` in the last 60 s, holds no job, not blocked, registered.
 - **Router.** A client job goes to the miner its claim prefers (`prefer`: the builder of the version a later round
   continues) if it is available; else to the **best record** among the available miners -- points per job over the last 7 days, a miner with fewer
@@ -354,7 +375,7 @@ scratch, throwing the first builder's work away; after two or four tries the job
   of its hotkeys' (`free_ms`: when a miner's last client assignment ended -- its submit, its hand-back or its
   timeout; 0 before its first), so more hotkeys buy no more turns. A miner that hands a job back (rejects)
   restarts its clock at the hand-back. A client's cancel, a lapsed lease and a host block leave the clock as it was.
-  Votes play no part. Entry tests and practice jobs do not move the clock.
+  Votes play no part. Entry tests and improvement jobs do not move the clock.
 - **No miner free:** nothing is claimed and jobs wait in the platform's queue, which shows the client a position
   and an ETA (from the validator's `GET /v1/capacity`). A job is never refused for lack of miners.
 - **Lease.** The validator renews a lease on every job it holds every 30 s (and soon after a miner accepts, submits
@@ -368,9 +389,12 @@ scratch, throwing the first builder's work away; after two or four tries the job
 
 ## 7. Hourly reports and the auditor
 
-Every hour the validator writes a report: the window's jobs with their facts (hotkey, accepted, on time, gate, wall
-time, copy, how the attempt ended) and client signals (kind, stars, quality -- never who the client is), every job's
-points and what decided them, each miner's weight and average, the admitted and reachable miners, the rule used
+Every hour the validator writes a report: the jobs that ended in the window or had a change of points dated in it,
+with their facts (hotkey, accepted, on time, gate, wall time, copy, how the attempt ended, their lane, and for an
+improvement the device and the judge's two levels) and signals (kind, stars, quality, their dates -- never who the
+client is), every job's rating points (`s`) and weight points (`w`) and what decided them (`parts`), every dated
+change of the window (`changes`), each miner's `rating`, `weight`, `record` and `average`, the `lane` of every
+eligible hotkey, whether the lanes are open (`lanes_open`), the admitted and reachable miners, the rule used
 (history or genesis), the constants, the validator's stake share against `kappa`, and the vector.
 
 - Reports are canonical JSON, public at `GET /v1/reports` and `GET /v1/reports/hour-N.json`.
@@ -378,7 +402,8 @@ points and what decided them, each miner's weight and average, the admitted and 
   (`Commitments.set_commitment`, one `Sha256` field, signed by the validator's hotkey). Only the newest commitment
   is kept in chain state; the hash chain makes it authenticate the whole published history.
 - `cadmind-recompute hour-A.json ... hour-N.json [--network NET --netuid N --validator-hotkey HK]` rebuilds every
-  score and the vector from the reports alone, checks the hash chain and canonical bytes, and compares the newest
+  job's points, the dated changes, every rating and weight, and the vector from the reports alone, lists any
+  difference, checks the hash chain and canonical bytes, and compares the newest
   hash with the commitment on chain (its `Sha256` field; a `sha256:<hex>` text commitment still reads). Each report
   names the einstein version and spec version that computed it (`einstein`); a report from another version whose
   numbers differ is said to be so (`other_version`, `not_checked`), not called a mismatch.
@@ -556,8 +581,10 @@ another miner's jobs.
 
 A device can pass every check it wrote and still not serve its brief. A **vote** is one validator's model evaluation
 of one delivered version against its brief. It is recorded, published, shown to the miner and archived for
-calibration and the practice comparison; **it scores nobody** (scores, weights and routing never
-read votes), and delivery, charging, reassignment and the gate never read them either.
+calibration; **it scores no client job** (scores, weights and routing never
+read votes), and delivery, charging, reassignment and the gate never read them either. The same judge is the
+filter of the improvement lane (section 14): it decides whether an improvement is offered, never what an accepted
+one is worth.
 
 **The review bundle.** The platform renders one bundle per delivered version, hashes it and serves the same bytes
 to every voter through a signed, expiring link: the **standard image set** (eight analytic views of the device
@@ -655,3 +682,78 @@ own model calls; ours are capped per day (`--review-daily-usd`, counting OpenRou
 ALERT when reached; a three-sample vote costs about
 three to four times a rubric 3 vote, about $1 on an Opus-class model).
 
+## 14. Open lanes (not open yet)
+
+Everything in this section is built and ships **off**, behind the validator's saved switch `lanes_open`
+(`--lanes-open on|off`, `cadmind-einstein-operator lanes-open on|off`, `GET`/`POST /v1/operator/lanes_open`). With
+the switch off the validator works as sections 1 to 13 say; only the rating and the dated weight of section 5 are
+computed and published. Turning it on turns the launch rule off in the same act.
+
+**Why.** Entry by a fixed test and equal weights do not scale to many miners: a newcomer cannot show a better
+harness or a cheaper model without risking a client's job, and inference spent on tests serves no user. The lanes
+let any approved miner work at once on something a client may want, and keep client jobs with the miners already
+serving them well.
+
+### Two lanes, one rating
+
+- **Production lane:** client jobs. Only miners whose rating (section 5) is at or above **0.4**: 8 successful jobs
+  in 10, for everyone.
+- **Improvement lane:** delivered devices a judge scored low. Every other approved miner.
+- A miner's lane is read from its rating each time it is free. There is no step up or down.
+- A miner holds one job at a time, production or improvement, with the same 240-minute deadline. A production
+  miner is never served an improvement job; to try another harness or model its operator registers a second
+  hotkey, which starts at 0 in the improvement lane.
+- **The entry test is retired** once the lanes are open: `POST /v1/miners/admission` answers
+  `{"admitted": true, "retired": true, "lane", "rating"}` for an approved, keyed hotkey and makes no test. Key
+  approval stays as it is (section 2).
+- **Weights.** The vector is made over every approved, keyed, unblocked hotkey (the report still calls that list
+  `admitted`), by the dated weight, under the history rule.
+
+### The production router
+
+- The candidates are the available miners of the production lane. With none free the job waits (the validator says
+  so at most every 10 minutes).
+- Best rating first; equal ratings fall to the longest wait.
+- **One client job in five** goes to the production miner that has waited longest, whatever its rating, so a miner
+  just over the threshold gets work and can raise its rating. The counter (`trial_count`) is kept across restarts
+  and counts the client assignments that are neither priority nor calibration.
+- A **priority** job (the claim's `priority`: the platform's word on the client's plan) always goes to the best
+  rating, and is outside the one-in-five rule.
+- A calibration job goes to the longest wait. A claim's `prefer` is honoured only for a production miner.
+- **No production miner at all.** While no approved miner has a production rating, a client job does not wait for
+  a lane nobody is in: it goes to the highest-rated free approved miner (ties: the longest wait). The validator logs
+  each such assignment and raises an alert at most hourly. While at least one production miner exists and all are
+  busy, the job waits.
+
+### Improvement jobs
+
+- **Which devices** is the platform's to say: delivered versions a judge scored 0 to 2, lowest first, and those
+  their client rated 1 or 2 stars; never a version judged level 3. A miner may be served a device it built itself.
+- **Serving.** When a free, approved, keyed, unblocked miner of the improvement lane polls `work`, the validator
+  asks the platform for its next device and runs the try as a job of kind `improvement`, whose id is the try's id
+  (`imp-<12 hex>`, made by the platform). The miner's workspace is a fork of the delivered version, with a second,
+  read-only fork beside it; `work` adds `improvement: true`, `base`, `level` (the judge's level of the delivered
+  version) and `notes` (what the judge said of it), and there is no client to ask (`no_questions`). The validator
+  serves improvement jobs only while it has a judge: no judge, no filter. They run on spare places only.
+- **Reject.** `POST /v1/jobs/reject` on an improvement job rejects the device: the miner is never served that
+  device again, nothing is counted, and it is free at once. Without limit.
+- **Not accepted in time:** released with no outcome and no rejection; the miner is served nothing for 10 minutes.
+- **The filter.** The result passes the Watt gate as any job (the validator's own guard draw) and the copy check
+  (the delivered version's features subtracted; a project handed in unchanged fails). Then the validator's judge
+  votes on it and on the delivered version, both under today's judge (the delivered version's vote cached per
+  device and judge). Only a result **at least one level higher** goes to the platform as an **offer**.
+- **The outcome** follows the platform's answer: an offer taken is a pass (`improvement_pending`); a result not a
+  level higher, a failed gate, a timeout, a copy or a workspace the platform refuses is `improvement_failed`; an
+  offer the platform could not take for a reason that is not the miner's (the device left the lane, another offer
+  is pending) makes no outcome at all.
+- **The client's answer** arrives as a dated signal with the try's id (`POST /v1/signals`): `accepted`,
+  `try_again`, `not_interested`, or `withdrawn` (the platform's: the client delivered a newer version or deleted
+  the project). The first is final. Once accepted, the stars and refunds of the accepted version come with the same
+  id and are read as a client job's.
+
+**Why two columns.** At 0.25 a judged improvement could never reach a 0.4 rating, and at 0.5 it would pay as much
+as a client job nobody has reacted to. So standing and pay are read apart from the same events: a judged
+improvement counts 0.5 toward the rating and 0.25 toward the weight until its client answers.
+
+**What the judge is here.** A filter, and only that. It keeps clients from being offered versions that are not
+better. It never decides what an accepted improvement is worth, and it has no part in a client job's points.

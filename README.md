@@ -209,6 +209,12 @@ cadmind-einstein --state-dir ~/.local/share/cadmind-einstein \
   The switch is saved in the state: the flag sets and saves it; without the flag the saved value is kept across
   restarts (off when none); `cadmind-einstein-operator launch-equal on|off` changes it at runtime. The startup log
   names the value and its source (flag, saved or default). Off, the usual rules.
+- **Open lanes (off by default).** `--lanes-open on|off`, saved and kept like the launch switch, and changed at
+  runtime with `cadmind-einstein-operator lanes-open on|off`. Off, nothing changes but the report, which publishes
+  each miner's rating and dated weight. On: client jobs go to the miners rated 0.4 or more (the production lane),
+  the other approved miners are served improvement jobs (delivered devices a judge scored low; only while the
+  validator has a judge), the entry test is retired, and the launch rule is turned off with it
+  ([`DESIGN.md`](DESIGN.md) section 14, [`docs/VALIDATOR.md`](docs/VALIDATOR.md#open-lanes-not-open-yet)).
 - `--gate-run-s` (1800) is the least budget of one validator guard run, and `--gate-run-max-s` (7200) the most: a
   design whose miner's own guard run on the same digest (Watt's trace in the fork) took longer gets 1.5 times that
   time. A run past its budget is stopped and run once more with the most, when it had less; otherwise, or when Watt
@@ -247,6 +253,7 @@ cadmind-einstein-operator ... refuse MINER_SS58 --reason "words the miner reads"
 cadmind-einstein-operator ... revoke MINER_SS58 --reason "words the miner reads"
 cadmind-einstein-operator ... unblock MINER_SS58 --reason "why, for the log" [--readmit]
 cadmind-einstein-operator ... launch-equal on|off|status
+cadmind-einstein-operator ... lanes-open on|off|status
 ```
 
 `pending` lists the requests (hotkey, coldkey, first and last ask, address, the miner's note, its `waitlist` place; `--state all` lists
@@ -417,13 +424,12 @@ Every answer on these routes is signed by the validator's hotkey (`X-Einstein-Va
 | Route | Body | Answer |
 |---|---|---|
 | `POST /v1/miners/agent_key` | `{contact?}` | `{key_id}`: the id of the miner's own agent key, as the platform has it for the hotkey (rate-limited; no secret is sent either way); `202 {pending: true, message, retry_after_s, waitlist}` until the subnet team approves the hotkey (`waitlist`: its place in line, `{position, of}`, one place per coldkey); 403 with the reason when refused or revoked; `409 {error, code: "miner_not_linked"}` with the platform's instruction when the platform has no key for the hotkey |
-| `POST /v1/miners/admission` | `{}` | the entry test (approved key holders only): a small device from a client-style brief, assigned to this miner alone, no client questions, the client jobs' gate, within its deadline (once a day) |
-| `POST /v1/jobs/work` | `{}` | `{job, workspace, brief, accepted, accept_by_ms, deadline_ms, no_questions, subprojects?}` or `{job: null}`, plus `cancelled: <job>` when the client cancelled the miner's last job, and `practice_job` (the same fields) for a practice job built beside the client work; also the liveness poll |
+| `POST /v1/miners/admission` | `{}` | the entry test (approved key holders only): a small device from a client-style brief, assigned to this miner alone, no client questions, the client jobs' gate, within its deadline (once a day); with the lanes open, `{admitted: true, retired: true, lane, rating}` and no test |
+| `POST /v1/jobs/work` | `{}` | `{job, workspace, brief, accepted, accept_by_ms, deadline_ms, no_questions, subprojects?}` or `{job: null}`, plus `cancelled: <job>` when the client cancelled the miner's last job, and the miner's `lane`, `rating` and the `threshold` between the lanes (shown; they decide nothing while the lanes are closed). An improvement job adds `improvement: true`, `base`, `level` and `notes` ([`docs/MINER.md`](docs/MINER.md#open-lanes-not-open-yet)) |
 | `POST /v1/jobs/accept` | `{job}` | `{job, workspace, deadline_ms}`; 410 for a job its client cancelled (also `submit` and `reject`) |
-| `POST /v1/jobs/submit` | `{job, workspace, digest, summary?, setup?}` | `{job, state: "judging"}`; `setup` is the miner's own label for its setup (practice results are grouped by it) |
-| `POST /v1/jobs/reject` | `{job, category, message}` | `category`: `not-allowed` or `not-capable` |
-| `POST /v1/practice` | `{}` or `{"parallel": true}` | a practice job on a public brief, assigned to this miner alone and never scored (approved key holders, admitted or not; 3 a UTC day, one open at a time): `{practice, state, title}`. With `parallel` it is built beside the miner's client work: it holds no job slot, arrives on `work` as `practice_job`, and the miner is given client jobs meanwhile. Without it, none is handed out while the miner holds a job or a client job it could take waits |
-| `GET /v1/practice` | (none) | the miner's practice: its open job, its results (its score and the delivered version's, or why it was not deliverable) and their means per `setup` ([`docs/MINER.md`](docs/MINER.md#trying-a-new-setup)) |
+| `POST /v1/jobs/submit` | `{job, workspace, digest, summary?, setup?}` | `{job, state: "judging"}`; `setup` is the miner's own label for its setup (a free label, kept with the attempt) |
+| `POST /v1/jobs/reject` | `{job, category, message}` | `category`: `not-allowed` or `not-capable`; on an improvement job it rejects the device (nothing counted, `category` and `message` optional) |
+| `POST /v1/practice`, `GET /v1/practice` | | retired: `410` with `code: practice_retired` (improvement jobs replace practice once the lanes are open) |
 | `POST /v1/miners/receipt` | `{}` | the miner's recent jobs and their points, its weight and average (points per job), and its recent attempts that did not pass with why (`failures`) |
 | `POST /v1/miners/stats` | `{}` | everything that affects the miner's weight: standing and share, counters over 24 h, 7 days and lifetime (and its coldkey's), its last 100 jobs with score parts, signals and votes with their evidence, the weight formula ([`docs/MINER.md`](docs/MINER.md#your-stats)) |
 
@@ -444,7 +450,8 @@ Every answer on these routes is signed by the validator's hotkey (`X-Einstein-Va
 | `POST /v1/operator/refuse {hotkey, reason}` | refuse it; the miner reads the reason |
 | `POST /v1/operator/revoke {hotkey, reason}` | stop taking its key, freeze its open job workspaces, drop its admission, reassign its job unscored |
 | `POST /v1/operator/unblock {hotkey, reason, readmit?}` | lift a wrong disable and its last strike; `readmit` restores a passed admission; the miner asks for its key again as usual |
-| `GET`/`POST /v1/operator/launch_equal {on}` | the launch rule's switch, read or set at runtime |
+| `GET`/`POST /v1/operator/launch_equal {on}` | the launch rule's switch, read or set at runtime (`409` while the lanes are open) |
+| `GET`/`POST /v1/operator/lanes_open {on}` | the open lanes' switch (off by default), read or set at runtime: `{lanes_open, was, launch_equal}`; opening the lanes turns the launch rule off ([`DESIGN.md`](DESIGN.md) section 14) |
 | `POST /v1/operator/release {job, reason}` | take a client job back from the miner working it; nobody scored |
 | `POST /v1/operator/void {job, reason}` | every rejection of the job counts for nothing: out of the records, weights and rejection counts |
 
@@ -493,8 +500,12 @@ nothing, **1** when the client downloaded it or rated it 3, 4 or 5 stars, and **
 stars or a refund was granted for its quality. A rating or a quality refund outranks a download: the client's latest verdict decides whenever there is one (1 star then 5 stars is 1; 1 star then a download is still 0), and a download counts only while there is none. Only the job's own client scores: a download by anyone else is recorded and never counted. Free and paid clients count the same. Not delivered, failed the gate, timed out, handed
 back, a copy: **0**. The validators' vote is published and never scored.
 
-A miner's weight is the sum of its job points over the last 7 days (flat, no decay); the hourly vector is proportional
-to it over registered, admitted, recently seen miners (at the mainnet launch, while the operator's launch switch is
+A change of points is dated when it happens: a miner's weight is the sum of its point changes dated in the last 7
+days, whatever the age of the job they are about, never below zero (a download three weeks after a delivery is paid
+in the week it arrives). Its **rating** -- the points of its jobs that ended in the last 7 days over their number,
+fewer than 10 jobs counted as 10 -- is published beside it; it decides a miner's lane once the lanes are open
+([`DESIGN.md`](DESIGN.md) section 14: built, off by default) and nothing before. The hourly vector is proportional
+to the weight over registered, admitted, recently seen miners (at the mainnet launch, while the operator's launch switch is
 on, it is equal per admitted hotkey instead). Only admitted miners are ever weighted, by every rule and fallback.
 Weight is never burned and the subnet owner's hotkey is never weighted; at genesis (nobody has points) the weight is
 split equally per coldkey, each coldkey's share among its hotkeys, among admitted miners that have delivered a scored
@@ -554,7 +565,8 @@ still checked.
 |---|---|
 | `cadmind_einstein/daemon.py` | `cadmind-einstein`: the validator process (flags, main loop, hourly close) |
 | `cadmind_einstein/desk.py` | the job desk: claim, route, accept, deadlines, gate, reassignment, job endings, admission, abuse disables |
-| `cadmind_einstein/scoring.py` | per-job points, 7-day weights, the vector, hourly reports; `cadmind-recompute` (the auditor) |
+| `cadmind_einstein/scoring.py` | per-job points (rating and weight), dated point changes, the rating, 7-day weights, the vector, hourly reports; `cadmind-recompute` (the auditor) |
+| `cadmind_einstein/improvement.py` | improvement jobs: the judge's filter on a try, the offer to the platform, the try's outcome |
 | `cadmind_einstein/stats.py` | miner stats (24 h, 7 days, lifetime; the daily rollup), the leaderboard; `cadmind-miner-stats` |
 | `cadmind_einstein/review.py` | the review bundle and its checks, the signed vote (v2, and v1 still in the window), the average; `cadmind-review` |
 | `cadmind_einstein/judge.py` | the device judge: one prompt per version (`judge_prompt_1.3b.md` is the validators'), four modes, versions 1.2b, 1.3, 1.3b and their -tools variants, strict replies, the digest, the subscription transport; `cadmind-judge` |

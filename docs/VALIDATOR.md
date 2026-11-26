@@ -12,7 +12,7 @@ how a validator's reliability is measured. The code is [`cadmind_einstein/judge.
 [`../DESIGN.md`](../DESIGN.md) section 13.
 
 **Status.** The einstein validator votes on every delivery (`--votes shadow`, the default): its votes are signed,
-published in the hourly reports, shown to the miners and archived for calibration and the practice comparison. From
+published in the hourly reports, shown to the miners and archived for calibration. From
 einstein 0.5.12 they never enter a score, a weight or the router (`--votes counted` and `live`, which scored them
 from 0.4.3 to 0.5.11, are accepted as names of `shadow`). The routes for third-party validators to receive
 assignments and send votes come later; until then `cadmind-review` runs the reviewer on a bundle locally.
@@ -27,8 +27,15 @@ What the einstein validator runs ([`../DESIGN.md`](../DESIGN.md) sections 5 and 
   out, handed back (rejected), a copy: **0**. A rejection whose job ends declined by miners of two coldkeys is
   void: it counts for nothing in records, weights or rejection counts (so does one the operator voids with
   `POST /v1/operator/void`). The platform's `trust` on a signal is ignored.
-- A miner's weight is the sum of its points over the last 7 days (flat, no decay); the vector is proportional to it
-  over the registered, admitted miners seen in 24 hours. Genesis, launch and never-empty rules are unchanged.
+- Every outcome is one event worth **rating points** and **weight points** (`scoring.POINTS`, published in each
+  report's `constants`); on a client job the two are the points above. **A change of points is dated when it
+  happens**: it is derived from the outcome's facts and its dated signals (`scoring.changes_of`), never stored
+  apart. A miner's **weight** is the sum of its weight-point changes dated in the last 7 days, whatever the job's
+  age, never below zero; the vector is proportional to it over the registered, admitted miners seen in 24 hours.
+  Genesis, launch and never-empty rules are unchanged. Outcomes are kept 180 days so a late reaction finds its job.
+- A miner's **rating** is the rating points of its jobs that ended in the last 7 days over their number, fewer than
+  10 jobs counted as 10 (the missing ones 0); at or above 0.4 it reads `production`, below it `improvement`. **With
+  the lanes closed (the default) the rating and the lane are computed and published, and decide nothing.**
 - The next client job goes to the job's `prefer` miner if it is available, else to the available miner with the best
   record (points per job over 7 days, padded to 10 jobs with unrated ones), and every fifth client assignment to the
   one that has waited longest, by coldkey; a hand-back restarts that miner's clock. A client's
@@ -43,8 +50,57 @@ What the einstein validator runs ([`../DESIGN.md`](../DESIGN.md) sections 5 and 
   report of one (`submit`'s `host_refused`) is reproduced by the validator's guard run before it counts.
 - At every start the validator scores the stored window by the rule it runs (stored outcomes keep facts and
   signals, never points), so an upgrade never leaves a mix of old and new scores; failures an older release held
-  on a job (`pending`) are scored 0 then. `/v1/scores` and the reports publish `weight` and `average` (points per
-  job); `quality` is gone.
+  on a job (`pending`) are scored 0 then. `/v1/scores` and the reports publish `weight`, `rating` and `average`
+  (points per client job); the reports also publish `record` (the router's number while the lanes are closed),
+  every dated change of the window (`changes`), each eligible hotkey's `lane` and `lanes_open`. `quality` is gone.
+- `cadmind-recompute` rebuilds every job's rating and weight points, the dated changes, each miner's rating and
+  weight and the vector from a report alone, and lists any difference. This release's spec version is one above
+  the last; a report made by another version whose numbers differ is listed as `not_checked`, as before.
+
+### Open lanes (not open yet)
+
+Built, and **off** by default: the validator's saved switch `lanes_open`.
+
+| | |
+|---|---|
+| Set it | `--lanes-open on\|off` at startup (not given: the saved value is kept, closed when none); at runtime `cadmind-einstein-operator lanes-open on\|off\|status`, or `GET` / `POST /v1/operator/lanes_open {"on": bool}` (Bearer), which answers `{"lanes_open", "was", "launch_equal"}` |
+| With the launch rule | never both: opening the lanes turns `launch_equal` off in the same act, and `POST /v1/operator/launch_equal {"on": true}` answers `409` (`code: lanes_open`) while they are open. `--launch-equal on --lanes-open on` stops the daemon at startup |
+| Off | the router, the entry test and the list the weights are made over are as before; no improvement job is served |
+| On | client jobs go to the production lane by rating; improvement jobs are served to the other approved miners; `POST /v1/miners/admission` is a stub that makes no test; the weights are made over every approved, keyed, unblocked hotkey |
+
+With the lanes open ([`../DESIGN.md`](../DESIGN.md) section 14):
+
+- **Router.** Candidates: available miners rated at or above 0.4. The claim's `prefer` is honoured only for a
+  candidate. A claim with `priority: true` goes to the best rating and neither reads nor advances the one-in-five
+  counter. A calibration job goes to the longest wait. Otherwise a persisted counter (`trial_count`) sends every
+  fifth assignment to the longest wait and the others to the best rating, ties to the longest wait. `GET
+  /v1/capacity` counts production-lane miners. With no candidate free the job waits (`no production miner free`
+  in the log, at most every 10 minutes).
+- **No production miner at all.** While no approved, keyed, unblocked, registered miner has a production rating,
+  a client job goes to the highest-rated free approved miner (ties: the longest wait). Each such assignment is
+  logged and an `ALERT:` line is raised at most hourly. Watch for it: it means the production lane is empty.
+- **Improvement jobs** need a judge: the validator serves them only while its reviewer is active (`--votes` not
+  `off`, a review model set). When a free miner of the improvement lane polls `work`, the validator asks the
+  platform for its next device (`POST /api/engine/einstein/improvement/next`, at most once a minute per hotkey
+  after a 404) and runs the try, whose id (`imp-<12 hex>`) is the platform's, as a job of kind `improvement`. The
+  grant (`POST /api/agent/subnet/workspaces` with `improvement: true`) forks the delivered version for the miner
+  and a read-only copy beside it. A miner's rejection goes to `.../improvement/<try>/reject`.
+- **Judging.** The gate and the copy check as any job. Then one vote on the try, made exactly as a delivery's
+  (this judge, its prompt, rubric and `--review-samples`; `Reviewer.judge_bundle`), on the bundle the platform makes
+  from the validator's frozen copy (`.../improvement/<try>/bundle`), and one on the delivered version under today's
+  judge, on its bundle without the studio render (audience `compare`), cached per (device, judge digest). Only a
+  result at least one level higher is sent as an offer (`.../improvement/<try>/result`, `outcome: offer`); any
+  other is reported `not_better`, and a try that failed before the judge `failed`. These votes are recorded
+  nowhere else (store namespaces `improvement` and `improvement-ref`); they count toward `--review-daily-usd`, at
+  most two per try.
+- **The outcome** is written when the platform answered: an offer taken is a pass (`improvement_pending`); `422`,
+  or the validator's own judgement below one level higher, is `not_better`; a `409 delivery_*` is `refused`; `410`
+  and `409 offer_exists` make no outcome. The validator keeps its copy of an offered version (it is the version the
+  client may accept) and deletes every other.
+- **Signals.** `POST /v1/signals {"job": <try id>, "kind": "accepted" | "try_again" | "not_interested" |
+  "withdrawn"}`: the first is final, a second is ignored. After `accepted`, the `stars`, `refund`, `download`
+  and `change` of the accepted version come with the same try id. `404` for a try the validator holds no offer of,
+  `400` for an offer's answer on a client job.
 
 ## Staking and consensus
 
@@ -236,25 +292,6 @@ platform's answer for its bundle carries `parts` (`awaiting`, `built`, `total`, 
 makes the bundle again with the parts imported and assembled in view (`assembled` true) and the device is judged
 whole. Five days after the delivery it is judged as it stands. The vote scores nothing either way. A sub-project's
 own job is judged as any other.
-
-## Practice votes
-
-A miner may practise on a public brief (`POST /v1/practice`, [`docs/MINER.md`](MINER.md#trying-a-new-setup)). The
-validator runs it as a job of kind `practice` and gates it as any job. A deliverable result gets one vote, made
-exactly as a delivery's (this judge, its prompt, rubric and `--review-samples`; `Reviewer.judge_bundle`), on the
-bundle the platform makes from the validator's frozen copy (`POST /api/engine/einstein/practice/<id>/bundle`), and
-the delivered version of the same brief gets one under today's judge, through the delivered job's bundle route. That
-reference is judged on its bundle without the studio render (audience `practice`: a practice bundle has none), and its
-vote is cached per (delivered job, judge digest), so later practice on the same brief costs one model
-vote, not two. A result that fails the gate gets no vote. The record is reported to the platform
-(`POST /api/engine/einstein/practice/<id>/result`: `hotkey`, `setup`, `deliverable`, `why`, `score`,
-`reference_score`, `judge`, `watt`, `minutes`) and kept in the store (namespace `practice`; cached reference votes
-in `practice-ref`); the validator's copy is then deleted.
-
-Practice votes are recorded nowhere else: not in the vote store, the ledger, the hourly report or the weights, and
-they never touch a miner's points or routing. They do count toward the daily spend cap (`--review-daily-usd`): at
-most two votes per practice job, and `--practice-per-day` (3 by default, the platform's own cap) jobs per miner a
-UTC day. With votes off, practice results are reported without a score.
 
 ## The vote
 

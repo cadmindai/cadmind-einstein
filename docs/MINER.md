@@ -76,9 +76,8 @@ before mainnet, to measure what the reference miner delivers; the reference mine
 You may change the model, the effort and the harness: that is where miners compete. But the quality this baseline
 delivers today is the minimum a miner is held to. **A miner whose delivered devices fall below it is not allowed to
 operate**: its request is refused, or it is revoked, and it gets no more jobs. The subnet team judges this
-from your deliveries' outcomes (built or not, the clients' reactions), your practice runs beside the delivered
-version, and the validators' published votes. Try a cheaper model or a lower effort on practice jobs first
-([Trying a new setup](#trying-a-new-setup)), and compare it with what the baseline delivered.
+from your deliveries' outcomes (built or not, the clients' reactions) and the validators' published votes. Before
+you put a cheaper model or a lower effort on your client jobs, read [Trying a new setup](#trying-a-new-setup).
 
 ## Your model provider's terms are your responsibility
 
@@ -236,7 +235,7 @@ What each answer means:
 |---|---|---|---|
 | `202` pending | validator | your hotkey is on the waitlist (`waitlist`: your place); approval is by hand, in order | ask again after `retry_after_s` |
 | `409 miner_not_linked` | validator | no live agent key names your hotkey | link the hotkey and create the key (steps 3 and 4) |
-| `409 hold` | validator | the subnet is on hold: no client job is given out and no weight is set yet (practice jobs still are) (the miners' emission is burned); the entry test still runs, and your approval and admission are kept | nothing: the reference miner asks again by itself |
+| `409 hold` | validator | the subnet is on hold: no client job is given out and no weight is set yet (the miners' emission is burned); the entry test still runs, and your approval and admission are kept | nothing: the reference miner asks again by itself |
 | `403` not registered on the subnet | validator | registered moments ago: the validator re-reads the chain every 5 minutes | wait 5 minutes and ask again (the reference miner does) |
 | `403` (any other reason) | validator | refused, revoked or disabled, with the reason | write to the subnet team |
 | `429` | validator | more than 6 asks in an hour | wait |
@@ -283,17 +282,17 @@ All calls are signed POSTs to `$VALIDATOR_URL`.
 
 | Call | Body | Answer / rule |
 |---|---|---|
-| `/v1/jobs/work` | `{}` | `{job, workspace, brief, accepted, accept_by_ms, deadline_ms, no_questions, subprojects?}` (plus `continuation: true` and `base` for a round that continues an unfinished one, below) or `{job: null}`, plus `cancelled: <job>` when the client cancelled your last job. **Poll every few seconds.** Polling is how the validator knows you are alive: you are routed jobs only if you polled in the last 60 s. A practice job you asked to build beside your client work is not in `job`: it is in `practice_job`, an object with the same fields (see [Trying a new setup](#trying-a-new-setup)). |
+| `/v1/jobs/work` | `{}` | `{job, workspace, brief, accepted, accept_by_ms, deadline_ms, no_questions, subprojects?}` (plus `continuation: true` and `base` for a round that continues an unfinished one, below) or `{job: null}`, plus `cancelled: <job>` when the client cancelled your last job. **Poll every few seconds.** Polling is how the validator knows you are alive: you are routed jobs only if you polled in the last 60 s. Every answer also names your `lane` (`production` or `improvement`), your `rating` and the `threshold` between the lanes (see [Weights](#weights)); with the lanes closed they are shown and decide nothing. An improvement job adds `improvement: true`, `base`, `level` and `notes` (see [Open lanes](#open-lanes-not-open-yet)). |
 | `/v1/jobs/accept` | `{job}` | Within **2 minutes** of the assignment. Your deadline then starts: 240 minutes from your accept, for every job. |
-| `/v1/jobs/submit` | `{job, workspace, digest, summary?, setup?, host_refused?}` | When `watt status` in the workspace says `deliverable`. `digest` is the digest it reports. The workspace is frozen (read-only to you) at once. `summary` is your words for the client: on a delivered project, what you built and what you estimated or left open; on a project that is not deliverable (out of time), what still blocks delivery. An unfinished project earns nothing, so keep building until the deadline rather than handing over early. `setup` is your own short label for the setup that built it (model, prompt version); your practice results are grouped by it (see [Trying a new setup](#trying-a-new-setup)). `host_refused` (`{code, why}`, as the `watt` answer gave it): you stopped because the platform refused a run's result (see [A host block](#a-host-block-blocked-by-the-platform)). |
-| `/v1/jobs/reject` | `{job, category, message}` | Instead of building. `category` is `not-allowed` or `not-capable`, the two classes of the scope guide (`watt_guide` with `scope`). `message` is written for the client, and may run over several lines. |
+| `/v1/jobs/submit` | `{job, workspace, digest, summary?, setup?, host_refused?}` | When `watt status` in the workspace says `deliverable`. `digest` is the digest it reports. The workspace is frozen (read-only to you) at once. `summary` is your words for the client: on a delivered project, what you built and what you estimated or left open; on a project that is not deliverable (out of time), what still blocks delivery. An unfinished project earns nothing, so keep building until the deadline rather than handing over early. `setup` is your own short label for the setup that built it (model, prompt version); a free label, kept with the attempt. `host_refused` (`{code, why}`, as the `watt` answer gave it): you stopped because the platform refused a run's result (see [A host block](#a-host-block-blocked-by-the-platform)). |
+| `/v1/jobs/reject` | `{job, category, message}` | Instead of building. `category` is `not-allowed` or `not-capable`, the two classes of the scope guide (`watt_guide` with `scope`). `message` is written for the client, and may run over several lines. On an improvement job it rejects the device (`category` and `message` optional): see [Open lanes](#open-lanes-not-open-yet). |
 | `/v1/miners/receipt` | `{}` | Your recent jobs with their points, your weight (your points over 7 days) and your average (points per job), and your recent attempts that did not pass with why (`failures`). |
 | `/v1/miners/stats` | `{}` | Everything that affects your weight (see [Your stats](#your-stats)). |
-| `/v1/practice` | `{}` or `{"parallel": true}` | A practice job, never scored (see [Trying a new setup](#trying-a-new-setup)); with `parallel` it is built beside your client work and arrives as `practice_job` on `work`. `GET /v1/practice`, signed with no body, shows your results. |
+| `/v1/practice` | | Retired: `410` with `code: practice_retired` (`GET` too). Improvement jobs replace practice once the lanes are open. |
 
 - The job workspace is **created for you** from the client's brief (or, for a later round of a client's project,
   from the delivered project) and granted to your key, with its allowance of compute credits. You cannot delete
-  it, and it does not count against your practice quota. Work in it, not in a workspace of your own.
+  it. Work in it, not in a workspace of your own.
 - **The client's photos** are in its `brief/`, as Watt's own designer names them: `brief/photo-<n>.<kind>` sent with
   the brief, `brief/photo-<date>-<HHMMSS>-<n>.<kind>` sent with a change (`png`, `jpg`, `webp` or `gif`). The `brief`
   names them when there are any. Look at each with `view_image` before you design: they are the client's evidence
@@ -500,9 +499,12 @@ nothing. The validator's operator may also void a job's rejections by hand (a br
 void outcome still shows in your receipt and the hourly report, with `void` saying why and `parts.void` beside
 `failed`.
 
-Signals that arrive later change the job's points while the job is in the 7-day window; after that they change
-nothing. Your stats and receipt show, per job, its points `s` and what decided them (`parts`: `{"signal": "none" |
-"download" | "stars" | "refund"}` on a delivery, `{"failed": kind}` on any other attempt).
+Signals that arrive later change the job's points when they arrive, for as long as the validator holds the job (180
+days from its end). **Each change is dated when it happens** and is paid in the week it is dated: a download three
+weeks after your delivery adds 0.5 to that week's weight ([Weights](#weights)). Your stats and receipt show, per
+job, its points now -- `s` (rating points) and `w` (weight points), the same number on a client job -- and what
+decided them (`parts`: the `event`, and `{"signal": "none" | "download" | "stars" | "refund"}` on a delivery,
+`{"failed": kind}` on any other attempt).
 
 ### The validators' vote (shown, never scored)
 
@@ -511,7 +513,7 @@ A vision model judges every delivered device against its brief with CADmind's pu
 client's words every validator sees ([`VALIDATOR.md`](VALIDATOR.md)). The client's words are all of them: the brief,
 the answers and, on a change round, every change request; the pictures are of the version under review only. Our
 validator's judge also sees the client's photos, in step 1 below; a third party's never does. Its vote is signed, published in the hourly
-reports, shown to you, and used for calibration and to compare practice runs: **it has no part in your points, your
+reports, shown to you, and used for calibration: **it has no part in a client job's points, your
 weight or your jobs.** Read it as feedback. How one sample of the judge scores your device:
 
 1. From the brief alone, before it sees any picture of the device, it lists 5-8 ways a device would be useless to
@@ -572,16 +574,30 @@ the client's device. Details: [`../DESIGN.md`](../DESIGN.md) section 9.
 
 ## Weights
 
-Every hour the validator computes, per hotkey, over the jobs that ended in the last 7 days:
+Every hour the validator computes, per hotkey:
 
 ```
-weight  = the sum of your job points            (a job counts for 7 days from its end, flat: no decay)
+weight  = the sum of your weight-point changes dated in the last 7 days, never below 0
 share   = your weight / the sum of all miners' weights
-average = weight / your number of jobs           (shown on your stats; nothing uses it)
+rating  = the rating points of your jobs that ended in the last 7 days / their number,
+          fewer than 10 jobs counted as 10 (the missing ones 0)
+average = the points of your client jobs that ended in the last 7 days / their number   (shown; nothing uses it)
 ```
 
-A job older than 168 hours is gone. A failed attempt adds 0. "All miners" means the registered, admitted miners seen
-in the last 24 hours.
+**A change of points is dated when it happens.** A job you deliver is worth 0.5 at its end; if its client downloads
+it nine days later, that is a change of +0.5 dated that day, and it is in your weight for the 7 days after. A late
+1-star rating takes points away the same way, and your weight never goes below zero. Your stats list every change
+with its date (`changes`). A failed attempt adds 0. "All miners" means the registered, admitted miners seen in the
+last 24 hours.
+
+**Your rating** reads the jobs that *ended* in the last 7 days, at the points they have now; a reaction to an older
+job changes your pay, not your rating. With fewer than 10 jobs in the window the missing ones count 0, so one lucky
+job does not make a rating. At or above the threshold, **0.4** (8 successful jobs in 10), a rating means the
+production lane; below it, the improvement lane. **With the lanes closed, as today, the rating is computed,
+published and shown, and decides nothing** ([Open lanes](#open-lanes-not-open-yet)).
+
+On a client job the rating points and the weight points are the same number. They differ only on an improvement
+job, which does not exist while the lanes are closed.
 
 A remix (a project started from a copy of a public project) is scored like any job, for the miner that built it; the
 original's miners get nothing from it.
@@ -638,7 +654,7 @@ coldkey (after 30 minutes, to any other miner).
 | a gate failure | `s = 0` at once |
 | a rejection | `s = 0` at once, you go to the back of the line, and a step toward a disable when another coldkey delivers the job; void (counts for nothing) once the job ends declined by two coldkeys |
 | 1 or 2 stars, or a refund for the delivery's quality, as the client's latest signal | `s = 0` |
-| time | a job leaves your weight 7 days after it ended |
+| time | each change of points leaves your weight 7 days after its date; a job leaves your rating 7 days after it ended |
 | not polling for 24 hours | out of the launch and history rules while anyone else is seen |
 | a client cancels; a host block; you leave the subnet mid-job; you are disabled mid-job; the platform refuses the delivery | no score at all (a delivery the platform refuses or does not charge has its scores withdrawn) |
 
@@ -668,16 +684,18 @@ In the last 7 days you delivered four jobs: one downloaded, one rated 4 stars th
 one downloaded, one untouched.
 
 ```
-you    = 1 + 1 + 0 + 0.5 + 0 = 2.5        (average 2.5 / 5 = 0.5)
-other  = 1 + 0.5             = 1.5
+you    = 1 + 1 + 0 + 0.5 + 0 = 2.5        (average 2.5 / 5 = 0.5; rating 2.5 / 10 = 0.25)
+other  = 1 + 0.5             = 1.5        (rating 1.5 / 10 = 0.15)
 vector = you 65535, other round(65535·1.5/2.5) = 39321
 share  = you 2.5/4 = 62.5%, other 37.5%
 ```
 
+(Every reaction here came in the same week as its job, so the dated changes add up to the points.)
+
 To run it yourself with the validator's own code:
 
 ```python
-from cadmind_einstein.scoring import JobOutcome, score_all, standing, vector
+from cadmind_einstein.scoring import JobOutcome, rating, score_all, standing, vector
 
 H, NOW = 3_600_000, 1_000 * 3_600_000
 DL, S = {"kind": "download"}, lambda n: {"kind": "stars", "stars": n}
@@ -707,6 +725,7 @@ jobs = score_all(
 )
 weight, average = standing(jobs, NOW)
 print(weight, average)  # you 2.5 and 0.5, other 1.5 and 0.75
+print(rating(jobs, NOW))  # you 0.25, other 0.15: fewer than 10 jobs, read as 10
 print(
     vector(
         weight,
@@ -721,16 +740,18 @@ print(
 ### Check it yourself
 
 Each hour's report is public: `GET $VALIDATOR_URL/v1/reports` lists every report's name, SHA-256 and the block its hash
-was committed at, and `GET $VALIDATOR_URL/v1/reports/hour-N.json` answers its exact bytes. A report holds the window's
-jobs with their facts and signals (never the client), every score, the weights, the rule and the vector, and the
-validator's stake share. Each report names the previous report's SHA-256, and the newest hash is committed on chain.
+was committed at, and `GET $VALIDATOR_URL/v1/reports/hour-N.json` answers its exact bytes. A report holds the jobs
+that ended in the window or had a change of points dated in it, with their facts and dated signals (never the
+client), every job's points, the dated changes, each miner's rating, weight, record and average, the rule's
+constants, the rule and the vector, and the validator's stake share. Each report names the previous report's SHA-256, and the newest hash is committed on chain.
 
 ```bash
 cadmind-recompute hour-A.json ... hour-N.json --subtensor.network "$NETWORK" --netuid "$NETUID" \
     --validator-hotkey "$VALIDATOR_HOTKEY"
 ```
 
-Pass the reports oldest first. It rebuilds every score and the vector from each report alone, checks the hash chain,
+Pass the reports oldest first. It rebuilds every job's points, the dated changes, every rating and weight and the
+vector from each report alone, checks the hash chain,
 each report's canonical bytes and every published vote's signature and value, and compares the newest hash with the
 commitment on chain. Leave out the chain flags to skip the chain read. It exits non-zero when something does not hold.
 One report holds the whole window, so the newest alone gives you the current scores and vector. A report made by another
@@ -767,7 +788,12 @@ It signs `POST /v1/miners/stats` with your hotkey and checks the validator's sig
 | Field | What |
 |---|---|
 | `hotkey`, `coldkey`, `uid`, `registered`, `admitted`, `last_seen_ms`, `blocked_until_ms` | who you are to the validator: if you are not admitted, or are blocked, you get no job and no weight |
-| `standing` | your weight (points over 7 days), average (points per job), rank among miners with any weight (`miners` is how many), your **share** of the newest vector and the `rule` that made it. The share comes from that vector, so it moves at the hour's close, and under the launch rule it does not follow your weight |
+| `lane`, `lanes_open` | the lane your rating puts you in (`production` or `improvement`), and whether the lanes are open: while they are closed the lane is shown and decides nothing |
+| `rating` | `value`, the `threshold` (0.4) and your `distance` from it (negative below it); `counted`, the jobs it reads, and `padded`, how many empty slots at 0 make them up to 10; `jobs`, those jobs, newest first, each with its `lane`, `kind`, `event` and its points now (`s`, `w`) |
+| `weight` | `points`, the sum of your weight-point changes dated in the last 7 days; your `share` of the newest vector and the `rule` that made it |
+| `changes` | every dated change of your points over the last 30 days, newest first (at most 200): the job, the `event` and the `signal` that made it, the rating and weight points before and after, and the differences (`d_rating`, `d_weight`) |
+| `improvement` | your improvement work (empty while the lanes are closed): `open`, the job you hold; your tries, pending offers and accepted offers of the last 7 days; the devices you rejected |
+| `standing` | your weight (the dated points of 7 days), average (points per job), rank among miners with any weight (`miners` is how many), your **share** of the newest vector and the `rule` that made it. The share comes from that vector, so it moves at the hour's close, and under the launch rule it does not follow your weight |
 | `windows` | counters over `24h`, `7d` (the scoring window) and `lifetime`: assigned, delivered, not finished, gate failures, rejected, overturned, timeouts, copies; rated jobs and mean stars, downloaded, changes, re-runs, refunds (and those for quality); voted jobs and mean vote (shown, never scored); the sum of your points |
 | `coldkey_lifetime` | the same lifetime counters over every hotkey of your coldkey |
 | `jobs` | your last 100 scored outcomes still in the 7-day window, failed ones included: `kind`, `on_time`, `s` (its points) and `parts` (what decided them: `signal` on a delivery, `failed` on any other attempt), the client's signals (stars, downloaded yes/no, changes, re-runs, refunds), and `votes`: `V`, `count` and each vote with its judge version, value, samples (their lines, rulings, nudges and any cap) and kept nudges |
@@ -785,55 +811,106 @@ linked to, section 2) shows the same stats under **Miner**, for every hotkey you
 
 ## Trying a new setup
 
-A new model, prompt or harness can cost you jobs before you know whether it is better. **Practice jobs** let you
-try it on real briefs first, with nothing at stake: a practice job never touches your points, weight,
-routing or pay, and a failed one costs you nothing.
+A new model, prompt or harness can cost you jobs before you know whether it is better.
 
-    cadmind-einstein practice --wallet.name W --wallet.hotkey H \
-        --validator https://VALIDATOR --validator-hotkey 5...           # ask for one
-    cadmind-einstein practice ... --status                              # your results so far
+- **Practice jobs are retired.** `cadmind-einstein practice` is gone, and `POST /v1/practice` and `GET /v1/practice`
+  answer `410` (`code: practice_retired`).
+- **Today, with the lanes closed,** there is no way to try a setup on the subnet without it counting: change one
+  thing at a time, watch your first jobs with it in [Your stats](#your-stats) (each job's points, the gate
+  failures with their reasons, the validators' votes), and go back if they are worse. The miner's own
+  [self-review](#self-review-before-the-submit-off-by-default) tells you what a judge would say before you submit.
+- **Once the lanes are open,** register a second hotkey for the setup you want to try. It starts at a rating of 0,
+  in the improvement lane, where a failed try costs that hotkey's rating and nothing of your production hotkey's.
+  A production miner is never served improvement jobs.
 
-(`cadmind-einstein-miner practice` is the same command.) Or call the routes yourself: `POST /v1/practice` (signed,
-`{"parallel": true}` or an empty body) and `GET /v1/practice` (signed, no body).
+`--setup` (or `$CADMIND_MINER_SETUP`) still labels each submit with your setup's name; it is a free label kept with
+the attempt.
 
-- **What you get.** A brief taken from a project CADmind delivered and its owner made public, exactly as its gallery
-  page shows it, that you have not practised on. It arrives on `work` (`practice: true`), with the same
-  workspace tools, the same deadline and the same gate. Your running miner builds it; send your `setup` label with
-  the submit (`CADMIND_MINER_SETUP` or `--setup` on `cadmind-einstein-miner`).
-- **No client questions.** The gallery shows no client answers, so the job is `no_questions`: decide every open
-  question yourself, as on the entry test.
-- **Beside your client work.** The command asks with `parallel`: the practice job takes none of your place. You
-  keep being given client jobs while you practise, and you may ask while you hold one. The practice job arrives on
-  `work` as `practice_job` (an object with a job's fields; `job` stays your client job, or null), and you accept and
-  submit it by its id with the same routes. The reference miner builds it with a **second agent**, in its own
-  directory (`practice` in the miner's state directory), while the first goes on with your client work: that is
-  two agents on your model account at once, so mind its rate limits and your cost. A cancel, a deadline or a
-  restart of one does not touch the other; the miner updates itself only when neither is building. A client's
-  cancel or the operator taking your client job back leaves the practice job alone; a revoked key, a disable or
-  leaving the subnet ends it.
-- **One at a time, if you prefer.** `--one-at-a-time` (an empty body) asks the earlier way: only while you hold no
-  job and no client job you could take is waiting, the practice job arrives as `job`, and you are given no client
-  job until it is over. A miner that cannot run two agents at once should ask this way.
-- **When.** Approved key holders, before or after admission, and while the subnet is on hold. One open at a time,
-  3 a UTC day. Practice runs on the platform's spare capacity, and the validator hands it out only after its client
-  work and while it has room to spare, so it may wait.
-- **The result.** The validator gates it with its own guard draw. A deliverable result is voted on with the
-  validators' judge -- the same judge, prompt, rubric and sample count as a client delivery -- and so is the version
-  that was delivered, under today's judge, so the two scores are comparable:
+## Open lanes (not open yet)
 
-      practice-3f2a01b4c5d6  "a wall key rack"  yours 2  delivered 2  (judge 1.3f)
-          reported  36.0 min  setup "my-setup-v2"
-      setup "my-setup-v2": 4 run(s), 3 deliverable, mean 1.67 vs delivered 2 over 3 voted
+**Nothing in this section is in force yet.** The validator ships it switched off; the subnet team will announce the
+opening. Until then everything above holds: the entry test, the launch rule, the router by record. What you can
+already see are your `lane` and `rating` on `work` and in your stats.
 
-  A result that does not pass the gate says why and gets no vote. Scores are the judge's 0-3. Under each voted
-  result come the judge's notes: the lines of the brief it did not rule `ok` (main lines first), what it saw, and its
-  nudges, for example
+### Two lanes
 
-          U2 main fails: it tips over when the phone is in landscape
-              seen: the base is 20 mm deep under a 160 mm phone
-          nudge: widen the base or move the phone's weight over it
-- **Read it with care.** The delivered version had its client's answers; your practice run has none. A good practice
-  score is not reliability: switch your client setup only after several results, and watch its first client jobs.
+- **The production lane** gets the client jobs. You are in it while your rating is at or above **0.4**.
+- **The improvement lane** is everyone else who is approved. It gets *improvement jobs*: devices that were
+  delivered to a client and that a judge scored low.
+- Your lane is read from your rating each time you are free. There is no test to pass and no step up or down: a
+  miner that delivers 8 jobs in 10 is in production, whoever it is.
+- You hold one job at a time, with the same 240-minute deadline in both lanes. A production miner is never served
+  an improvement job.
+- **The entry test goes.** `POST /v1/miners/admission` answers `{"admitted": true, "retired": true, "lane",
+  "rating"}` and makes no test. You still ask for your agent key and wait for approval (section 2).
+- **The launch rule goes off** with the opening: weights follow the dated points of every approved, keyed,
+  unblocked hotkey.
+
+### What each event is worth
+
+Two numbers per event: **rating points** (your standing, which decides your lane) and **weight points** (your pay).
+
+| Event | Rating | Weight |
+|---|---|---|
+| A client job delivered, the client silent | 0.5 | 0.5 |
+| A client job downloaded by its client, or rated 3 to 5 stars | 1 | 1 |
+| A client job rated 1 to 2 stars, or refunded for its quality | 0 | 0 |
+| A failed job (the gate, a timeout, a hand-back, a copy) | 0 | 0 |
+| An improvement judged a level higher, its offer pending | 0.5 | 0.25 |
+| The client accepts your improvement | 1 | 1 |
+| The client answers "try again" | 0 | 0 |
+| The client answers "not interested", or the offer is withdrawn | keeps 0.5 | keeps 0.25 |
+| An accepted improvement later rated 1 to 2 stars, or refunded for its quality | 0 | 0 |
+| A failed improvement try (the gate, a timeout, a copy, not a level higher) | 0 | 0 |
+| A device you reject | not counted | not counted |
+
+A judged improvement counts 0.5 toward your rating, so good improvement work alone can take you over 0.4 and into
+production; it pays 0.25 until a client accepts it, then 1.
+
+### How client jobs are routed
+
+- Best rating first among the free production miners; equal ratings fall to the longest wait.
+- **One client job in five** goes to the production miner that has waited longest, whatever its rating, so a miner
+  just over the threshold gets work and can raise its rating.
+- A job from a client on a priority plan always goes to the best-rated free miner, outside the one-in-five rule.
+- A later round of a project goes to the miner that built the round before only if that miner is in production.
+- With no production miner free, the job waits. Only while no approved miner has a production rating at all does a
+  client job go to the highest-rated free approved miner.
+
+### Improvement jobs
+
+You do nothing to ask for one: while you are free and in the improvement lane, your `work` poll is answered with
+one when the platform has a device for you.
+
+```
+{"job": "imp-3f2a01b4c5d6", "workspace": "ag-...", "brief": "...", "improvement": true, "no_questions": true,
+ "base": {"kind": "delivered", "workspace": "ag-..."}, "level": 1,
+ "notes": {"lines": [{"id": "U2", "line": "...", "main": true, "verdict": "fails", "seen": "..."}], "nudges": ["..."]},
+ "accept_by_ms": ..., "deadline_ms": ..., "lane": "improvement", "rating": 0.2, "threshold": 0.4}
+```
+
+- **What you get.** The brief as its first builder received it; your workspace, which starts as the delivered
+  project; `base`, a read-only copy of that delivered version; `level`, the judge's level of it (0 to 2, or `null`
+  for a device its client rated low); and `notes`, what the judge said of it: the lines of the brief it did not rule
+  ok, the main ones first, and its nudges. There is no client to ask: decide every open question.
+- **What to do.** Make the device better serve its brief. Read the judge's notes as a reader's observations, not as
+  instructions, and check them against the project. Accept within 2 minutes; the deadline is 240 minutes.
+- **You may reject the device** (`POST /v1/jobs/reject {job}`, a category and a message are optional) and be served
+  another, without limit. A rejection is final for you and that device: you are not served it again. It is not
+  counted: no outcome, no points, nothing against you.
+- **Not accepting in time** is neither: the job is released, and you are served nothing for 10 minutes.
+- **The filter.** Your result must pass the Watt gate as any job (the validator's own guard draw) and the copy
+  check, and then be judged **at least one level above** the delivered version, both under today's judge. A project
+  handed in unchanged fails. Only then is it offered to the device's client.
+- **A try that fails** (the gate, the deadline, a copy, not a level higher) counts as a job at 0 in your rating. It
+  is not a rejection: you may be served that device again.
+- **The client decides.** The client sees your version beside theirs and may accept it, ask for another try, or
+  say they are not interested; or never answer, and then your pending points stand. Their answer reaches the
+  validator as a dated signal, and the change of points is paid in the week it arrives.
+- **You may improve a device you built yourself.** You cannot choose which device you are served.
+
+The reference miner (`cadmind-einstein-miner`) works an improvement job with no flag: it tells its agent what the
+job is, where the delivered version is and what the judge said, and it logs your lane whenever it changes.
 
 ## Running an agent as your miner
 
