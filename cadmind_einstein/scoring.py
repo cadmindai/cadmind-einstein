@@ -29,17 +29,41 @@ handing it back was right), and the operator voids the rejections of a job by ha
 (``POST /v1/operator/void``). A rejection whose job is still open scores 0 until the job ends; one
 another miner then delivered (overturned) keeps its 0.
 
-**Weights, every hour, never burned.** A job counts for 7 days from its end (its delivery), flat:
-no decay. A miner's **weight** is the sum of its job points over the last 7 days; the vector is
-proportional to it over registered, admitted miners seen in the last 24 hours. Its **average**
-(points / jobs in the window) is shown on the stats pages. The router reads its **record**
-(:func:`record`): that average, with a miner of fewer than :data:`RECORD_JOBS` jobs counted as if
-the missing ones were unrated deliveries, so one lucky job does not put a newcomer first. Signals
-arrive late and change the job's points when they do; the next hourly vector reads the current
-points.
+**Two lanes, one rating** (DESIGN.md "Open lanes"). An outcome belongs to the ``production`` lane
+(a client job) or to the ``improvement`` lane (a miner's try at improving a delivered device a
+judge scored low). Every outcome is read as one event of :data:`POINTS`, which gives it two
+values: **rating points** (``s``: the miner's standing, which decides its lane) and **weight
+points** (``w``: its pay). On a production job both are the points above. An improvement the
+judge put at least one level above the delivered version and the platform took as an offer is
+worth 0.5 rating points and 0.25 weight points while its offer is pending, and keeps them if the
+client is not interested or the offer is withdrawn; 1 and 1 once the client accepts it (then its
+stars and quality refund are read as a production job's); 0 and 0 when the client answers "try
+again", and for a try that failed.
 
-The validators' votes on deliveries (:mod:`.votes`) are recorded and published for calibration and
-practice comparisons; they never reach a score, a weight or the router.
+**A change of points is dated when it happens** (:func:`changes_of`). An outcome's facts and its
+dated signals replay into its dated changes: step 0 at its end, then one change per signal that
+moved its points. Nothing is stored apart from the facts and the signals.
+
+**Rating** (:func:`rating`): the rating points of the miner's jobs that ended in the last 7 days,
+over the number of those jobs, a miner with fewer than :data:`PAD_JOBS` jobs read as having that
+many (the missing ones 0). At or above :data:`THRESHOLD` a miner is in the production lane
+(:func:`lane_of`).
+
+**Weights, every hour, never burned.** A miner's **weight** (:func:`weight`) is the sum of the
+weight-point changes dated in the last 7 days, whatever the age of the job they are about, never
+below zero: a client's reaction weeks later is paid in the week it arrives. The vector is
+proportional to it over the registered miners the daemon names (``admitted``) seen in the last 24
+hours. Outcomes are kept :data:`OUTCOME_KEEP_H` hours so that a late reaction still finds its job.
+
+**The earlier numbers stay published beside the new ones.** A miner's **average** (points / jobs
+over its production jobs of the window) is shown on the stats pages, and its **record**
+(:func:`record`) -- that average, with a miner of fewer than :data:`RECORD_JOBS` jobs counted as if
+the missing ones were unrated deliveries -- is what the router ranks by while the lanes are
+closed.
+
+The validators' votes on deliveries (:mod:`.votes`) are recorded and published for calibration;
+they never reach a production job's score. On an improvement the judge is a filter only: a result
+that is not a level above the delivered version is no offer.
 
 An hour with no work or no success still emits, from that history. **Genesis** -- no admitted
 miner has any points in the window -- follows ``genesis``:
@@ -56,7 +80,8 @@ miner has any points in the window -- follows ``genesis``:
 **Launch** (the validator's saved switch: ``--launch-equal on|off``, or the operator's route): while
 it is on, equal weight per hotkey among the admitted, registered, reachable miners -- each one
 onboarded by hand -- whatever their history; off, the rules above. Each report records whether it
-was on (``launch_equal``) and recompute follows that record.
+was on (``launch_equal``) and recompute follows that record. Opening the lanes (``lanes_open``)
+turns it off, and the list the daemon names is then every approved, keyed, unblocked hotkey.
 
 **The subnet owner's hotkey is never weighted** by these rules: weighting it burns miner
 emission. The one exception is the validator's opt-in burn mode (``--burn-when-empty``, in
@@ -70,9 +95,10 @@ reachable miners (under Null consensus an empty vector would spread the miners' 
 every registered UID). Nothing is emitted only when no miner is admitted at all (or, in burn
 mode, all of it goes to the owner's uid).
 
-Every hour a report holds the window's jobs with their facts and signals, and the vector;
-:func:`recompute` rebuilds the scores and the vector from a report alone (``python -m
-cadmind_einstein.scoring REPORT``).
+Every hour a report holds the jobs that ended in the window or had a change dated in it, with
+their facts and signals, the dated changes, each miner's rating, weight, record and average, the
+rule's constants, and the vector; :func:`recompute` rebuilds the points, the changes, the ratings,
+the weights and the vector from a report alone (``python -m cadmind_einstein.scoring REPORT``).
 """
 
 from __future__ import annotations
@@ -82,6 +108,7 @@ import json
 import os
 import sys
 import threading
+import time
 from collections import defaultdict
 from collections.abc import Iterable, Mapping
 from dataclasses import asdict, dataclass, field, fields
@@ -90,11 +117,47 @@ from typing import Any
 
 from . import __spec_version__, __version__
 
-WINDOW_H = 7 * 24
+WINDOW_H = 168
+"""7 days: the window of the rating and of the weight"""
 HOUR_MS = 3_600_000
+PAD_JOBS = 10
+"""a miner with fewer counted jobs in the window is rated as if it had this many"""
+PAD_POINTS = 0.0
+"""what each missing job of the rating is worth"""
+THRESHOLD = 0.4
+"""a rating at or above it: the production lane"""
+OUTCOME_KEEP_H = 180 * 24
+"""how long an outcome is kept from its end, so that a late client reaction still finds its job"""
 UNRATED, APPROVED, DISAPPROVED = 0.5, 1.0, 0.0
 """a delivered job's points: no client signal yet; a download or 3-5 stars; 1-2 stars or a refund
 granted for its quality"""
+
+POINTS: dict[str, tuple[float, float]] = {
+    "delivered": (0.5, 0.5),
+    "approved": (1.0, 1.0),
+    "disapproved": (0.0, 0.0),
+    "failed": (0.0, 0.0),
+    "improvement_pending": (0.5, 0.25),
+    "improvement_accepted": (1.0, 1.0),
+    "improvement_try_again": (0.0, 0.0),
+    "improvement_not_interested": (0.5, 0.25),
+    "improvement_withdrawn": (0.5, 0.25),
+    "improvement_disapproved": (0.0, 0.0),
+    "improvement_failed": (0.0, 0.0),
+    "void": (0.0, 0.0),
+}
+"""event -> (rating points, weight points). Production: ``delivered`` (passed, the client silent),
+``approved`` (downloaded, or its latest stars 3-5), ``disapproved`` (its latest stars 1-2, or a
+quality refund), ``failed`` (an attempt that did not deliver). Improvement: ``improvement_pending``
+(judged a level higher, its offer pending), ``improvement_accepted``, ``improvement_try_again``,
+``improvement_not_interested`` and ``improvement_withdrawn`` (both keep the pending value),
+``improvement_disapproved`` (accepted, then rated 1-2 stars or refunded for its quality),
+``improvement_failed`` (the gate, a timeout, a copy, a refusal, not a level higher). ``void``: not
+counted as a job at all."""
+LANES = ("production", "improvement")
+OFFER_SIGNALS = ("accepted", "try_again", "not_interested", "withdrawn")
+"""a client's (or the platform's) answer to an improvement offer: the first one is final"""
+CLIENT_SIGNALS = ("download", "stars", "change", "refund")
 
 
 @dataclass
@@ -110,24 +173,41 @@ class JobOutcome:
     """the attempt's wall time (the queue's ETA reads it; never scored)"""
     copy_of: str = ""
     kind: str = ""
-    """pass | reject | gate | timeout | copy | refused"""
+    """pass | reject | gate | timeout | copy | refused; an improvement try also ``not_better``"""
+    lane: str = "production"
+    """production (a client job) | improvement (a try at improving a delivered device)"""
+    device: str = ""
+    """improvement: the platform's job id of the delivered version it improves"""
+    levels: dict[str, Any] = field(default_factory=dict)
+    """improvement: ``{"base": int, "result": int, "judge": str}`` -- the judge's level of the
+    delivered version and of the result, and the judge that gave them"""
     void: str = ""
     """why this outcome counts for nothing ('' while it counts): a confirmed decline's rejection
     (``declined``) or the operator's (``operator: ...``). It stays in the reports, scored 0, and
     is left out of every sum, average and record (:func:`counts`)"""
+    void_ms: int = 0
+    """when it was made void (0: read as ``ended_ms``)"""
     signals: list[dict[str, Any]] = field(default_factory=list)
     """the client's, in the order they came: {"kind": download | stars | change | refund,
     "stars": 1-5, "quality": a refund for the delivery's quality, "by": "visitor" on a download
-    by someone other than the job's client (recorded, never scored), "at_ms"}"""
+    by someone other than the job's client (recorded, never scored), "at_ms"}; on an improvement
+    outcome also accepted | try_again | not_interested | withdrawn (:data:`OFFER_SIGNALS`)"""
     s: float = 0.0
+    """its rating points now"""
+    w: float = 0.0
+    """its weight points now"""
     parts: dict[str, Any] = field(default_factory=dict)
-    """what decided ``s``: ``{"signal": none | download | stars | refund}`` on a delivered job,
-    ``{"failed": kind}`` on any other"""
+    """what decided the points: ``event`` (the :data:`POINTS` key), and ``{"signal": none |
+    download | stars | refund}`` on a delivered job, ``{"failed": kind}`` on any other"""
 
     @property
     def passed(self) -> bool:
         """A delivery: a ``pass`` whose facts agree. Any other kind is not one, whatever its facts
-        say (an attempt the validator could not judge, a copy whose flag was lifted)."""
+        say (an attempt the validator could not judge, a copy whose flag was lifted). An
+        improvement try passed when its kind says so: the gate passed, the judge put it at least
+        one level above the delivered version, and the platform took it as an offer."""
+        if self.lane == "improvement":
+            return self.kind == "pass"
         return self.kind == "pass" and self.accepted and self.deliverable and not self.copy_of
 
 
@@ -154,15 +234,58 @@ def client_points(signals: Iterable[Mapping[str, Any]]) -> tuple[float, str]:
     return (APPROVED, "download") if downloaded else (UNRATED, "none")
 
 
-def score(o: JobOutcome) -> float:
-    """Fill ``o.s`` and ``o.parts`` from its facts and its client's signals."""
-    if o.passed:
-        o.s, by = client_points(o.signals)
-        o.parts = {"signal": by}
+def _signals_of(o: JobOutcome, signals: Iterable[Mapping[str, Any]] | None) -> list[Any]:
+    return list(o.signals if signals is None else signals)
+
+
+def _points(
+    o: JobOutcome, signals: Iterable[Mapping[str, Any]] | None = None, *, void: bool | None = None
+) -> tuple[float, float, str, dict[str, Any]]:
+    """(rating points, weight points, event, parts) of ``o`` read with ``signals`` (its own when
+    None) and voided or not (as it is when None)."""
+    sig = _signals_of(o, signals)
+    is_void = bool(o.void) if void is None else void
+    parts: dict[str, Any]
+    if o.lane == "improvement":
+        if o.passed:
+            answer = next((str(x.get("kind")) for x in sig if x.get("kind") in OFFER_SIGNALS), "")
+            if not answer:
+                event = "improvement_pending"
+            elif answer == "accepted":
+                # an accepted improvement is the client's version: its stars and its quality
+                # refund are read as a production job's; a download changes nothing more
+                got, by = client_points(sig)
+                bad = by in ("stars", "refund") and got == DISAPPROVED
+                event = "improvement_disapproved" if bad else "improvement_accepted"
+            else:
+                event = f"improvement_{answer}"
+            parts = {"signal": answer or "none"}
+        else:
+            event, parts = "improvement_failed", {"failed": o.kind or "failed"}
+    elif o.passed:
+        got, by = client_points(sig)
+        verdict = "approved" if got == APPROVED else "disapproved"
+        event = "delivered" if by == "none" else verdict
+        parts = {"signal": by}
     else:
-        o.s, o.parts = 0.0, {"failed": o.kind or "failed"}
-    if o.void:
-        o.parts["void"] = o.void
+        event, parts = "failed", {"failed": o.kind or "failed"}
+    if is_void:
+        event = "void"
+        parts["void"] = o.void
+    r, w = POINTS[event]
+    parts["event"] = event
+    return r, w, event, parts
+
+
+def points(o: JobOutcome) -> tuple[float, float, str]:
+    """(rating points, weight points, event) of ``o`` now, from its facts and all its signals."""
+    r, w, event, _ = _points(o)
+    return r, w, event
+
+
+def score(o: JobOutcome) -> float:
+    """Fill ``o.s``, ``o.w`` and ``o.parts`` from its facts and its signals; answers ``o.s``."""
+    o.s, o.w, _, o.parts = _points(o)
     return o.s
 
 
@@ -174,9 +297,71 @@ def score_all(jobs: Iterable[JobOutcome]) -> list[JobOutcome]:
     return jobs
 
 
+def _key(o: JobOutcome) -> str:
+    return f"{o.job}/{o.hotkey}/{o.ended_ms}"
+
+
+def changes_of(o: JobOutcome) -> list[dict[str, Any]]:
+    """The dated changes of ``o``'s points, oldest first. Step 0 is dated its end, with the points
+    of the outcome read without signals; then each signal in the order of its ``at_ms``, the points
+    read again on the signals so far, a change made when they moved. A void outcome ends with a
+    change to (0, 0) dated ``void_ms`` (its end when that is 0), and no later signal moves it.
+    Each change: ``{id, at_ms, hotkey, job, lane, device, event, signal, rating: [before, after],
+    weight: [before, after], d_rating, d_weight}`` (``signal``: '' for step 0 and for a void)."""
+    out: list[dict[str, Any]] = []
+    before = (0.0, 0.0)
+
+    def step(at_ms: int, now: tuple[float, float], event: str, signal: str) -> None:
+        nonlocal before
+        out.append(
+            {
+                "id": f"{_key(o)}#{len(out)}",
+                "at_ms": int(at_ms),
+                "hotkey": o.hotkey,
+                "job": o.job,
+                "lane": o.lane,
+                "device": o.device,
+                "event": event,
+                "signal": signal,
+                "rating": [round(before[0], 6), round(now[0], 6)],
+                "weight": [round(before[1], 6), round(now[1], 6)],
+                "d_rating": round(now[0] - before[0], 6),
+                "d_weight": round(now[1] - before[1], 6),
+            }
+        )
+        before = now
+
+    r, w, event, _ = _points(o, (), void=False)
+    step(o.ended_ms, (r, w), event, "")
+    void_at = (int(o.void_ms) or int(o.ended_ms)) if o.void else None
+    ordered = sorted(
+        enumerate(o.signals or []), key=lambda ix: (int(ix[1].get("at_ms") or 0), ix[0])
+    )
+    seen: list[Mapping[str, Any]] = []
+    for _, sig in ordered:
+        at = max(int(sig.get("at_ms") or 0), int(o.ended_ms))
+        if void_at is not None and at > void_at:
+            break
+        seen.append(sig)
+        r, w, event, _ = _points(o, seen, void=False)
+        if (r, w) != before:
+            step(at, (r, w), event, str(sig.get("kind") or ""))
+    if void_at is not None:
+        step(void_at, POINTS["void"], "void", "")
+    return out
+
+
 def in_window(o: JobOutcome, now_ms: int) -> bool:
     """A job counts for :data:`WINDOW_H` from its end, flat."""
     return now_ms - o.ended_ms <= WINDOW_H * HOUR_MS
+
+
+def kept(o: JobOutcome, now_ms: int) -> bool:
+    """Whether the ledger still holds ``o``: for :data:`OUTCOME_KEEP_H` from its end, and an
+    improvement whose offer is still pending for as long as it is."""
+    if now_ms - o.ended_ms <= OUTCOME_KEEP_H * HOUR_MS:
+        return True
+    return o.lane == "improvement" and points(o)[2] == "improvement_pending"
 
 
 def counts(o: JobOutcome, now_ms: int) -> bool:
@@ -184,34 +369,97 @@ def counts(o: JobOutcome, now_ms: int) -> bool:
     return not o.void and in_window(o, now_ms)
 
 
-def standing(jobs: Iterable[JobOutcome], now_ms: int) -> tuple[dict[str, float], dict[str, float]]:
-    """(weight, average) per miner over the window's jobs: the SUM of its job points, and that sum
-    over its number of jobs (what the stats pages show; nothing routes by it)."""
+def _dated(c: Mapping[str, Any], now_ms: int, since_ms: int = 0) -> bool:
+    """Whether a change is dated in the window ending now (or since ``since_ms`` when given)."""
+    at = int(c["at_ms"])
+    return at <= now_ms and at >= (since_ms or now_ms - WINDOW_H * HOUR_MS)
+
+
+def _touched(o: JobOutcome, since_ms: int) -> bool:
+    """Whether ``o`` can have a change dated at or after ``since_ms``: it ended, was voided or took
+    a signal since then. A cheap test before :func:`changes_of`, which most held outcomes fail."""
+    if o.ended_ms >= since_ms or o.void_ms >= since_ms:
+        return True
+    return any(int(x.get("at_ms") or 0) >= since_ms for x in o.signals or ())
+
+
+def rating(jobs: Iterable[JobOutcome], now_ms: int) -> dict[str, float]:
+    """Each miner's rating: the rating points of its counted jobs (:func:`counts`) at their
+    current value, over their number, a miner with fewer than :data:`PAD_JOBS` read as having that
+    many (the missing ones :data:`PAD_POINTS`). A miner with no counted job is not in the answer:
+    its rating is 0 (:func:`rating_of`)."""
     total: dict[str, float] = defaultdict(float)
     count: dict[str, int] = defaultdict(int)
     for o in jobs:
-        if not counts(o, now_ms):
+        if counts(o, now_ms):
+            total[o.hotkey] += o.s
+            count[o.hotkey] += 1
+    return {
+        h: round((total[h] + PAD_POINTS * max(0, PAD_JOBS - n)) / max(n, PAD_JOBS), 6)
+        for h, n in count.items()
+    }
+
+
+def rating_of(ratings: Mapping[str, float], hotkey: str) -> float:
+    return float(ratings.get(hotkey, 0.0))
+
+
+def lane_of(rating: float) -> str:
+    """The lane a rating puts a miner in: read each time, with no step up or down."""
+    return "production" if float(rating) >= THRESHOLD else "improvement"
+
+
+def weight(jobs: Iterable[JobOutcome], now_ms: int) -> dict[str, float]:
+    """Each miner's weight: the sum of the weight-point changes dated in the window, whatever the
+    age of the job they are about, never below zero."""
+    total: dict[str, float] = defaultdict(float)
+    named: set[str] = set()
+    since = now_ms - WINDOW_H * HOUR_MS
+    for o in jobs:
+        if not _touched(o, since):
             continue
-        total[o.hotkey] += o.s
-        count[o.hotkey] += 1
-    average = {h: round(total[h] / n, 6) for h, n in count.items() if n}
-    return {h: round(v, 6) for h, v in total.items()}, average
+        for c in changes_of(o):
+            if _dated(c, now_ms):
+                total[o.hotkey] += float(c["d_weight"])
+                if not o.void:  # a void outcome alone names nobody
+                    named.add(o.hotkey)
+    return {h: round(max(0.0, v), 6) for h, v in total.items() if h in named or abs(v) > 1e-9}
+
+
+def average(jobs: Iterable[JobOutcome], now_ms: int) -> dict[str, float]:
+    """Points per production job over the window's counted jobs (what the stats pages showed
+    before the rating; nothing routes by it)."""
+    total: dict[str, float] = defaultdict(float)
+    count: dict[str, int] = defaultdict(int)
+    for o in jobs:
+        if o.lane == "production" and counts(o, now_ms):
+            total[o.hotkey] += o.s
+            count[o.hotkey] += 1
+    return {h: round(total[h] / n, 6) for h, n in count.items() if n}
+
+
+def standing(jobs: Iterable[JobOutcome], now_ms: int) -> tuple[dict[str, float], dict[str, float]]:
+    """(weight, average) per miner: its weight by :func:`weight`, and :func:`average`."""
+    jobs = list(jobs)
+    return weight(jobs, now_ms), average(jobs, now_ms)
 
 
 RECORD_JOBS = 10
-"""a miner with fewer jobs in the window is read as if the missing ones were unrated deliveries"""
+"""a miner with fewer jobs in the window is read as if the missing ones were unrated deliveries
+(the router's record while the lanes are closed)"""
 TRIAL_EVERY = 5
 """one client job in this many goes to the miner that waited longest, whatever its record"""
 
 
 def record(jobs: Iterable[JobOutcome], now_ms: int) -> dict[str, float]:
-    """What the router ranks miners by: points per job over the window, each miner padded to
-    :data:`RECORD_JOBS` jobs with :data:`UNRATED` ones. A miner with no job in the window is not in
-    the answer: its record is :data:`UNRATED` (:func:`record_of`)."""
+    """What the router ranks miners by while the lanes are closed: points per production job over
+    the window, each miner padded to :data:`RECORD_JOBS` jobs with :data:`UNRATED` ones. A miner
+    with no job in the window is not in the answer: its record is :data:`UNRATED`
+    (:func:`record_of`)."""
     total: dict[str, float] = defaultdict(float)
     count: dict[str, int] = defaultdict(int)
     for o in jobs:
-        if counts(o, now_ms):
+        if o.lane == "production" and counts(o, now_ms):
             total[o.hotkey] += o.s
             count[o.hotkey] += 1
     return {
@@ -226,8 +474,10 @@ def record_of(records: Mapping[str, float], hotkey: str) -> float:
 
 CONSTANTS = {
     "window_h": WINDOW_H,
-    "points": {"unrated": UNRATED, "approved": APPROVED, "disapproved": DISAPPROVED},
-    "router": {"record_jobs": RECORD_JOBS, "trial_every": TRIAL_EVERY},
+    "keep_h": OUTCOME_KEEP_H,
+    "points": {event: list(value) for event, value in POINTS.items()},
+    "rating": {"pad_jobs": PAD_JOBS, "pad_points": PAD_POINTS, "threshold": THRESHOLD},
+    "router": {"trial_every": TRIAL_EVERY, "record_jobs": RECORD_JOBS},
 }
 """the rule's numbers, published in every report"""
 
@@ -344,17 +594,13 @@ def report_order(path: Path) -> tuple[int, int]:
     return int(parts[1]), int(parts[2]) if len(parts) > 2 else 0
 
 
-def _key(o: JobOutcome) -> str:
-    return f"{o.job}/{o.hotkey}/{o.ended_ms}"
-
-
 def _public(o: JobOutcome) -> dict[str, Any]:
     """An outcome as a report publishes it."""
     return asdict(o)
 
 
 def _row(o: JobOutcome) -> dict[str, Any]:
-    return {k: v for k, v in _public(o).items() if k not in ("s", "parts")}
+    return {k: v for k, v in _public(o).items() if k not in ("s", "w", "parts")}
 
 
 @dataclass
@@ -413,16 +659,29 @@ class Ledger:
             self._save(o)
             return score(o)
 
-    def signal(self, job: str, sig: Mapping[str, Any]) -> float | None:
-        """A client's late signal on a delivered job (its passing attempt). None when the job is
-        unknown."""
+    def find(self, job: str) -> JobOutcome | None:
+        """The passing outcome of ``job`` (a delivery, or an improvement taken as an offer), at
+        any age the ledger still holds; None when there is none."""
         with self._lock:
             for o in self.jobs.values():
                 if o.job == job and o.passed:
-                    o.signals.append({k: v for k, v in sig.items() if k != "trust"})
-                    self._save(o)
-                    return score(o)
+                    return o
         return None
+
+    def signal(self, job: str, sig: Mapping[str, Any]) -> float | None:
+        """A late signal on a delivered job or on an improvement's offer (its passing outcome),
+        at any age the ledger still holds it. None when the job is unknown. On an improvement the
+        first answer to its offer (:data:`OFFER_SIGNALS`) is final: a second one is not recorded."""
+        with self._lock:
+            o = self.find(job)
+            if o is None:
+                return None
+            answered = any(x.get("kind") in OFFER_SIGNALS for x in o.signals)
+            if sig.get("kind") in OFFER_SIGNALS and answered:
+                return score(o)
+            o.signals.append({k: v for k, v in sig.items() if k != "trust"})
+            self._save(o)
+            return score(o)
 
     def withdraw(self, job: str) -> list[JobOutcome]:
         """Remove every outcome of ``job`` (a delivery the platform refused: nobody is scored on
@@ -435,15 +694,24 @@ class Ledger:
                     self.store.delete("outcome", k)
             return gone
 
-    def void(self, job: str, reason: str, kinds: Iterable[str] = ("reject",)) -> list[JobOutcome]:
-        """Mark every outcome of ``job`` of these ``kinds`` void (``reason``), saved with it;
-        answers the ones newly voided (an outcome already void keeps its first reason)."""
+    def void(
+        self,
+        job: str,
+        reason: str,
+        kinds: Iterable[str] = ("reject",),
+        *,
+        at_ms: int = 0,
+    ) -> list[JobOutcome]:
+        """Mark every outcome of ``job`` of these ``kinds`` void (``reason``), saved with it and
+        with when (``at_ms``: now when 0); answers the ones newly voided (an outcome already void
+        keeps its first reason)."""
         kinds = frozenset(kinds)
         with self._lock:
             out = []
             for o in self.jobs.values():
                 if o.job == job and o.kind in kinds and not o.void:
                     o.void = reason
+                    o.void_ms = int(at_ms) or int(time.time() * 1000)
                     self._save(o)
                     score(o)
                     out.append(o)
@@ -461,21 +729,64 @@ class Ledger:
     def _window(self, now_ms: int) -> list[JobOutcome]:
         return [o for o in self.jobs.values() if in_window(o, now_ms)]
 
+    def _prune(self, now_ms: int) -> None:
+        """Inside the lock: drop the outcomes past their keep (:func:`kept`)."""
+        for key in [k for k, o in self.jobs.items() if not kept(o, now_ms)]:
+            del self.jobs[key]
+            if self.store is not None:
+                self.store.delete("outcome", key)
+
     def snapshot(self, now_ms: int) -> tuple[list[JobOutcome], dict[str, float], dict[str, float]]:
+        """(the jobs that ended in the window, each miner's weight, each miner's average), the
+        outcomes past their keep dropped. The weight is the dated one (:func:`weight`): it reads
+        every outcome held, whatever its age."""
         with self._lock:
+            self._prune(now_ms)
             window = score_all(self._window(now_ms))
-            old = [k for k, o in self.jobs.items() if not in_window(o, now_ms)]
-            for key in old:
-                del self.jobs[key]
-                if self.store is not None:
-                    self.store.delete("outcome", key)
-            weight, average = standing(window, now_ms)
-            return window, weight, average
+            return window, weight(self.jobs.values(), now_ms), average(window, now_ms)
+
+    def reported(self, now_ms: int) -> list[JobOutcome]:
+        """The outcomes an hourly report holds: ended in the window, or with a change dated in
+        it."""
+        since = now_ms - WINDOW_H * HOUR_MS
+        with self._lock:
+            return [
+                o
+                for o in self.jobs.values()
+                if in_window(o, now_ms)
+                or (_touched(o, since) and any(_dated(c, now_ms) for c in changes_of(o)))
+            ]
 
     def records(self, now_ms: int) -> dict[str, float]:
-        """Each miner's record now (:func:`record`): what the router ranks by."""
+        """Each miner's record now (:func:`record`): what the router ranks by while the lanes
+        are closed."""
         with self._lock:
             return record(score_all(self._window(now_ms)), now_ms)
+
+    def ratings(self, now_ms: int) -> dict[str, float]:
+        """Each miner's rating now (:func:`rating`): what decides its lane."""
+        with self._lock:
+            return rating(score_all(self._window(now_ms)), now_ms)
+
+    def weights(self, now_ms: int) -> dict[str, float]:
+        """Each miner's weight now (:func:`weight`)."""
+        with self._lock:
+            return weight(self.jobs.values(), now_ms)
+
+    def changes(self, now_ms: int, hotkey: str = "", since_ms: int = 0) -> list[dict[str, Any]]:
+        """The dated changes (:func:`changes_of`) of every outcome held -- of ``hotkey`` alone
+        when given -- dated in the window ending now, or since ``since_ms`` when given; oldest
+        first."""
+        since = since_ms or now_ms - WINDOW_H * HOUR_MS
+        with self._lock:
+            out = [
+                c
+                for o in self.jobs.values()
+                if (not hotkey or o.hotkey == hotkey) and _touched(o, since)
+                for c in changes_of(o)
+                if _dated(c, now_ms, since_ms)
+            ]
+        return sorted(out, key=lambda c: (c["at_ms"], c["id"]))
 
     def last_vector(self) -> dict[str, float]:
         """The last non-empty vector, hotkey -> weight ({} before the first): what an hour that
@@ -509,14 +820,72 @@ class Ledger:
         votes: Mapping[str, Any] | None = None,
         launch_equal: bool = False,
         hold: bool = False,
+        lanes_open: bool = False,
+        eligible: Iterable[str] = (),
     ) -> dict[str, Any]:
         """The hour's report, written as its canonical bytes (``hour-N.json``) beside its SHA-256
         (``hour-N.sha256``), both atomically. ``chain`` (the block, our stake share, the weights
         path) and ``watch`` (the desk's observations: copy similarities, endings and
         admissions per coldkey, disables) ride along for readers; recompute needs neither. The
         genesis rule, the admitted miners' coldkeys and the ``proven`` hotkeys are published:
-        recompute reads them."""
-        window, weight, average = self.snapshot(now_ms)
+        recompute reads them. ``admitted`` is the list the weights are made over (the admitted
+        miners while the lanes are closed, every eligible one once they are open); ``eligible``
+        (approved, keyed, unblocked hotkeys) is who the report names a lane for."""
+        with self._lock:
+            window, weights, averages = self.snapshot(now_ms)
+            jobs = self.reported(now_ms)
+            changes = self.changes(now_ms)
+            ratings = rating(window, now_ms)
+            records = record(window, now_ms)
+        return self._report(
+            now_ms,
+            uid_by_hotkey,
+            jobs=jobs,
+            changes=changes,
+            weight=weights,
+            average=averages,
+            ratings=ratings,
+            records=records,
+            owner_hotkey=owner_hotkey,
+            admitted=admitted,
+            reachable=reachable,
+            chain=chain,
+            watch=watch,
+            genesis=genesis,
+            coldkeys=coldkeys,
+            proven=proven,
+            votes=votes,
+            launch_equal=launch_equal,
+            hold=hold,
+            lanes_open=lanes_open,
+            eligible=eligible,
+        )
+
+    def _report(
+        self,
+        now_ms: int,
+        uid_by_hotkey: Mapping[str, int],
+        *,
+        jobs: list[JobOutcome],
+        changes: list[dict[str, Any]],
+        weight: Mapping[str, float],
+        average: Mapping[str, float],
+        ratings: Mapping[str, float],
+        records: Mapping[str, float],
+        owner_hotkey: str,
+        admitted: Iterable[str],
+        reachable: Iterable[str],
+        chain: Mapping[str, Any] | None,
+        watch: Mapping[str, Any] | None,
+        genesis: str,
+        coldkeys: Mapping[str, str] | None,
+        proven: Iterable[str],
+        votes: Mapping[str, Any] | None,
+        launch_equal: bool,
+        hold: bool,
+        lanes_open: bool,
+        eligible: Iterable[str],
+    ) -> dict[str, Any]:
         adm, reach = sorted(admitted), sorted(reachable)
         cold = {h: str((coldkeys or {}).get(h) or "") for h in adm}
         prov = sorted(set(proven) & set(adm))
@@ -540,9 +909,14 @@ class Ledger:
             "hour": now_ms // self.hour_ms,
             "at_ms": now_ms,
             "prev_sha256": self.last_sha256(),
-            "jobs": [_public(o) for o in window],
-            "weight": weight,
-            "average": average,
+            "jobs": [_public(o) for o in jobs],
+            "changes": changes,
+            "rating": dict(ratings),
+            "weight": dict(weight),
+            "record": dict(records),
+            "average": dict(average),
+            "lane": {h: lane_of(rating_of(ratings, h)) for h in sorted(set(eligible))},
+            "lanes_open": bool(lanes_open),
             "uids": dict(uid_by_hotkey),
             "owner": owner_hotkey,
             "admitted": adm,
@@ -594,7 +968,7 @@ def _atomic_write(path: Path, data: bytes) -> None:
     tmp.replace(path)
 
 
-_FACTS = frozenset(f.name for f in fields(JobOutcome)) - {"s", "parts"}
+_FACTS = frozenset(f.name for f in fields(JobOutcome)) - {"s", "w", "parts"}
 """what an outcome is rebuilt from: an older row's other keys (its effort, size, compute, vote,
 remix credit) are dropped, as its points are"""
 
@@ -606,18 +980,59 @@ def outcome_of(row: Mapping[str, Any]) -> JobOutcome:
     return o
 
 
+def _differs(published: Any, recomputed: Mapping[str, float]) -> list[dict[str, Any]]:
+    """The hotkeys whose published number is not the recomputed one (an absent one reads 0)."""
+    pub = {str(k): float(v) for k, v in (published or {}).items()}
+    out = []
+    for h in sorted(set(pub) | set(recomputed)):
+        a, b = pub.get(h, 0.0), float(recomputed.get(h, 0.0))
+        if abs(a - b) > 1e-6:
+            out.append({"hotkey": h, "published": a, "recomputed": b})
+    return out
+
+
 def recompute(report: Mapping[str, Any]) -> dict[str, Any]:
-    """Rebuild every job's score and the vector from one published report; list any job that
-    differs."""
+    """Rebuild every job's points, the dated changes, each miner's rating and weight, and the
+    vector from one published report; list anything that differs (``mismatches``: a job's rating
+    or weight points; ``differences``: the changes, the ratings, the weights)."""
+    now = int(report["at_ms"])
     jobs = score_all(outcome_of(r) for r in report["jobs"])
-    mismatches = [
-        {"job": o.job, "hotkey": o.hotkey, "published": r["s"], "recomputed": o.s}
-        for o, r in zip(jobs, report["jobs"], strict=True)
-        if abs(o.s - float(r["s"])) > 1e-6
-    ]
-    weight, _ = standing(jobs, int(report["at_ms"]))
+    mismatches = []
+    for o, r in zip(jobs, report["jobs"], strict=True):
+        if abs(o.s - float(r["s"])) > 1e-6:
+            mismatches.append(
+                {"job": o.job, "hotkey": o.hotkey, "published": r["s"], "recomputed": o.s}
+            )
+        if "w" in r and abs(o.w - float(r["w"])) > 1e-6:
+            mismatches.append(
+                {
+                    "job": o.job,
+                    "hotkey": o.hotkey,
+                    "points": "weight",
+                    "published": r["w"],
+                    "recomputed": o.w,
+                }
+            )
+    weights = weight(jobs, now)
+    ratings = rating(jobs, now)
+    changes = sorted(
+        (c for o in jobs for c in changes_of(o) if _dated(c, now)),
+        key=lambda c: (c["at_ms"], c["id"]),
+    )
+    differences: list[dict[str, Any]] = []
+    if "changes" in report and list(report["changes"]) != changes:
+        published = {str(c.get("id")): c for c in report["changes"]}
+        mine = {c["id"]: c for c in changes}
+        differences += [
+            {"change": k, "published": published.get(k), "recomputed": mine.get(k)}
+            for k in sorted(set(published) | set(mine))
+            if published.get(k) != mine.get(k)
+        ] or [{"change": "order", "published": len(published), "recomputed": len(mine)}]
+    if "rating" in report:
+        differences += [{"rating": True, **d} for d in _differs(report["rating"], ratings)]
+        differences += [{"weight": True, **d} for d in _differs(report.get("weight"), weights)]
     vec, rule = vector(
-        weight,
+        weights,
         report["uids"],
         owner_hotkey=report["owner"],
         admitted=report["admitted"],
@@ -630,7 +1045,15 @@ def recompute(report: Mapping[str, Any]) -> dict[str, Any]:
         hold=report.get("hold") is True,
     )
     same = [list(x) for x in vec] == [list(x) for x in report["vector"]]
-    return {"vector": vec, "rule": rule, "matches_published": same, "mismatches": mismatches}
+    return {
+        "vector": vec,
+        "rule": rule,
+        "matches_published": same,
+        "mismatches": mismatches,
+        "differences": differences,
+        "rating": ratings,
+        "weight": weights,
+    }
 
 
 def _hex(value: Any) -> str:
@@ -720,7 +1143,9 @@ def audit(paths: list[Path], *, expect_sha256: str = "") -> dict[str, Any]:
         row["canonical"] = report_bytes(rep) == raw
         made_by = report_version(rep)
         row["einstein"] = {"report": made_by or "before 0.5.3 (not stated)", "this": __version__}
-        differs = not row["matches_published"] or bool(row["mismatches"])
+        differs = (
+            not row["matches_published"] or bool(row["mismatches"]) or bool(row["differences"])
+        )
         if made_by != __version__ and differs:
             row["other_version"] = (
                 f"made by einstein {made_by or 'before 0.5.3'}, recomputed with {__version__}: the "

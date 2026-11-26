@@ -58,7 +58,7 @@ class TestTheRule(unittest.TestCase):
             ]
         )
         self.assertEqual([o.s for o in jobs], [0.0, 0.0, 0.0])  # never points
-        self.assertEqual(jobs[0].parts, {"failed": "reject", "void": "declined"})
+        self.assertEqual(jobs[0].parts, {"failed": "reject", "void": "declined", "event": "void"})
         # A: one counted job (a 0) padded with nine unrated; B: none, so unrated
         self.assertEqual(record(jobs, now), {A: round(9 * UNRATED / 10, 6)})
         weight, average = standing(jobs, now)

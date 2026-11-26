@@ -32,6 +32,7 @@ from cadmind_einstein.desk import (
 from cadmind_einstein.platform import PlatformError
 from cadmind_einstein.scoring import (
     HOUR_MS,
+    OUTCOME_KEEP_H,
     JobOutcome,
     Ledger,
     outcome_of,
@@ -395,7 +396,7 @@ class TestTheRule(unittest.TestCase):
         for kind in ("gate", "timeout", "reject", "refused"):
             o = JobOutcome(job="f", hotkey=A, ended_ms=0, deliverable=False, kind=kind)
             self.assertEqual(score_all([o])[0].s, 0.0, kind)
-            self.assertEqual(o.parts, {"failed": kind})
+            self.assertEqual(o.parts, {"failed": kind, "event": "failed"})
         copy = passing("c", A, copy_of="other", signals=[DOWNLOAD])
         self.assertEqual(score_all([copy])[0].s, 0.0)  # a copy, even downloaded
         failed = JobOutcome(job="g", hotkey=A, ended_ms=0, deliverable=False, signals=[DOWNLOAD])
@@ -418,7 +419,10 @@ class TestTheRule(unittest.TestCase):
             ledger.add(o)
         window, weight, _ = ledger.snapshot(now)
         self.assertEqual(({o.job for o in window}, weight[A]), ({"in", "new"}, 1.5))
-        self.assertEqual({o.job for o in ledger.outcomes}, {"in", "new"})  # forgotten
+        # out of the window, still held: a late reaction finds its job for OUTCOME_KEEP_H
+        self.assertEqual({o.job for o in ledger.outcomes}, {"in", "out", "new"})
+        ledger.snapshot(now + OUTCOME_KEEP_H * HOUR_MS)
+        self.assertEqual({o.job for o in ledger.outcomes}, {"new"})  # forgotten past the keep
 
     def test_weights_are_proportional_to_points(self) -> None:
         uids = {OWNER: 0, A: 1, B: 2, C: 3}
@@ -513,7 +517,7 @@ class TestTheRule(unittest.TestCase):
             (Path(d) / "hour-1.json").write_text(json.dumps(report))
             ledger = Ledger(report_dir=Path(d))
             [o] = ledger.outcomes
-            self.assertEqual((o.s, o.parts), (1.0, {"signal": "download"}))
+            self.assertEqual((o.s, o.parts), (1.0, {"signal": "download", "event": "approved"}))
             self.assertEqual(ledger.snapshot(3000)[1], {A: 1.0})  # B gets no remix credit
         self.assertEqual(outcome_of(old).signals, [{"kind": "download", "at_ms": 2000}])
 
