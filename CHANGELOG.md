@@ -16,10 +16,10 @@ only with the version that made it.
   a change. The miner guide says where the file is (`brief/model-*`, with its statement), that it is measured with
   Watt and never downloaded, viewed or copied, how a change to that part is rebuilt and held within 0.1 mm of the
   file, and what to do with an STL that is too coarse or states no unit. The reference miner's prompt adds the same
-  rules when the brief names such a file. A validator's `read_bundle` reads a bundle that carries the files
-  (`models/`, `models.sha256`, `models` in `bundle.json`) and never sends them to the judging model; what the
-  manifest states of them (`models_measured`, `models_rebuilt`, both optional) is added to the fact sheet as plain
-  lines (`client_files`). The judge's prompt, schemas, scoring, version and digest are unchanged.
+  rules when the brief names such a file. A bundle never holds the files: our validator's `bundle.json` lists
+  them (`models`), and `read_bundle` reads a manifest with that listing as one without. What the manifest states of
+  a part built again from one (`models_rebuilt`; `models_measured` when present, both optional) is added to the fact
+  sheet as plain lines (`client_files`). The judge's prompt, schemas, scoring, version and digest are unchanged.
 - **Two values per event, and dated point changes.** Every outcome is read as one event worth **rating points** (a
   miner's standing) and **weight points** (its pay); the table is `scoring.POINTS`, published in every report's
   `constants`. On a client job the two are the points of before (0.5 delivered, 1 downloaded or rated 3 to 5

@@ -125,8 +125,8 @@ signed link that expires. It is a zip:
 | `client.json` | the client's words: the brief, the answers, the change requests, the stated making method |
 
 Never in a bundle: the project's `src/` and `tests/` (the miner's work), Watt's internals, the client's identity,
-the job id, the builder's hotkey. Client photos, and the 3D files a client sent of their own part, are never in a
-third party's bundle; our validator's carries them (below). Third-party validators receive bundles of **public projects
+the job id, the builder's hotkey. Client photos are never in a third party's bundle; our validator's carries them
+(below). The 3D files a client sent of their own part are in no bundle. Third-party validators receive bundles of **public projects
 only**. Do not redistribute bundles: they are the clients' projects, lent to you for one review.
 
 **The function evidence** (`facts.function`, format 2) is Watt's own word on whether the device works, never a
@@ -160,15 +160,17 @@ Our validator's bundle (`bundle-ours.zip`) also carries the **client's photos** 
 are not part of the image set. A third party's bundle never carries photos, so its judge runs turn 1 on the
 client's words alone.
 
-It may also carry the **client's own 3D files** (a STEP, STL or 3MF of a part they already have): `models/<name>`
-and `models.sha256`, listed in `bundle.json` as `models` (`{name, sha256, kind, size}`) with `models_sha256`.
-`read_bundle` keeps the listing (`Bundle.models`) and leaves the files unread; a bundle with them, or with manifest
-keys it does not know, reads as one without, and no model file is ever sent to the judging model. When the manifest
-also says what the designer did with them (`models_measured`: which files were measured; `models_rebuilt`: each part
-built again from a file, its largest distance from the file outside the changed places, and each changed place with
-the client's words), the judge reads that as plain lines in the fact sheet (`client_files`), beside the other facts.
-Both keys are optional. This adds facts only: the prompt, the reply schemas and the scoring are unchanged, so the
-judge's version and digest are too. A third party's bundle never carries the files or these keys.
+When the client sent **3D files of a part they already have** (STEP, STL or 3MF), our validator's `bundle.json`
+lists them as `models` (`{name, file, kind, sha256}` and, where known, `size`, `client_name`, `unit` and
+`unit_stated`, the last two for an STL). The files themselves are never in a bundle: no judge reads a model.
+`read_bundle` keeps the listing (`Bundle.models`); a manifest with it, or with keys it does not know, reads as one
+without. `models_rebuilt` says what the design checker reports of each part built again from one of the files
+(`{file, name, part, max_mm, bound_mm, within, changed: [{region, asked, share, max_mm}]}`: the largest distance
+between the part and the file outside the changed places, `null` when not compared, and each changed place with the
+client's words). The judge reads it as plain lines in the fact sheet (`client_files`), beside the other facts. The
+key is optional, and so is `models_measured` (which files were measured), read when a bundle has it. This adds facts
+only: the prompt, the reply schemas and the scoring are unchanged, so the judge's version and digest are too. A third
+party's bundle never carries these keys.
 
 `cadmind_einstein.review.read_bundle` checks a bundle before anything is sent to a model: every image against
 `images.sha256`, the image-set digest, and the fact sheet and client's words against the manifest.

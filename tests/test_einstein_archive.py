@@ -266,55 +266,70 @@ class TestBundleWithPhotos:
 
 def _with_models(manifest_extra: dict[str, object]) -> bytes:
     """`make_bundle`'s bundle as our validator's is when the client sent a 3D file of their part:
-    ``models/<name>``, ``models.sha256`` and the manifest's ``models`` with ``models_sha256``."""
-    import hashlib
+    the manifest lists it (``models``); the zip holds no file of the client's."""
     import io
     import zipfile
 
-    model = b"solid bracket\nendsolid bracket\n"
-    digest = hashlib.sha256(model).hexdigest()
-    listing = f"{digest}  models/model-1.stl\n".encode()
     out = io.BytesIO()
     with zipfile.ZipFile(io.BytesIO(make_bundle())) as src, zipfile.ZipFile(out, "w") as z:
         for name in src.namelist():
             data = src.read(name)
             if name == "bundle.json":
                 manifest = json.loads(data)
-                manifest["models"] = [
-                    {"name": "model-1.stl", "sha256": digest, "kind": "stl", "size": len(model)}
-                ]
-                manifest["models_sha256"] = hashlib.sha256(listing).hexdigest()
+                manifest["models"] = [dict(m) for m in MODELS]
                 manifest.update(manifest_extra)
                 data = json.dumps(manifest).encode()
             z.writestr(name, data)
-        z.writestr("models.sha256", listing)
-        z.writestr("models/model-1.stl", model)
     return out.getvalue()
 
 
+MODELS = [
+    {
+        "name": "model-1.stl",
+        "file": "brief/model-1.stl",
+        "kind": "stl",
+        "size": 684,
+        "sha256": "5" * 64,
+        "client_name": "bracket v2.stl",
+        "unit": "inch",
+        "unit_stated": True,
+    },
+    {"name": "model-2.step", "file": "brief/model-2.step", "kind": "step", "sha256": "a" * 64},
+]
+"""``models`` as the platform lists them: a file with its statement, and one known by its hash"""
 REBUILT = [
     {
-        "source": "client_bracket",
         "file": "brief/model-1.stl",
         "name": "bracket v2.stl",
         "part": "bracket",
-        "bound_mm": 0.1,
         "max_mm": 0.0312,
+        "bound_mm": 0.1,
         "within": True,
         "changed": [
             {
                 "region": "x 10..30 y 100..150 z 0..8",
                 "asked": "add a 6 mm hole through the left ear",
-                "share": 0.0213,
+                "share": 0.0214,
                 "max_mm": 3.0,
-            }
+            },
+            {"region": "x 0..5", "asked": "[withheld: instruction-like text]"},
         ],
-    }
+    },
+    {
+        "file": "brief/model-2.step",
+        "name": "",
+        "part": "cap",
+        "max_mm": None,
+        "bound_mm": 0.1,
+        "changed": [],
+    },
 ]
+"""``models_rebuilt`` as the platform writes it: a part compared, with a changed place whose
+words were withheld, and a part this build did not compare"""
 
 
 class TestBundleWithModels:
-    def test_a_bundle_with_the_clients_3d_files_reads_as_one_without(self) -> None:
+    def test_a_bundle_that_lists_the_clients_3d_files_reads_as_one_without(self) -> None:
         plain, ours = read_bundle(make_bundle()), read_bundle(_with_models({}))
         assert (ours.image_set, ours.images, ours.facts) == (
             plain.image_set,
@@ -322,7 +337,7 @@ class TestBundleWithModels:
             plain.facts,
         )
         assert plain.models == []
-        assert [(m["name"], m["kind"]) for m in ours.models] == [("model-1.stl", "stl")]
+        assert ours.models == MODELS
         # the listing alone states nothing of the design: the judge's facts are the fact sheet's
         inp = inputs_from_bundle(ours)
         assert inp.facts == inputs_from_bundle(plain).facts
@@ -330,7 +345,7 @@ class TestBundleWithModels:
 
     def test_manifest_keys_this_reader_does_not_know_are_no_failure(self) -> None:
         got = read_bundle(
-            _with_models({"models_rebuilt": {}, "models_later": [1, 2], "models_measured": None})
+            _with_models({"models_rebuilt": [], "models_later": [1, 2], "models_measured": None})
         )
         assert "client_files" not in inputs_from_bundle(got).facts
         # a listing that is not a list of files is read as none, never refused
@@ -339,74 +354,83 @@ class TestBundleWithModels:
     def test_what_the_manifest_states_of_the_files_is_lines_of_the_fact_sheet(self) -> None:
         from cadmind_einstein import judge as jm
 
-        bundle = read_bundle(
-            _with_models({"models_measured": ["model-1.stl"], "models_rebuilt": REBUILT})
-        )
-        inp = inputs_from_bundle(bundle)
+        inp = inputs_from_bundle(read_bundle(_with_models({"models_rebuilt": REBUILT})))
         assert inp.facts["client_files"] == [
-            "client file model-1.stl (stl): measured by the designer",
+            (
+                'client file model-1.stl (stl, the client\'s "bracket v2.stl", read in inch,'
+                " as the client stated)"
+            ),
+            "client file model-2.step (step)",
             (
                 'part bracket is client file model-1.stl (the client\'s "bracket v2.stl") built'
                 " again: at most 0.03 mm from the file outside the changed places (bound 0.10 mm);"
-                " 1 changed place stated"
+                " 2 changed places stated"
             ),
             (
                 "part bracket, changed place 1: the box x 10..30 y 100..150 z 0..8 (mm, the file's"
                 " coordinates), 2% of the file's surface, differs from the file by up to 3.00 mm;"
                 ' the client\'s words: "add a 6 mm hole through the left ear"'
             ),
+            (
+                "part bracket, changed place 2: the box x 0..5 (mm, the file's coordinates);"
+                " the client's words for it: [withheld: instruction-like text]"
+            ),
+            (
+                "part cap is client file model-2.step built again: not compared with the file in"
+                " this build; no changed place stated"
+            ),
         ]
-        # the judge reads them in turn 2 with the other facts; no model byte is in any turn
-        judge = jm.Judge()
-        look = judge.look_turn("rate", inp)
-        assert "add a 6 mm hole through the left ear" in look[0]["text"]
-        for block in [*judge.derive_turn(inp), *look]:
-            if block["type"] == "text":
-                assert "endsolid" not in block["text"]
-            else:
-                assert b"endsolid" not in block["data"]
+        # the judge reads them in turn 2 with the other facts, each line whole
+        look = jm.Judge().look_turn("rate", inp)[0]["text"]
+        assert "add a 6 mm hole through the left ear" in look
+        assert "not compared with the file in this build; no changed place stated" in look
+        assert all(len(line) <= jm.STATEMENT_MAX for line in inp.facts["client_files"])
+
+    def test_a_rebuild_with_no_file_listed_is_still_said(self) -> None:
+        from cadmind_einstein.judge import client_file_lines
+
+        row = {"file": "brief/model-1.stl", "name": "a.stl", "part": "p", "changed": []}
+        assert client_file_lines({"models_rebuilt": [row]}) == [
+            (
+                'part p is client file model-1.stl (the client\'s "a.stl") built again: not'
+                " compared with the file in this build; no changed place stated"
+            )
+        ]
 
     def test_the_lines_say_what_is_missing_and_guess_nothing(self) -> None:
         from cadmind_einstein.judge import client_file_lines
 
-        models = [{"name": "model-1.stl", "kind": "stl"}, {"name": "model-2.step", "kind": "step"}]
-        # a file the designer did not measure; an unchanged rebuild over the bound; one not compared
+        models = [{"name": "model-1.stl", "kind": "stl", "unit": "mm", "unit_stated": False}]
+        models.append({"name": "model-2.step", "kind": "step"})
+        # which files were measured, when a bundle says it; an unchanged rebuild over the bound
         lines = client_file_lines(
             {
                 "models": models,
                 "models_measured": {"model-1.stl": {"readings": 3}, "model-2.step": False},
-                "models_rebuilt": {
-                    "rebuilt": [
-                        {
-                            "file": "brief/model-1.stl",
-                            "part": "knob",
-                            "bound_mm": 0.1,
-                            "max_mm": 0.42,
-                            "within": False,
-                            "changed": [],
-                        },
-                        {"file": "brief/model-2.step", "part": "cap", "changed": []},
-                        {"part": "nameless"},
-                    ]
-                },
+                "models_rebuilt": [
+                    {
+                        "file": "brief/model-1.stl",
+                        "part": "knob",
+                        "bound_mm": 0.1,
+                        "max_mm": 0.42,
+                        "within": False,
+                        "changed": [],
+                    },
+                    {"part": "nameless"},
+                ],
             }
         )
         assert lines == [
-            "client file model-1.stl (stl): measured by the designer (3 readings cited)",
+            (
+                "client file model-1.stl (stl, read in mm, no unit stated by the client): measured"
+                " by the designer (3 readings cited)"
+            ),
             "client file model-2.step (step): not measured by the designer",
             (
                 "part knob is client file model-1.stl built again: at most 0.42 mm from the file"
                 " outside the changed places (bound 0.10 mm; over the bound);"
                 " no changed place stated"
             ),
-            (
-                "part cap is client file model-2.step built again: not compared with the file"
-                " in this build; no changed place stated"
-            ),
         ]
-        # a rebuild alone says nothing of what was measured
-        assert client_file_lines({"models": models, "models_rebuilt": REBUILT})[0].startswith(
-            "part bracket is client file model-1.stl"
-        )
         assert client_file_lines({"models": models}) == []
         assert client_file_lines({}) == []

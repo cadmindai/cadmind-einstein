@@ -115,8 +115,8 @@ class Bundle:
     the manifest's ``parts_sha256``; judge 1.3c): empty when the bundle has none"""
     models: list[dict[str, Any]] = field(default_factory=list)
     """the 3D files the client sent of a part they own, as the manifest lists them (``models``:
-    ``{name, sha256, kind, size}``; our validator's bundle only). Their bytes (``models/<name>``)
-    are never read here and never reach a judging model."""
+    ``{name, file, kind, sha256}`` and, where known, ``size``, ``client_name``, ``unit`` and
+    ``unit_stated``; our validator's bundle only). A bundle never holds the files themselves."""
 
     def views(self) -> list[str]:
         return list(self.images)
@@ -206,9 +206,9 @@ def read_bundle(data: bytes) -> Bundle:
 
 def _models(manifest: Mapping[str, Any]) -> list[dict[str, Any]]:
     """The client's own 3D files as the manifest lists them (``models``), none when it lists
-    none. The files themselves (``models/<name>``, listed in ``models.sha256``) are left in the
-    zip unread: a bundle with them, or with manifest keys this reader does not know, reads as one
-    without."""
+    none. A bundle holds the listing only, never a file. A manifest with it, or with keys this
+    reader does not know (``models_rebuilt`` is read by the judge's facts,
+    :func:`.judge.client_file_lines`), reads as one without."""
     listed = manifest.get("models")
     if not isinstance(listed, list):
         return []

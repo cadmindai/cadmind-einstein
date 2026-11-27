@@ -550,8 +550,9 @@ def client_file_lines(manifest: Mapping[str, Any]) -> list[str]:
     (``models_measured``), and each part built again from one (``models_rebuilt``) with how far
     it lies from the file outside the changed places, and each changed place with the client's
     words for it. Nothing when the manifest has neither key (the files' listing alone states
-    nothing of the design). Both keys are optional and read loosely: a row or a field that is not
-    there is left out, never guessed. The files' bytes are not read."""
+    nothing of the design); with either, each listed file is named with its kind, the client's
+    name for it and an STL's unit. Both keys are optional and read loosely: a row or a field that
+    is not there is left out, never guessed. A bundle holds no byte of the files."""
     if not isinstance(manifest, Mapping):
         return []
     measured, rebuilt = manifest.get("models_measured"), manifest.get("models_rebuilt")
@@ -560,19 +561,32 @@ def client_file_lines(manifest: Mapping[str, Any]) -> list[str]:
     out: list[str] = []
     listed = [m for m in manifest.get("models") or [] if isinstance(m, Mapping) and m.get("name")]
     rows = {_base(r.get("file") or r.get("name")): r for r in _rows(measured, ("files", "models"))}
-    if measured is not None:
-        for name in dict.fromkeys([*(str(m["name"]) for m in listed), *rows]):
-            row = rows.get(name)
-            kind = next((str(m.get("kind") or "") for m in listed if m["name"] == name), "")
-            head = f"client file {name}" + (f" ({kind})" if kind else "")
-            took = row.get("measured", row.get("readings", True)) if row is not None else False
-            if isinstance(took, bool) or not isinstance(took, int):
-                out.append(f"{head}: {'measured' if took else 'not measured'} by the designer")
-            else:
-                out.append(
-                    f"{head}: {'measured' if took else 'not measured'} by the designer"
-                    f" ({took} reading{'' if took == 1 else 's'} cited)"
+    for name in dict.fromkeys([*(str(m["name"]) for m in listed), *rows]):
+        m = next((m for m in listed if m["name"] == name), {})
+        about = [str(m.get("kind") or "")]
+        if isinstance(m.get("client_name"), str) and m["client_name"]:
+            about.append(f'the client\'s "{m["client_name"][:80]}"')
+        if m.get("unit"):
+            about.append(
+                f"read in {m['unit']}, "
+                + (
+                    "as the client stated"
+                    if m.get("unit_stated")
+                    else "no unit stated by the client"
                 )
+            )
+        head = f"client file {name}" + (
+            f" ({', '.join(a for a in about if a)})" if any(about) else ""
+        )
+        if measured is None:
+            out.append(head)  # nothing is said of what was measured: nothing is guessed
+            continue
+        row = rows.get(name)
+        took = row.get("measured", row.get("readings", True)) if row is not None else False
+        said = f"{head}: {'measured' if took else 'not measured'} by the designer"
+        if not isinstance(took, bool) and isinstance(took, int):
+            said += f" ({took} reading{'' if took == 1 else 's'} cited)"
+        out.append(said)
     for r in _rows(rebuilt, ("rebuilt", "parts", "rows")):
         name, part = _base(r.get("file")), str(r.get("part") or "")
         if not name or not part:
@@ -608,7 +622,11 @@ def client_file_lines(manifest: Mapping[str, Any]) -> list[str]:
                 f"part {part}, changed place {i}: the box {str(c.get('region') or '')[:60]}"
                 f" (mm, the file's coordinates){cover}"
                 + (f", differs from the file by up to {differs}" if differs else "")
-                + f'; the client\'s words: "{str(c.get("asked") or "")[:ASKED_MAX]}"'
+                + (
+                    f"; the client's words for it: {WITHHELD}"
+                    if c.get("asked") == WITHHELD
+                    else f'; the client\'s words: "{str(c.get("asked") or "")[:ASKED_MAX]}"'
+                )
             )
     return out[:CLIENT_FILES_MAX]
 
