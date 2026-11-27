@@ -510,6 +510,109 @@ def photo_name(i: int, name: str) -> str:
     return f"client-photo-{i}.{re.sub(r'[^a-z0-9]', '', ext)[:5] or 'png'}"
 
 
+CLIENT_FILES = "client_files"
+"""the fact-sheet key of the lines about the client's own 3D files (:func:`client_file_lines`)"""
+CLIENT_FILES_MAX = 40
+"""lines about the client's 3D files, at most"""
+ASKED_MAX = 160
+"""a changed place's words of the client's, as a line quotes them, at most"""
+
+
+def _base(path: Any) -> str:
+    return str(path or "").replace("\\", "/").rsplit("/", 1)[-1]
+
+
+def _rows(found: Any, keys: Sequence[str]) -> list[dict[str, Any]]:
+    """A manifest value as rows: a list of objects, an object holding one under one of ``keys``,
+    or an object of rows by file name (the name then stands as the row's ``file``)."""
+    if isinstance(found, Mapping):
+        inner = next((found[k] for k in keys if isinstance(found.get(k), list)), None)
+        if inner is None:
+            inner = [
+                {"file": k, **v} if isinstance(v, Mapping) else {"file": k, "measured": v}
+                for k, v in found.items()
+            ]
+        found = inner
+    if not isinstance(found, list):
+        return []
+    return [dict(r) if isinstance(r, Mapping) else {"file": r} for r in found if r]
+
+
+def _mm(value: Any) -> str | None:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    return f"{float(value):.2f} mm"
+
+
+def client_file_lines(manifest: Mapping[str, Any]) -> list[str]:
+    """What a bundle's manifest states of the 3D files the client sent of a part they own, as
+    plain lines for the fact sheet: each file and whether the designer measured it
+    (``models_measured``), and each part built again from one (``models_rebuilt``) with how far
+    it lies from the file outside the changed places, and each changed place with the client's
+    words for it. Nothing when the manifest has neither key (the files' listing alone states
+    nothing of the design). Both keys are optional and read loosely: a row or a field that is not
+    there is left out, never guessed. The files' bytes are not read."""
+    if not isinstance(manifest, Mapping):
+        return []
+    measured, rebuilt = manifest.get("models_measured"), manifest.get("models_rebuilt")
+    if not measured and not rebuilt:
+        return []
+    out: list[str] = []
+    listed = [m for m in manifest.get("models") or [] if isinstance(m, Mapping) and m.get("name")]
+    rows = {_base(r.get("file") or r.get("name")): r for r in _rows(measured, ("files", "models"))}
+    if measured is not None:
+        for name in dict.fromkeys([*(str(m["name"]) for m in listed), *rows]):
+            row = rows.get(name)
+            kind = next((str(m.get("kind") or "") for m in listed if m["name"] == name), "")
+            head = f"client file {name}" + (f" ({kind})" if kind else "")
+            took = row.get("measured", row.get("readings", True)) if row is not None else False
+            if isinstance(took, bool) or not isinstance(took, int):
+                out.append(f"{head}: {'measured' if took else 'not measured'} by the designer")
+            else:
+                out.append(
+                    f"{head}: {'measured' if took else 'not measured'} by the designer"
+                    f" ({took} reading{'' if took == 1 else 's'} cited)"
+                )
+    for r in _rows(rebuilt, ("rebuilt", "parts", "rows")):
+        name, part = _base(r.get("file")), str(r.get("part") or "")
+        if not name or not part:
+            continue
+        theirs = f' (the client\'s "{str(r["name"])[:80]}")' if r.get("name") else ""
+        far, bound = _mm(r.get("max_mm")), _mm(r.get("bound_mm"))
+        if far is None:
+            how = "not compared with the file in this build"
+        else:
+            how = f"at most {far} from the file outside the changed places"
+            if bound:
+                how += f" (bound {bound}" + (
+                    ")" if r.get("within") is not False else "; over the bound)"
+                )
+        places = [c for c in r.get("changed") or [] if isinstance(c, Mapping)]
+        out.append(
+            f"part {part} is client file {name}{theirs} built again: {how}; "
+            + (
+                f"{len(places)} changed place{'' if len(places) == 1 else 's'} stated"
+                if places
+                else "no changed place stated"
+            )
+        )
+        for i, c in enumerate(places, 1):
+            share = c.get("share")
+            cover = (
+                f", {float(share):.0%} of the file's surface"
+                if isinstance(share, (int, float)) and not isinstance(share, bool)
+                else ""
+            )
+            differs = _mm(c.get("max_mm"))
+            out.append(
+                f"part {part}, changed place {i}: the box {str(c.get('region') or '')[:60]}"
+                f" (mm, the file's coordinates){cover}"
+                + (f", differs from the file by up to {differs}" if differs else "")
+                + f'; the client\'s words: "{str(c.get("asked") or "")[:ASKED_MAX]}"'
+            )
+    return out[:CLIENT_FILES_MAX]
+
+
 def inputs_from_bundle(
     bundle: Any, *, prefix: str = "", nudges: Sequence[Mapping[str, Any]] = ()
 ) -> Inputs:
@@ -533,6 +636,11 @@ def inputs_from_bundle(
         for i, (name, raw) in enumerate(sorted(getattr(bundle, "photos", {}).items()), 1)
     ]
     facts = dict(bundle.facts)
+    said = client_file_lines(getattr(bundle, "manifest", None) or {})
+    if said:
+        # what the bundle states of the client's own 3D files, as plain lines; never their bytes
+        # (a fact sheet that says it itself is left as it is)
+        facts.setdefault(CLIENT_FILES, said)
     parts = getattr(bundle, "parts", None)
     if parts:
         # the vendored parts' own evidence (the bundle's parts.json): shown from 1.3c, withheld

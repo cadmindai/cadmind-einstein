@@ -113,6 +113,10 @@ class Bundle:
     parts: list[dict[str, Any]] = field(default_factory=list)
     """an assembly's vendored parts, each with its own evidence (``parts.json``, checked against
     the manifest's ``parts_sha256``; judge 1.3c): empty when the bundle has none"""
+    models: list[dict[str, Any]] = field(default_factory=list)
+    """the 3D files the client sent of a part they own, as the manifest lists them (``models``:
+    ``{name, sha256, kind, size}``; our validator's bundle only). Their bytes (``models/<name>``)
+    are never read here and never reach a judging model."""
 
     def views(self) -> list[str]:
         return list(self.images)
@@ -195,7 +199,20 @@ def read_bundle(data: bytes) -> Bundle:
         parts = _parts(z, names, manifest)
     if not isinstance(facts, dict) or not isinstance(client, dict):
         raise BundleError("facts.json and client.json are JSON objects")
-    return Bundle(manifest, images, facts, client, image_set, _sha(data), photos, parts)
+    return Bundle(
+        manifest, images, facts, client, image_set, _sha(data), photos, parts, _models(manifest)
+    )
+
+
+def _models(manifest: Mapping[str, Any]) -> list[dict[str, Any]]:
+    """The client's own 3D files as the manifest lists them (``models``), none when it lists
+    none. The files themselves (``models/<name>``, listed in ``models.sha256``) are left in the
+    zip unread: a bundle with them, or with manifest keys this reader does not know, reads as one
+    without."""
+    listed = manifest.get("models")
+    if not isinstance(listed, list):
+        return []
+    return [dict(m) for m in listed if isinstance(m, Mapping) and m.get("name")]
 
 
 def _parts(

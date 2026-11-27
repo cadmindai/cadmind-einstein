@@ -593,8 +593,11 @@ coloured by kind -- three-quarter, the six axis views and a second three-quarter
 section views; the studio render), a **fact sheet** of structured fields only (the requirements with their
 verdict and provenance kind, the world items and their fidelity, parts, decisions, the guard summary), and the
 **client's words** (the brief, answers, change requests, the stated making method). Our validator's copy also
-carries the **client's photos** (checked against their own digest list, not part of the image set); a third party's
-never does. Never in it: the project's `src/` and `tests/`, the client's identity, the job id, the builder's hotkey. `images.sha256` lists
+carries the **client's photos** (checked against their own digest list, not part of the image set) and, when the
+client sent 3D files of a part they own, those files with their listing (`models/`, `models.sha256`), which the
+judging model never receives: what the manifest states of them (measured or not, the part built again from one and
+how far it lies from the file, the places changed and the client's words) is read as lines of the fact sheet. A
+third party's never does. Never in it: the project's `src/` and `tests/`, the client's identity, the job id, the builder's hotkey. `images.sha256` lists
 every image's SHA-256; its own SHA-256 is the **image-set digest** every vote names. Third-party validators get
 bundles of public projects only; our validator reviews every delivery.
 
