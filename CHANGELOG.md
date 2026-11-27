@@ -14,8 +14,8 @@ only with the version that made it.
 
 - **The client's own 3D files.** A client may attach a STEP, STL or 3MF of a part they already have to a brief or
   a change. The miner guide says where the file is (`brief/model-*`, with its statement), that it is measured with
-  Watt and never downloaded, viewed or copied, how a change to that part is rebuilt and held within 0.1 mm of the
-  file, and what to do with an STL that is too coarse or states no unit. The reference miner's prompt adds the same
+  Watt and never downloaded, viewed or copied, how a change to that part is rebuilt and held within 0.5 mm of the
+  file (0.1 mm for a STEP), and what to do with an STL that is too coarse or states no unit. The reference miner's prompt adds the same
   rules when the brief names such a file. A bundle never holds the files: our validator's `bundle.json` lists
   them (`models`), and `read_bundle` reads a manifest with that listing as one without. What the manifest states of
   a part built again from one (`models_rebuilt`; `models_measured` when present, both optional) is added to the fact

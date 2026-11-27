@@ -406,12 +406,12 @@ what follows is what a miner must do.
   asked = "add a 6 mm hole through the left ear"   # their words, as brief/ holds them (W0444)
   ```
 
-  Outside the changed places no point of the part or of the file may lie further than **0.1 mm** from the other
-  (W0443, which says how far and where): a project that does not hold it is not deliverable and fails its gate. A
+  Outside the changed places no point of the part or of the file may lie further than the bound from the other:
+  **0.5 mm** for an STL or a 3MF, **0.1 mm** for a STEP (W0443, which says how far and where): a project that does not hold it is not deliverable and fails its gate. A
   region must hold a real difference, and the delivery tells the client every region with their words and the share
   of their file it covers: draw it round the change, no wider. The bound is never widened.
-- **A coarse STL cannot be met.** When the file's facets lie further than about 0.1 mm from the true curve, no
-  rebuild is within the bound. Say so to the client as an open client decision and ask for a finer export, or a
+- **A very coarse STL cannot be met.** When the file's facets lie further than about 0.5 mm from the true curve,
+  no rebuild is within the bound. Say so to the client as an open client decision and ask for a finer export, or a
   STEP; never draw a region to hide it.
 - **An STL states no unit.** It is read in the unit the client stated (`unit_stated = true`; a source that says
   another is refused, W0438), else in millimetres. When they stated none and the size `watt measure model` gives is

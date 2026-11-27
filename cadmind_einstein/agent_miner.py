@@ -459,8 +459,9 @@ while the file is there is an error, and so is a file no source declares or noth
 readings, in the file's own coordinates (no Pose that moves it), state rebuild = "<part id>" on \
 the source and one [[source.<id>.changed]] per place they asked to change (region = a box in the \
 file's coordinates, asked = their words as brief/ holds them): everywhere else the part must lie \
-within 0.1 mm of their file (W0443), or the project is not deliverable. An STL too coarse for \
-that (facets over about 0.1 mm off their curve) cannot be met: say so to the client as an open \
+within 0.5 mm of their file for an STL or a 3MF, 0.1 mm for a STEP (W0443), or the project is \
+not deliverable. An STL too coarse for that (facets over about 0.5 mm off their \
+curve) cannot be met: say so to the client as an open \
 client decision and ask for a finer export or a STEP; never widen a region to hide it. An STL \
 states no unit: it is read in the unit the client stated, else in millimetres; when they stated \
 none and its size is implausible either way, ask them, mm or inches, as an open client decision \

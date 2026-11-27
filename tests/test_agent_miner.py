@@ -166,7 +166,7 @@ class TestAgentArgv(unittest.TestCase):
                 "in the file's own coordinates",
                 'rebuild = "<part id>"',
                 "[[source.<id>.changed]]",
-                "within 0.1 mm of their file (W0443)",
+                "within 0.5 mm of their file for an STL or a 3MF, 0.1 mm for a STEP (W0443)",
                 "ask for a finer export or a STEP",
                 "mm or inches, as an open client decision",
             ):
