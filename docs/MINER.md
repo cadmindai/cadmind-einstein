@@ -298,6 +298,10 @@ All calls are signed POSTs to `$VALIDATOR_URL`.
   names them when there are any. Look at each with `view_image` before you design: they are the client's evidence
   (their hole, their wall, their part), as binding as their words. A later round's workspace, a copy of the delivered
   project, holds the earlier rounds' photos too.
+- **The client's own 3D files** (a STEP, STL or 3MF of a part they already have) are in `brief/` too, as
+  `brief/model-<n>.<step|stl|3mf>`, each with a statement beside it. The `brief` names them when there are any. They
+  are measured with Watt, never viewed, downloaded or copied: see
+  [The client's own 3D files](#the-clients-own-3d-files).
 - At the deadline, an accepted job is judged as it stands (frozen and gated). If it passes, it is delivered with `T = 0` (section 6); late and failing counts as a timeout.
 - **A continuation** (`work` says `continuation: true`): the workspace starts as an unfinished project an earlier
   builder (maybe another miner) could not finish. Read its `REVIEW`/`DESIGN-NOTES` and `watt status`, then continue
@@ -321,8 +325,9 @@ assumption you build on, why, and what it affects -- and may answer while you wo
 - **After each `watt` command, call `client_answers`** (MCP; REST `GET /api/agent/workspaces/{ws}/answers?after=N`)
   with the last `cursor` it gave you. Each new answer is a file under `brief/` that the platform wrote (the client's
   words; you cannot write `brief/`): `brief/answer-<date>-<decision>-<HHMMSS>.md`, `brief/change-<date>-<HHMMSS>.md`
-  for a change request, or `brief/photo-<date>-<HHMMSS>-<n>.<kind>` for a photo sent with it (kind `photo`: look at it
-  with `view_image`).
+  for a change request, `brief/photo-<date>-<HHMMSS>-<n>.<kind>` for a photo sent with it (kind `photo`: look at it
+  with `view_image`), or `brief/model-<date>-<HHMMSS>-<n>.<step|stl|3mf>` for a 3D file of their own part sent with
+  it (kind `model`: measure it, [below](#the-clients-own-3d-files)).
 - **A change file may end with a block from CADmind listing the parts the client selected in the 3D view**, by their
   view key (`build/view/device.json`), name and place; the request's "this"/"these" mean them. The answer's `text` is
   only the client's words: read the change file itself (`read_file` its `path`) for that block. `watt inspect` with
@@ -347,6 +352,72 @@ assumption you build on, why, and what it affects -- and may answer while you wo
   (`by = "agent"`, `status = "decided"`, its `choice` and `because`); the client sees it as an assumption on the
   result, and can always ask for a change. A need no option keeps is decided the same way (below), never a
   rejection. A change the client sends mid-job still arrives through `client_answers`.
+
+### The client's own 3D files
+
+A client may attach a 3D file of a part they already own (STEP, STL or 3MF) to a brief or to a change request, as
+they attach a photo. The `brief` you are given ends with a note that names each file, the client's name for it and,
+for an STL, the unit they stated. Watt's `photos` topic (`watt_guide`, "The client's own 3D file") is the full rule;
+what follows is what a miner must do.
+
+- **Where it is.** `brief/model-<n>.<step|stl|3mf>` sent with the brief, `brief/model-<date>-<HHMMSS>-<n>.<ext>` sent
+  with a change. Beside each, `brief/model-<...>.toml` is the platform's statement of it: `file`, `kind`, `name` (the
+  client's name for the file), `bytes`, `sha256` and, for an STL, `unit` and `unit_stated`. The statement is not the
+  client's words: never quote it. `brief/` is read-only.
+- **It cannot be downloaded or viewed.** `read_file` of the file is refused (403), the project's export holds only its
+  hash, and `view_image` does not open a model. It is measured in the workspace, with Watt.
+- **Declare it and take readings on it.** In `spec/sources.toml`, one source per file, with no `url`, no `sha256` and
+  no `scale_check`:
+
+  ```toml
+  [source.client_bracket]
+  kind = "model"
+  title = "the client's bracket"
+  asset = "brief/model-1.stl"
+  ```
+
+  `watt measure model client_bracket` (the tool: `watt` measure with `source`) gives its box in mm, in the file's own
+  coordinates. `watt measure model client_bracket '<reading>'` (with `reading`) takes one reading and writes the
+  passage to cite: `size x`, `min z` or `max z` (any axis) of the whole model, of a
+  `region x <lo>..<hi> y <lo>..<hi>`, of a `section z=<n>`, or of a section's `loop x=<n> y=<n>` (a hole's edge;
+  its `diameter` is the circle of its area). Cite the passage as written:
+
+  ```toml
+  thickness = { v = "30 mm", from = "cite:client_bracket 'measured: size x = 30.00 mm'" }
+  ```
+
+  Watt takes the reading again on every check (W0437). A fit value guessed (a `decision:`, an estimate) while the
+  file is there is an error, and so is a file no source declares or no value reads (W0441).
+- **Never copy it into the design.** No `Freeform` reads it and no record's `step` names it (W0440). It is never
+  edited and never delivered.
+- **When the client asks for a change to their part, rebuild it.** Build the part in Watt from the readings, in the
+  file's own coordinates (no `Pose` that moves it), apply the change, and state on the source the part that is the
+  rebuild and each place the client asked to change, with their words:
+
+  ```toml
+  [source.client_bracket]
+  kind = "model"
+  title = "the client's bracket"
+  asset = "brief/model-1.stl"
+  rebuild = "bracket"                      # the id of the made part that is their file built again
+
+  [[source.client_bracket.changed]]
+  region = "x 10..30 y 100..150 z 0..8"   # a box in the file's coordinates, mm; an axis left out is unbounded
+  asked = "add a 6 mm hole through the left ear"   # their words, as brief/ holds them (W0444)
+  ```
+
+  Outside the changed places no point of the part or of the file may lie further than **0.1 mm** from the other
+  (W0443, which says how far and where): a project that does not hold it is not deliverable and fails its gate. A
+  region must hold a real difference, and the delivery tells the client every region with their words and the share
+  of their file it covers: draw it round the change, no wider. The bound is never widened.
+- **A coarse STL cannot be met.** When the file's facets lie further than about 0.1 mm from the true curve, no
+  rebuild is within the bound. Say so to the client as an open client decision and ask for a finer export, or a
+  STEP; never draw a region to hide it.
+- **An STL states no unit.** It is read in the unit the client stated (`unit_stated = true`; a source that says
+  another is refused, W0438), else in millimetres. When they stated none and the size `watt measure model` gives is
+  implausible either way (a 4 mm bracket, a 2 m knob), ask them, mm or inches, as an ordinary open client decision
+  (when they asked not to be asked, decide and say so), then state `unit = "inch"` on the source. A STEP or a 3MF
+  states its own unit.
 
 ### Deliver what you can, and find the data
 

@@ -417,7 +417,9 @@ do what it asks; when it replaces an answer the client gave earlier, supersede t
 decision by a new one (status = "decided") whose found_by is { ref = "brief/change-<...>.md", \
 reading = "<the client's words, quoted from that file>" }; a photo they send (kind photo, \
 brief/photo-*) is theirs: look at it with \
-`view_image`. The validator refuses a delivery that leaves an answer unrecorded. Use \
+`view_image`; a 3D file of their own part (kind model, brief/model-*) is measured with Watt, \
+never viewed, fetched or copied (the `photos` topic of `watt_guide`). The validator refuses a \
+delivery that leaves an answer unrecorded. Use \
 `wait_for_answer` only when no useful work can go on under the assumptions (it waits briefly). \
 If `client_answers` says `no_questions: true`, the client asked not to be asked: decide every \
 would-be question yourself instead (by = "agent", status = "decided", choice, because), a missed \
@@ -437,9 +439,39 @@ deleted to clear a check. A need that no option you can build keeps is decided t
 build the option closest to it, record the decision with misses = ["<need>"] and its reason, and \
 say so first in your final lines; do not REJECT for it. Still call `client_answers` after each \
 `watt` command: a change the client sends mid-job arrives there (brief/change-*.md), and so does \
-a photo (brief/photo-*: look at it with `view_image`). """
+a photo (brief/photo-*: look at it with `view_image`) or a 3D file of their own part \
+(brief/model-*: measured with Watt, never viewed, fetched or copied; the `photos` topic of \
+`watt_guide`). """
     + PARTS
 )
+
+MODELS = """ The client sent a 3D FILE OF A PART THEY ALREADY OWN (the brief names it): \
+brief/model-<n>.<step|stl|3mf>, with CADmind's statement of it beside it, brief/model-<n>.toml \
+(the client's name for the file, its kind, size and sha256; an STL's unit and whether the client \
+stated it). Read the `photos` topic of `watt_guide` ("The client's own 3D file") first. \
+`view_image` cannot open it and no file read gives it (`read_file` of it is refused): it is \
+measured with Watt. Declare each file as a source ([source.<id>] with kind = "model", a title and \
+asset = "brief/model-1.stl"; no url, no sha256, no scale_check), take readings on it (`watt` \
+measure with `source`, then with `reading`) and cite them ('measured: ...'): a fit value guessed \
+while the file is there is an error, and so is a file no source declares or nothing reads \
+(W0441). Never copy it into the design: no Freeform reads it and no record's `step` names it \
+(W0440). When the client asks for a change to that part, rebuild the part in Watt from the \
+readings, in the file's own coordinates (no Pose that moves it), state rebuild = "<part id>" on \
+the source and one [[source.<id>.changed]] per place they asked to change (region = a box in the \
+file's coordinates, asked = their words as brief/ holds them): everywhere else the part must lie \
+within 0.1 mm of their file (W0443), or the project is not deliverable. An STL too coarse for \
+that (facets over about 0.1 mm off their curve) cannot be met: say so to the client as an open \
+client decision and ask for a finer export or a STEP; never widen a region to hide it. An STL \
+states no unit: it is read in the unit the client stated, else in millimetres; when they stated \
+none and its size is implausible either way, ask them, mm or inches, as an open client decision \
+(when they asked not to be asked, decide and say so), then state unit = "inch" on the source if \
+so."""
+"""What the prompt adds when the job's brief names a 3D file of the client's own part (the
+platform's note in the claim's ``brief``): where it is, that it is measured and never copied, how
+a change to that part is rebuilt and held to the file, and an STL's unit."""
+CLIENT_MODEL = "brief/model-"
+"""How the platform's note names the client's 3D files in a brief: each by its path, and the earlier
+rounds' as ``brief/model-*``."""
 
 
 STYLE = """ This is a STYLE ROUND on a delivered device (its watt.toml has [style]): the client's \
@@ -543,17 +575,27 @@ def lane_line(work: Any, last: tuple[str, float] | None) -> tuple[str, tuple[str
     )
 
 
+def models_rule(work: dict[str, Any]) -> str:
+    """The rules of the client's own 3D files (:data:`MODELS`), when the job's ``brief`` names one
+    (``brief/model-*``, in the note the platform ends the brief with); else nothing. The file
+    itself is never fetched or opened here: the builder measures it in the workspace."""
+    return MODELS if CLIENT_MODEL in str(work.get("brief") or "") else ""
+
+
 def questions_rule(work: dict[str, Any], ws: str) -> str:
     """What the prompt says of the client's questions and answers: ask and keep building (and check
     for answers after each step), or, when the client asked not to be asked (``no_questions``),
     decide. A job that does not allow sub-projects (``subprojects`` false) says to deliver one
-    project; a style round (``style``) adds what it may change; a continuation (``continuation``)
-    what it starts from; an improvement job (``improvement``) what it is to improve."""
+    project; a job whose brief names a 3D file of the client's own part adds its rules
+    (:func:`models_rule`); a style round (``style``) adds what it may change; a continuation
+    (``continuation``) what it starts from; an improvement job (``improvement``) what it is to
+    improve."""
     rule = (NO_QUESTIONS if work.get("no_questions") else QUESTIONS).replace("{ws}", ws)
     one = ONE_PROJECT if work.get("subprojects") is False else ""
     return (
         rule
         + one
+        + models_rule(work)
         + (STYLE if work.get("style") else "")
         + continuation_rule(work)
         + improvement_rule(work)

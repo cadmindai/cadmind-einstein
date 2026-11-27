@@ -132,6 +132,81 @@ class TestAgentArgv(unittest.TestCase):
             self.assertIn("brief/photo-*", text)
             self.assertIn("view_image", text)
 
+    def test_a_brief_that_names_the_clients_3d_file_adds_its_rules(self) -> None:
+        """The platform ends the brief with a note naming each 3D file the client sent of a part
+        they own; the prompt then says how such a file is used. The miner fetches and opens
+        nothing itself: the brief goes into the prompt as it came."""
+        from cadmind_einstein.agent_miner import MODELS, NO_QUESTIONS, QUESTIONS, questions_rule
+
+        note = (
+            "A bracket like mine, with a hole.\n\nThe client attached 1 3D file of a part they"
+            ' already have: brief/model-1.stl (the client\'s "bracket.stl", no unit stated:'
+            " millimetres assumed, and you may ask the client). They are the client's own: read"
+            " and measure each with Watt's model reading, never copy one into the project or"
+            " deliver it; where the client asks for a change to their part, rebuild it in Watt"
+            " from what you measured."
+        )
+        earlier = (
+            "Make the ear longer.\n\nThe 3D files sent with earlier rounds are in brief/ too"
+            " (brief/model-*)."
+        )
+        for work in ({"brief": note}, {"brief": note, "no_questions": True}, {"brief": earlier}):
+            said = " ".join(questions_rule(work, "ag-1").split())
+            for must in (
+                "brief/model-<n>.<step|stl|3mf>",
+                "brief/model-<n>.toml",
+                "`view_image` cannot open it",
+                "`read_file` of it is refused",
+                'kind = "model"',
+                'asset = "brief/model-1.stl"',
+                "no url, no sha256, no scale_check",
+                "a fit value guessed while the file is there is an error",
+                "(W0441)",
+                "no Freeform reads it and no record's `step` names it (W0440)",
+                "in the file's own coordinates",
+                'rebuild = "<part id>"',
+                "[[source.<id>.changed]]",
+                "within 0.1 mm of their file (W0443)",
+                "ask for a finer export or a STEP",
+                "mm or inches, as an open client decision",
+            ):
+                self.assertIn(must, said)
+        # a job without one is told nothing of it but where a file sent mid-job arrives
+        for work in (
+            {"brief": "A wall hook."},
+            {"brief": "A wall hook.", "no_questions": True},
+            {},
+        ):
+            self.assertNotIn(MODELS, questions_rule(work, "ag-1"))
+        for text in (QUESTIONS, NO_QUESTIONS):
+            self.assertIn("brief/model-*", text)
+            self.assertIn("never viewed, fetched or copied", " ".join(text.split()))
+        # the whole prompt of such a job fills, the brief as it came, and stays a prompt's size
+        work = {"brief": note}
+        text = PROMPT.format(
+            ws="w",
+            job="j",
+            brief=note,
+            minutes=30,
+            deadline_utc="12:00",
+            server="s",
+            questions=questions_rule(work, "w"),
+            no_questions="no",
+        )
+        self.assertIn(note, text)
+        self.assertLess(len(MODELS), 2200)
+        guide = " ".join(
+            (Path(__file__).resolve().parents[1] / "docs" / "MINER.md").read_text().split()
+        )
+        for must in (
+            'asset = "brief/model-1.stl"',
+            'rebuild = "bracket"',
+            "[[source.client_bracket.changed]]",
+            "watt measure model client_bracket",
+            "`read_file` of the file is refused",
+        ):
+            self.assertIn(must, guide)
+
     def test_the_builder_is_told_to_read_the_parts_block_from_the_change_file(self) -> None:
         """The platform writes the parts the client selected in the 3D view after the client's
         words in the change file; `client_answers` gives only the words, so the builder must read
