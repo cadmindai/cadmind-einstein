@@ -7,8 +7,9 @@ All notable changes to this project are listed here. The format follows
 
 ## [Unreleased]
 
-The package version is 0.6.27 (spec version 627): the scoring rule changed, and `cadmind-recompute` checks a report
-only with the version that made it.
+## [0.6.28] - 2026-11-27
+
+The package version is 0.6.28 (spec version 628). Nothing in the scoring, the judge or the weights changed: this release carries the miner guide and the reference miner's prompt for the client's own 3D files to miners, whose auto-update follows release tags.
 
 ### Added
 
@@ -20,6 +21,14 @@ only with the version that made it.
   them (`models`), and `read_bundle` reads a manifest with that listing as one without. What the manifest states of
   a part built again from one (`models_rebuilt`; `models_measured` when present, both optional) is added to the fact
   sheet as plain lines (`client_files`). The judge's prompt, schemas, scoring, version and digest are unchanged.
+
+## [0.6.27] - 2026-11-26
+
+The package version is 0.6.27 (spec version 627): the scoring rule changed, and `cadmind-recompute` checks a report
+only with the version that made it.
+
+### Added
+
 - **Two values per event, and dated point changes.** Every outcome is read as one event worth **rating points** (a
   miner's standing) and **weight points** (its pay); the table is `scoring.POINTS`, published in every report's
   `constants`. On a client job the two are the points of before (0.5 delivered, 1 downloaded or rated 3 to 5

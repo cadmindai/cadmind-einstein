@@ -509,7 +509,7 @@ class TestTheReport(unittest.TestCase):
             out = audit([path])
             self.assertTrue(out["ok"])
             self.assertEqual(out["not_checked"], [str(path)])
-        self.assertEqual(__spec_version__, _spec("0.6.26") + 1)
+        self.assertGreater(__spec_version__, _spec("0.6.26"))  # the running version is a later one
 
 
 class TestFiveMinersReplay(unittest.TestCase):
